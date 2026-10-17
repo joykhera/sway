@@ -1,6 +1,6 @@
 # Adaptive learning in the main Sway app
 
-Built from team `main` at `0907b71`, pulled before integration. The normal `/` route now uses the adaptive learner; there is no separate demo page or replacement backend.
+Built from team `main` at `0907b71`, pulled before integration, then merged the teammate's new `5aaa507` prompt-phrasing update before final verification. The normal `/` route now uses the adaptive learner; there is no separate demo page or replacement backend.
 
 ## Listening experience
 
@@ -12,6 +12,8 @@ Before Start, an optional Focus / Relax / Energy / Explore row provides a weak s
 - Stop/Start retains this tab's model. Changing purpose while stopped resets it. Reloading resets everything; there are no accounts or saved cross-session profiles.
 
 The model ranks 375 prompt recipes using a regularized joint estimate over 18 features, uncertainty, a weak purpose prior and transition cost. It learns from a whole combination, not a claim that a single Like identifies a favorite instrument. Recovery discounts older evidence after two distinct, sufficiently unexpected negative observations; it is a bounded heuristic, not guaranteed convergence.
+
+The team's four wording variants per feature are retained. A stable session seed chooses wording for new features, while continuing features keep their exact wording. A mid-transition Like can restore the original wording of an outgoing feature. These variants share the same feature-level preference estimate; finer preferences within a feature are not modeled separately.
 
 ## Wiring and preserved infrastructure
 
@@ -43,3 +45,12 @@ Outside localhost, the existing AudioWorklet requires HTTPS. A private Tailscale
 Unit and integration coverage includes full model-state preservation, effective evidence weight, both thumbs, correlated clicks, Likes holding direction, repeated Likes retaining variation deadlines, purpose reset rules, reconnects and real-relay cleanup. The browser factory test catches accidentally wiring the old learner back into the app.
 
 Earlier bounded Lyria recordings and synthetic experiments motivated this algorithm. They do not establish human preference improvement or reliable convergence; noisy feedback remains a known weakness. Persistent profiles, new sensors and an explanatory dashboard are outside this integration.
+
+## Verification receipt — 2026-10-17
+
+- Final combined code: **290 tests across 32 files**, TypeScript and production build passed. Frozen installs passed on pnpm 11 and deployment-pinned pnpm 10.30.3. The generated client bundle contains no supplied API credential.
+- Chrome exercised the actual UI, controller, AudioWorklet, transport and relay, first with a mock provider and then one bounded Google session. The real stream ran for about 66 seconds from Start to Stop, returned 48 kHz stereo, redirected ambient/synth toward jazz/guitar after Dislike, held after Like, then changed texture automatically. Sixteen ordered steer messages completed both ramps; no filter or reconnect was observed. This verifies controls and transport, not perceived sound quality.
+- The live check preceded the final teammate phrasing merge. The merged variant renderer passed deterministic regressions, full tests and a production-browser mock check. No second Google session was started.
+- The original HTTP Tailscale demo remains available. This integrated app's AudioWorklet needs private HTTPS; Tailscale Serve was disabled on the tailnet at verification time. Localhost playback works. Cross-device access, mobile rendering, a Linux Docker image build and long-session human listening are not claimed as verified.
+
+Current localhost preview uses `MUSIC_MODE=mock` through the production server: it plays test tones and makes no Google calls. The earlier live smoke was automatically limited to 85 seconds and stopped after 70.6 seconds of server lifetime. Credential, smoke logs and screenshots remain outside Git. This integration is committed locally; no push or public deployment was performed.
