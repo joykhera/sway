@@ -15,14 +15,15 @@ export type StreamConfig = {
 };
 
 export type ClientMessage =
-  | { type: 'start'; prompts: WeightedPrompt[]; config?: StreamConfig }
+  | { type: 'start'; prompts: WeightedPrompt[]; config?: StreamConfig; prefetchMs?: number }
   | { type: 'steer'; revision: number; prompts: WeightedPrompt[]; config?: StreamConfig }
+  | { type: 'resume' }
   | { type: 'stop' };
 
 // `ready` may be sent again after `reconnecting` (upstream session replaced); reconfigure if the format changed.
 export type ServerMessage =
-  | { type: 'status'; state: 'connecting' | 'playing' | 'reconnecting' | 'stopped' }
-  | { type: 'ready'; audio: AudioFormat }
+  | { type: 'status'; state: 'connecting' | 'playing' | 'reconnecting' | 'stopped' | 'paused' }
+  | { type: 'ready'; audio: AudioFormat; prefetch?: boolean }
   | { type: 'error'; code: ErrorCode; message: string; retryable: boolean };
 
 export type AudioFormat = { format: 'pcm_s16le'; sampleRateHz: number; channels: 2 };
@@ -96,6 +97,9 @@ export interface PCMPlayer {
   initializeFromUserGesture(): Promise<void>;
   configure(audio: AudioFormat): void;
   enqueuePcm(bytes: ArrayBuffer): void;
+  // Atomic prepared-stream replacement; false leaves current playback unchanged.
+  // Crossfade must keep one AudioContext and bound outgoing audio to fadeMs.
+  replacePcm?(audio: AudioFormat, chunks: ArrayBuffer[], fadeMs: number): boolean;
   getBufferedDurationMs(): number;
   /** Latest diagnostics snapshot (live telemetry + readiness), optional for test/alternative players. */
   getStats?(): PCMPlayerStats;

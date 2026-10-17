@@ -8,6 +8,7 @@ import {
 import { decodeS16le, PcmByteAssembler } from './decode.ts';
 import type { AudioFormat, PCMPlayer, PCMPlayerState, PCMPlayerStats } from './types.ts';
 import { createOutputTap } from './analyser.ts';
+import { prepareReplacement } from './replacement.ts';
 
 export interface BufferedAudioBufferLike {
   getChannelData(channel: number): Float32Array;
@@ -18,7 +19,12 @@ export interface BufferedSourceLike {
   connect(destination: AudioNode): unknown;
   disconnect(): void;
   start(when?: number): void;
-  stop(): void;
+  stop(when?: number): void;
+}
+export interface BufferedGainLike {
+  gain: { setValueAtTime(value: number, when: number): unknown; linearRampToValueAtTime(value: number, when: number): unknown };
+  connect(destination: AudioNode): unknown;
+  disconnect(): void;
 }
 export interface BufferedAudioContextLike {
   readonly sampleRate: number;
@@ -30,6 +36,7 @@ export interface BufferedAudioContextLike {
   createBufferSource(): BufferedSourceLike;
   /** Optional so fakes can skip it; without it there is no visualizer tap. */
   createAnalyser?(): AnalyserNode;
+  createGain(): BufferedGainLike;
   resume(): Promise<void>;
   close(): Promise<void>;
 }
@@ -69,6 +76,9 @@ export class BufferedPCMPlayer implements PCMPlayer {
   private assembler = new PcmByteAssembler();
   private queue: Block[] = [];
   private sources: Scheduled[] = [];
+  private gain: BufferedGainLike | null = null;
+  private retiring: { gain: BufferedGainLike; sources: Scheduled[]; until: number } | null = null;
+  private replacementUntil = 0;
   private priming = true;
   private hasStarted = false;
   private scheduledUntil = 0;
@@ -121,6 +131,8 @@ export class BufferedPCMPlayer implements PCMPlayer {
   private async finishInit(ctx: BufferedAudioContextLike): Promise<void> {
     if (ctx.state === 'suspended' || ctx.state === 'interrupted') await ctx.resume();
     if (this.ctx !== ctx) return; // close/re-init while resume was pending
+    this.gain = ctx.createGain();
+    this.gain.connect(this.output ?? ctx.destination);
     this.state = 'ready';
     this.pump();
   }
@@ -167,6 +179,90 @@ export class BufferedPCMPlayer implements PCMPlayer {
     this.pump();
   }
 
+  replacePcm(audio: AudioFormat, chunks: ArrayBuffer[], fadeMs: number): boolean {
+    const ctx = this.ctx;
+    if (!ctx || !this.gain || this.state !== 'ready' || ctx.state !== 'running'
+      || ctx.currentTime < this.replacementUntil) return false;
+    const bytes = prepareReplacement(audio, chunks, fadeMs);
+    if (!bytes || bytes.byteLength / BYTES_PER_FRAME / audio.sampleRateHz > this.capacity) return false;
+    // Allocate/decode the destination before touching any outgoing state.
+    const assembler = new PcmByteAssembler();
+    const aligned = assembler.push(bytes);
+    const framesPerBlock = Math.floor(audio.sampleRateHz * BLOCK_SECONDS);
+    const staged: Scheduled[] = [];
+    let gain: BufferedGainLike | undefined;
+    let startsAt = 0;
+    let until = 0;
+    try {
+      gain = ctx.createGain();
+      gain.gain.setValueAtTime(0, ctx.currentTime);
+      for (let offset = 0; offset < aligned.length; offset += framesPerBlock * BYTES_PER_FRAME) {
+        const block = aligned.subarray(offset, offset + framesPerBlock * BYTES_PER_FRAME);
+        const source = this.createSource(ctx, block, block.length / BYTES_PER_FRAME, audio.sampleRateHz, gain);
+        staged.push({ source, start: 0, end: 0 });
+      }
+      // Choose the audio-clock boundary AFTER decoding, not before a long allocation.
+      startsAt = ctx.currentTime + this.lead;
+      until = startsAt + fadeMs / 1000;
+      gain.gain.setValueAtTime(0, startsAt);
+      gain.gain.linearRampToValueAtTime(1, until);
+      gain.connect(this.output ?? ctx.destination);
+      let at = startsAt;
+      let remaining = aligned.length / BYTES_PER_FRAME;
+      for (const entry of staged) {
+        const frames = Math.min(framesPerBlock, remaining);
+        entry.start = at;
+        entry.end = at + frames / audio.sampleRateHz;
+        entry.source.start(at);
+        at = entry.end;
+        remaining -= frames;
+      }
+    } catch {
+      for (const { source } of staged) { try { source.stop(); } catch { /* not started */ } source.disconnect(); }
+      gain?.disconnect();
+      return false;
+    }
+    this.refresh();
+    // Only one old lane may exist. refresh() has reclaimed the prior completed fade.
+    const oldGain = this.gain;
+    oldGain.gain.setValueAtTime(1, startsAt);
+    oldGain.gain.linearRampToValueAtTime(0, until);
+    const oldSources = this.sources;
+    for (const entry of oldSources) {
+      entry.source.onended = () => { if (this.ctx === ctx) this.refresh(); };
+      try { entry.source.stop(until); } catch { /* already ended */ }
+    }
+    this.retiring = { gain: oldGain, sources: oldSources, until };
+    this.gain = gain;
+    this.sources = staged;
+    this.queue = [];
+    this.assembler = assembler;
+    this.rate = audio.sampleRateHz;
+    this.startsAt = startsAt;
+    this.scheduledUntil = staged.at(-1)!.end;
+    this.replacementUntil = until;
+    this.priming = false;
+    this.hasStarted = true;
+    for (const entry of staged) entry.source.onended = () => { if (this.ctx === ctx) this.pump(); };
+    return true;
+  }
+
+  private createSource(ctx: BufferedAudioContextLike, bytes: Uint8Array, frames: number, rate: number, gain: BufferedGainLike): BufferedSourceLike {
+    const buffer = ctx.createBuffer(CHANNELS, frames, rate);
+    const interleaved = new Float32Array(frames * CHANNELS);
+    decodeS16le(bytes, interleaved);
+    for (let channel = 0; channel < CHANNELS; channel++) {
+      const output = buffer.getChannelData(channel);
+      for (let frame = 0; frame < frames; frame++) output[frame] = interleaved[frame * CHANNELS + channel]!;
+    }
+    const source = ctx.createBufferSource();
+    try {
+      source.buffer = buffer;
+      source.connect(gain as unknown as AudioNode);
+    } catch (error) { source.disconnect(); throw error; }
+    return source;
+  }
+
   private append(bytes: Uint8Array): void {
     const blockFrames = Math.max(1, Math.floor((this.rate || DEFAULT_SAMPLE_RATE_HZ) * BLOCK_SECONDS));
     let offset = 0;
@@ -208,6 +304,11 @@ export class BufferedPCMPlayer implements PCMPlayer {
   private refresh(): void {
     const ctx = this.ctx;
     if (!ctx) return;
+    if (this.retiring && ctx.currentTime >= this.retiring.until) {
+      for (const { source } of this.retiring.sources) { source.onended = null; source.disconnect(); }
+      this.retiring.gain.disconnect();
+      this.retiring = null;
+    }
     const remaining: Scheduled[] = [];
     for (const entry of this.sources) {
       if (entry.end <= ctx.currentTime) {
@@ -237,16 +338,7 @@ export class BufferedPCMPlayer implements PCMPlayer {
 
     while (this.queue.length && this.sources.length < PENDING_CHUNK_LIMIT) {
       const block = this.queue.shift()!;
-      const buffer = ctx.createBuffer(CHANNELS, block.frames, block.rate);
-      const interleaved = new Float32Array(block.frames * CHANNELS);
-      decodeS16le(block.bytes.subarray(0, block.frames * BYTES_PER_FRAME), interleaved);
-      for (let channel = 0; channel < CHANNELS; channel++) {
-        const output = buffer.getChannelData(channel);
-        for (let frame = 0; frame < block.frames; frame++) output[frame] = interleaved[frame * CHANNELS + channel]!;
-      }
-      const source = ctx.createBufferSource();
-      source.buffer = buffer;
-      source.connect(this.output ?? ctx.destination);
+      const source = this.createSource(ctx, block.bytes.subarray(0, block.frames * BYTES_PER_FRAME), block.frames, block.rate, this.gain!);
       const start = this.scheduledUntil;
       const end = start + block.frames / block.rate;
       this.sources.push({ source, start, end });
@@ -275,7 +367,7 @@ export class BufferedPCMPlayer implements PCMPlayer {
       underruns: this.underruns,
       chunksReceived: this.chunksReceived,
       droppedFrames: this.droppedFrames,
-      priming: this.priming || (this.ctx !== null && this.ctx.currentTime < this.startsAt),
+      priming: this.priming || (this.ctx !== null && this.ctx.currentTime < Math.max(this.startsAt, this.replacementUntil)),
       outputSampleRateHz: this.ctx?.sampleRate ?? 0,
       sourceSampleRateHz: this.rate,
     };
@@ -290,12 +382,16 @@ export class BufferedPCMPlayer implements PCMPlayer {
     if (ctx) ctx.onstatechange = null;
     this.analyser?.disconnect();
     this.analyser = this.output = null;
-    for (const { source } of this.sources) {
+    for (const { source } of [...this.sources, ...(this.retiring?.sources ?? [])]) {
       source.onended = null;
       try { source.stop(); } catch { /* already ended */ }
       source.disconnect();
     }
     this.sources = [];
+    this.gain?.disconnect();
+    this.retiring?.gain.disconnect();
+    this.gain = this.retiring = null;
+    this.replacementUntil = 0;
     this.queue = [];
     this.assembler.reset();
     this.priming = true;

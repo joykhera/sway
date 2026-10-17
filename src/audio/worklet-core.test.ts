@@ -45,6 +45,56 @@ function isAllZero(a: Float32Array): boolean {
 }
 
 describe('PcmWorkletCore', () => {
+  it('replaces a long queued stream with a unity-gain crossfade and counts only the destination', () => {
+    const core = makeCore({ prerollMs: 1 });
+    core.pushPcm(pcmConstant(RATE * 4, 8192));
+    core.render(128);
+    core.replacePcm(pcmConstant(RATE * 3, -8192), RATE, 250);
+    expect(core.getStats().bufferedMs).toBe(3000);
+    expect(core.getStats().priming).toBe(true);
+    const out = core.render(RATE / 4).slice();
+    expect(out[0]).toBe(.25);
+    expect(out[out.length - 1]).toBe(-.25);
+    expect(out[RATE / 4]).toBeCloseTo(0, 4);
+    expect(core.getStats()).toMatchObject({ priming: false, bufferedMs: 2750, underruns: 0 });
+    expect([...core.render(128)].every(sample => sample === -.25)).toBe(true);
+  });
+
+  it('resets byte carry and resampler across a format-changing replacement', () => {
+    const core = makeCore({ prerollMs: 1 });
+    core.pushPcm(pcmConstant(4800, 32767));
+    core.pushPcm(new Uint8Array([255, 127, 255]));
+    core.render(128);
+    core.replacePcm(pcmConstant(24000 * 3, -8192), 24000, 0);
+    expect(core.getStats().bufferedMs).toBeCloseTo(3000, 0);
+    expect([...core.render(128)].every(sample => sample === -.25)).toBe(true);
+    expect(core.getStats().priming).toBe(false);
+  });
+
+  it('measures the rendered 100 ms crossfade, then tracks the replacement signal', () => {
+    const core = makeCore({ prerollMs: 1 });
+    core.pushPcm(pcmConstant(RATE * 3, 8192));
+    core.render(128);
+    core.replacePcm(pcmConstant(RATE * 3, -8192), RATE, 100);
+    const out = core.render(RATE / 10).slice();
+    const rms = Math.sqrt(out.reduce((sum, sample) => sum + sample * sample, 0) / out.length);
+    expect(out[0]).toBe(.25);
+    expect(out.at(-1)).toBe(-.25);
+    expect(rms).toBeLessThan(.2); // Mixing opposite signs must not report either lane's .25 RMS.
+    expect(core.getStats().energyRms).toBeCloseTo(rms, 8);
+    expect(core.getStats()).toMatchObject({ chunksReceived: 1, priming: false });
+
+    core.replacePcm(pcmSine(RATE * 3, RATE, 880), RATE, 100);
+    for (let i = 0; i < 200; i++) core.render(128);
+    const stats = core.getStats();
+    expect(stats.pitchHz).toBeGreaterThan(800);
+    expect(stats.pitchHz).toBeLessThan(960);
+    expect(stats.brightnessHz).toBeGreaterThan(400);
+    expect(stats.brightnessHz).toBeLessThan(480);
+    expect(stats.energyRms).toBeGreaterThan(.4);
+    expect(stats.energyRms).toBeLessThan(.46);
+  });
+
   it('gates output with silence until prerollMs worth is buffered', () => {
     const core = makeCore(); // preroll 2400 frames
     core.pushPcm(pcmSine(2000));

@@ -65,6 +65,9 @@ export class PcmWorkletCore {
   private telemetryFramesTotal = 0;
   /** Sign (±1) of the last rendered left-channel sample, carried across renders. */
   private telemetryPrevSign = 1;
+  private fadeTail = new Float32Array(0);
+  private fadeFrame = 0;
+  private fadeFrames = 0;
 
   constructor(opts: {
     outputSampleRateHz?: number;
@@ -121,6 +124,20 @@ export class PcmWorkletCore {
     }
   }
 
+  /** The caller validates/prebuffers the destination before this atomic handoff. */
+  replacePcm(bytes: Uint8Array, sourceSampleRateHz: number, fadeMs: number): void {
+    const frames = Math.max(0, Math.round(this.outputRateHz * fadeMs / 1000));
+    // Capture exactly the outgoing audio that would have rendered next. A
+    // bounded tail replaces the whole old queue, including any byte carry.
+    const tail = frames ? this.render(frames).slice() : new Float32Array(0);
+    this.reset();
+    this.configure(sourceSampleRateHz);
+    this.pushPcm(bytes);
+    this.fadeTail = tail;
+    this.fadeFrames = frames;
+    this.fadeFrame = 0;
+  }
+
   /**
    * Produce `outFrames` interleaved stereo frames (returned array length is
    * `outFrames * CHANNELS`). While priming — before the first prerollMs' worth
@@ -151,6 +168,18 @@ export class PcmWorkletCore {
       out.subarray(got * CHANNELS).fill(0);
       this.underruns++;
       this.priming = true;
+    }
+    if (this.fadeFrame < this.fadeFrames) {
+      const count = Math.min(frames, this.fadeFrames - this.fadeFrame);
+      for (let i = 0; i < count; i++) {
+        const progress = this.fadeFrames <= 1 ? 1 : (this.fadeFrame + i) / (this.fadeFrames - 1);
+        for (let channel = 0; channel < CHANNELS; channel++) {
+          const index = i * CHANNELS + channel;
+          out[index] = this.fadeTail[(this.fadeFrame + i) * CHANNELS + channel]! * (1 - progress) + out[index]! * progress;
+        }
+      }
+      this.fadeFrame += count;
+      if (this.fadeFrame === this.fadeFrames) this.fadeTail = new Float32Array(0);
     }
     this.accumulateTelemetry(out, frames);
     return out;
@@ -243,7 +272,7 @@ export class PcmWorkletCore {
       underruns: this.underruns,
       droppedFrames: this.ring.droppedFrames,
       chunksReceived: this.chunksReceived,
-      priming: this.priming,
+      priming: this.priming || this.fadeFrame < this.fadeFrames,
       energyRms,
       brightnessHz,
       pitchHz,
@@ -266,5 +295,7 @@ export class PcmWorkletCore {
     this.telemetryCrossingsTotal = 0;
     this.telemetryFramesTotal = 0;
     this.telemetryPrevSign = 1;
+    this.fadeTail = new Float32Array(0);
+    this.fadeFrame = this.fadeFrames = 0;
   }
 }

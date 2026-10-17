@@ -143,6 +143,59 @@ const ready = { format: 'pcm_s16le', sampleRateHz: 48000, channels: 2 } as const
 // ── Tests ────────────────────────────────────────────────────────────────────
 
 describe('WorkletPCMPlayer', () => {
+  it('atomically replaces audio and ignores stale stats until the new fade renders', async () => {
+    const { player, nodes, contexts } = makeRig();
+    player.configure(ready);
+    await player.initializeFromUserGesture();
+    const node = nodes[0]!;
+    const oldSignal = { energyRms: 0.3, brightnessHz: 220, pitchHz: 440, chunksReceived: 4 };
+    const newSignal = { energyRms: 0.5, brightnessHz: 440, pitchHz: 880, chunksReceived: 1 };
+    node.emitStats({ bufferedMs: 8000, priming: false, underruns: 0, droppedFrames: 0, ...oldSignal });
+    const prepared = new ArrayBuffer(48000 * 4 * 3);
+    expect(player.replacePcm(ready, [prepared], 250)).toBe(true);
+    expect(contexts).toHaveLength(1);
+    expect(node.posted.at(-1)!.message).toMatchObject({ type: 'replace', fadeMs: 250, replacementId: 1 });
+    expect(player.getBufferedDurationMs()).toBe(3000);
+    expect(player.getStats().priming).toBe(true);
+    node.emitStats({ bufferedMs: 7900, priming: false, underruns: 0, droppedFrames: 0, ...oldSignal });
+    expect(player.getBufferedDurationMs()).toBe(3000);
+    expect(player.getStats().priming).toBe(true);
+    expect(player.getStats()).toMatchObject({ energyRms: 0, brightnessHz: 0, pitchHz: null, chunksReceived: 0 });
+    expect(player.replacePcm(ready, [prepared], 250)).toBe(false);
+    node.emitStats({ replacementId: 1, bufferedMs: 2900, priming: true, underruns: 0, droppedFrames: 0, ...newSignal });
+    expect(player.getStats().priming).toBe(true);
+    node.emitStats({ replacementId: 1, bufferedMs: 2700, priming: false, underruns: 0, droppedFrames: 0, ...newSignal });
+    expect(player.getStats().priming).toBe(false);
+    expect(player.getBufferedDurationMs()).toBe(2700);
+    expect(player.getStats()).toMatchObject(newSignal);
+    expect(player.replacePcm(ready, [prepared], 250)).toBe(true);
+    expect(node.posted.at(-1)!.message).toMatchObject({ replacementId: 2 });
+  });
+
+  it('rejects unready/invalid replacement or port failure without touching playback', async () => {
+    const { player, nodes, contexts } = makeRig();
+    const prepared = new ArrayBuffer(48000 * 4 * 3);
+    expect(player.replacePcm(ready, [prepared], 250)).toBe(false);
+    await player.initializeFromUserGesture();
+    const node = nodes[0]!;
+    node.emitStats({ bufferedMs: 5000, priming: false, underruns: 0, droppedFrames: 0,
+      energyRms: 0.3, brightnessHz: 220, pitchHz: 440, chunksReceived: 4 });
+    const before = node.posted.length;
+    expect(player.replacePcm({ ...ready, sampleRateHz: Infinity }, [prepared], 250)).toBe(false);
+    expect(player.replacePcm(ready, [new ArrayBuffer(4)], 250)).toBe(false);
+    expect(player.replacePcm(ready, [new ArrayBuffer(48000 * 4 * 13)], 250)).toBe(false);
+    expect(player.replacePcm(ready, [prepared], -1)).toBe(false);
+    contexts[0]!.setState('suspended');
+    expect(player.replacePcm(ready, [prepared], 250)).toBe(false);
+    contexts[0]!.setState('running');
+    expect(node.posted).toHaveLength(before);
+    const post = vi.spyOn(node.port, 'postMessage').mockImplementationOnce(() => { throw new Error('closed'); });
+    expect(player.replacePcm(ready, [prepared], 250)).toBe(false);
+    expect(player.getBufferedDurationMs()).toBe(5000);
+    expect(player.getStats().priming).toBe(false);
+    post.mockRestore();
+  });
+
   it('flushes configure + queued pcm in order after init', async () => {
     const { player, nodes } = makeRig();
     player.configure({ ...ready });

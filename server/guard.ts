@@ -1,5 +1,6 @@
 import { WEIGHT_MAX, WEIGHT_MIN } from '../src/shared/protocol.ts';
 import type { ClientMessage, StreamConfig, WeightedPrompt } from '../src/shared/protocol.ts';
+import { validPrefetchMs } from './prefetch.ts';
 
 import { MAX_PROMPTS } from '../src/shared/protocol.ts';
 export { MAX_PROMPTS };
@@ -26,12 +27,18 @@ export function validateClientMessage(data: unknown): GuardResult {
   switch (data.type) {
     case 'stop':
       return { ok: true, msg: { type: 'stop' } };
+    case 'resume':
+      return { ok: true, msg: { type: 'resume' } };
     case 'start': {
       const prompts = sanitizePrompts(data.prompts);
       if (typeof prompts === 'string') return fail(prompts);
       const config = sanitizeConfig(data.config);
       if (typeof config === 'string') return fail(config);
-      return { ok: true, msg: config ? { type: 'start', prompts, config } : { type: 'start', prompts } };
+      if (data.prefetchMs !== undefined && !validPrefetchMs(data.prefetchMs)) {
+        return fail('prefetchMs must be an integer in [3000, 8000]');
+      }
+      return { ok: true, msg: { type: 'start', prompts, ...(config ? { config } : {}),
+        ...(data.prefetchMs !== undefined ? { prefetchMs: data.prefetchMs as number } : {}) } };
     }
     case 'steer': {
       const rev = data.revision;

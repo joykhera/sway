@@ -190,6 +190,19 @@ describe('ThumbsControls', () => {
     expect(fillOf(up)).toBe(0);
   });
 
+  it('accepts a 100 ms cached transition with a synchronous fresh progress sample', () => {
+    vi.useFakeTimers();
+    const f = makeFake();
+    renderThumbs({ controller: f.controller, onVote: v => f.steer(0, v) });
+    const down = screen.getByLabelText(DOWN);
+    fireEvent.click(down);
+    act(() => vi.advanceTimersByTime(100));
+    f.steer(1, 'down');
+    expect(down.getAttribute('aria-busy')).toBeNull();
+    expect(fillOf(down)).toBe(1);
+    expect(live().textContent).toBe('now playing your change');
+  });
+
   it('ignores a stale p===1 right after a click', () => {
     const f = makeFake();
     renderThumbs({ controller: f.controller });
