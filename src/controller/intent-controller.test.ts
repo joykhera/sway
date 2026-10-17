@@ -85,6 +85,7 @@ describe('text intent controller', () => {
       expect(r.state.intent).toEqual(jazz); expect(r.state.status).toBe('playing'); expect(r.player.closed).toBe(0);
     }
     r.controller.stop();
+    expect(r.state.intentStatus).toBe('ready'); expect(r.state.intentMessage).toBeUndefined();
   });
 
   it('keeps thumbs received during interpretation and passes intent through later votes and freshness', async () => {

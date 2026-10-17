@@ -436,6 +436,7 @@ export class SessionController implements MusicSessionController {
 
   stop(): void {
     this.cancelIntentRequest();
+    this.publishIntent();
     if (this.state.status === 'idle' || this.state.status === 'stopped') return;
     this.runId++;
     this.rejected = undefined;
