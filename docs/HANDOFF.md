@@ -20,7 +20,7 @@
 | A: relay (`server/**`) | Done and **verified against live Lyria**: start → `ready` → binary PCM → steer → stop. MUSIC_MODE=mock gives a paced tone for keyless dev and tests. 69 tests pass. |
 | A: smoke test (`pnpm smoke`) | Works live. Results are in `docs/lyria-smoke-report.md`. All questions are answered except how long a steer takes to be heard, which needs a listening pass. |
 | A's plan / decisions | `docs/part-a-plan.md` |
-| D: controller + transport | **Done, on branch `feat/session-controller`** (not yet on `main`). `SessionController` (`src/controller`), `WebSocketTransport` (`src/transport`), contracts for `Learner`, `PCMPlayer`, `MusicSessionController` added to `protocol.ts`, plus unit and relay e2e tests (103 tests green with A's). See README for the wiring snippet. |
+| D: controller + transport | **Done and merged to `main`** (PR #1). `SessionController` (`src/controller`), `WebSocketTransport` (`src/transport`), contracts for `Learner`, `PCMPlayer`, `MusicSessionController` added to `protocol.ts`, plus unit and relay e2e tests (129 tests green across the repo). See README for the wiring snippet. |
 
 **Setup for everyone:** `pnpm install`, `cp .env.example .env`, add your **own** `GEMINI_API_KEY` from aistudio.google.com/apikey (each key belongs to a separate project, so each gets its own quota). Without a key, set `MUSIC_MODE=mock`.
 
