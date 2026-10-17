@@ -254,6 +254,23 @@ describe('target selection', () => {
     expect(groupChoices(result.target.features)).not.toEqual(groupChoices(pending.features));
     expectValidTarget(result.target);
   });
+
+  it('learned preferences influence selection among the same seeded candidates', () => {
+    let improved = 0;
+    for (let seed = 0; seed < 64; seed += 1) {
+      const state = createLearner(seed);
+      const target = initialTarget(state);
+      const favored = groups[0]!.find((id) => !target.features[id])!;
+      const liked = { ...state, scores: { ...state.scores, [favored]: 2 } };
+      const disliked = { ...state, scores: { ...state.scores, [favored]: -2 } };
+      const first = processVote({ state: liked, audible: target.features, currentTarget: target, vote: 'down' });
+      const second = processVote({ state: disliked, audible: target.features, currentTarget: target, vote: 'down' });
+      const difference = share(first.target.features, favored) - share(second.target.features, favored);
+      expect(difference).toBeGreaterThanOrEqual(0);
+      if (difference > 0) improved += 1;
+    }
+    expect(improved).toBeGreaterThan(0);
+  });
 });
 
 describe('passive evolution', () => {
@@ -287,6 +304,19 @@ describe('passive evolution', () => {
     const expected = evolveNoVote({ state, target });
     expect(evolveNoVote({ state, target })).toEqual(expected);
     expect(evolveNoVote({ state, target: reordered })).toEqual(expected);
+  });
+
+  it('does not become trapped in a short repeated-target cycle during passive listening', () => {
+    for (const seed of [...Array.from({ length: 32 }, (_, i) => i), 56]) {
+      const state = createLearner(seed);
+      let target = initialTarget(state);
+      const seen = new Set<string>();
+      for (let tick = 0; tick < 1000; tick += 1) {
+        target = evolveNoVote({ state, target });
+        seen.add(JSON.stringify(target.features));
+      }
+      expect(seen.size).toBeGreaterThan(950);
+    }
   });
 });
 
