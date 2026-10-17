@@ -1,0 +1,257 @@
+{
+  "design": "run2",
+  "outDir": "tools/selfimprove/runs/run2",
+  "finalGen": 0,
+  "finalHash": "fd953b10cd40",
+  "roundsCompleted": 3,
+  "cutoff": null,
+  "gates": {
+    "stageA": {
+      "margin": 0.03,
+      "ciLoAbove": 0
+    },
+    "stageB": {
+      "margin": 0.02,
+      "ciLoAbove": 0
+    }
+  },
+  "gen0ValA": 0.3274999999999998,
+  "finalValA": 0.3274999999999998,
+  "finalValB": null,
+  "wallSeconds": 1462,
+  "learnerValA": 0.30500000000000005,
+  "learnerValB": 0.35650000000000004,
+  "settings": {
+    "rounds": 3,
+    "nVariants": 3,
+    "trainPersonas": 12,
+    "trainReps": 1,
+    "valAPersonas": 40,
+    "valBPersonas": 40,
+    "valReps": 2,
+    "concurrency": 16,
+    "deadlineMinutes": 40,
+    "personaSeed": 7001,
+    "startDir": "/Users/4625labs/Workspace/Hackathons/crusoe-hackathon/sway-remote/tools/selfimprove/artifacts/",
+    "fastModel": "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B",
+    "strongModel": "nvidia/NVIDIA-Nemotron-3-Super-120B-A12B"
+  },
+  "llm": {
+    "advisor": {
+      "calls": 9457,
+      "cacheHits": 307,
+      "errors": 0,
+      "promptTokens": 7239366,
+      "completionTokens": 1413218,
+      "latencyMs": 17699433
+    },
+    "reviewer": {
+      "calls": 1,
+      "cacheHits": 2,
+      "errors": 0,
+      "promptTokens": 7509,
+      "completionTokens": 1211,
+      "latencyMs": 40730
+    },
+    "rewriter": {
+      "calls": 3,
+      "cacheHits": 0,
+      "errors": 0,
+      "promptTokens": 5805,
+      "completionTokens": 10058,
+      "latencyMs": 256217
+    }
+  },
+  "processWallSeconds": 1463,
+  "attempts": [
+    {
+      "round": 1,
+      "name": "anti-rep-novelty",
+      "hash": "6c8d92a0ca0c",
+      "rationale": "Prevent immediate repeats and encourage novel features by adding anti-repetition constraints to the advisor prompt and raising the novelty bonus and history window.",
+      "params": {
+        "advisorStartVote": 3,
+        "advisorEveryNVotes": 3,
+        "historyWindow": 24,
+        "candidateCount": 3,
+        "llmCandidateBonus": 0.05,
+        "noveltyBonus": 0.1,
+        "temperature": 0.4
+      },
+      "meanDiff": -0.013500000000000002,
+      "lo": -0.04750000000000003,
+      "hi": 0.02049999999999998,
+      "accept": false,
+      "adopted": false,
+      "reason": "stage A (valA): gain below margin 0.03"
+    },
+    {
+      "round": 1,
+      "name": "dislike-streak-immediate",
+      "hash": "e7cd5c455e76",
+      "rationale": "Add explicit guidance to vary after likes and avoid recently disliked features, while increasing advisor frequency and history window to catch streaks.",
+      "params": {
+        "advisorStartVote": 3,
+        "advisorEveryNVotes": 2,
+        "historyWindow": 18,
+        "candidateCount": 3,
+        "llmCandidateBonus": 0.05,
+        "noveltyBonus": 0.05,
+        "temperature": 0.4
+      },
+      "meanDiff": -0.0010000000000000015,
+      "lo": -0.02900000000000001,
+      "hi": 0.027499999999999997,
+      "accept": false,
+      "adopted": false,
+      "reason": "stage A (valA): gain below margin 0.03"
+    },
+    {
+      "round": 1,
+      "name": "bold-exploration",
+      "hash": "318aa98c3264",
+      "rationale": "Increase exploration by asking the advisor for more candidates, encouraging bolder combos, and adjusting the learner to trust its own estimates more while raising temperature for diversity.",
+      "params": {
+        "advisorStartVote": 3,
+        "advisorEveryNVotes": 3,
+        "historyWindow": 12,
+        "candidateCount": 5,
+        "llmCandidateBonus": -0.02,
+        "noveltyBonus": 0.15,
+        "temperature": 0.6
+      },
+      "meanDiff": -0.0015000000000000122,
+      "lo": -0.035500000000000004,
+      "hi": 0.03149999999999999,
+      "accept": false,
+      "adopted": false,
+      "reason": "stage A (valA): gain below margin 0.03"
+    },
+    {
+      "round": 2,
+      "name": "variant-a",
+      "hash": "cc372801ea0a",
+      "rationale": "Delay advisor activation to let the learner gather more signal, add a concrete anti‑repetition rule and a modest novelty bonus to encourage fresh features without destabilizing the learner.",
+      "params": {
+        "advisorStartVote": 5,
+        "advisorEveryNVotes": 3,
+        "historyWindow": 12,
+        "candidateCount": 3,
+        "llmCandidateBonus": 0,
+        "noveltyBonus": 0.08,
+        "temperature": 0.3
+      },
+      "meanDiff": 0.0095,
+      "lo": -0.021000000000000005,
+      "hi": 0.039500000000000014,
+      "accept": false,
+      "adopted": false,
+      "reason": "stage A (valA): gain below margin 0.03"
+    },
+    {
+      "round": 2,
+      "name": "variant-b",
+      "hash": "157f3928b276",
+      "rationale": "Consult the advisor on every vote to react quickly to taste shifts, ban immediate feature reuse, and penalize recently disliked features while relying more on the learner’s estimates.",
+      "params": {
+        "advisorStartVote": 3,
+        "advisorEveryNVotes": 1,
+        "historyWindow": 30,
+        "candidateCount": 3,
+        "llmCandidateBonus": -0.05,
+        "noveltyBonus": 0,
+        "temperature": 0.5
+      },
+      "meanDiff": -0.008499999999999997,
+      "lo": -0.03899999999999999,
+      "hi": 0.020500000000000008,
+      "accept": false,
+      "adopted": false,
+      "reason": "stage A (valA): gain below margin 0.03"
+    },
+    {
+      "round": 2,
+      "name": "variant-c",
+      "hash": "04e1977fd881",
+      "rationale": "Ask the advisor for more candidates each turn, bias toward under‑used features, and schedule a bolder exploration every third call to increase chance of discovering higher‑reward regions.",
+      "params": {
+        "advisorStartVote": 3,
+        "advisorEveryNVotes": 3,
+        "historyWindow": 18,
+        "candidateCount": 4,
+        "llmCandidateBonus": 0.02,
+        "noveltyBonus": 0.12,
+        "temperature": 0.45
+      },
+      "meanDiff": -0.008999999999999996,
+      "lo": -0.03850000000000002,
+      "hi": 0.020000000000000004,
+      "accept": false,
+      "adopted": false,
+      "reason": "stage A (valA): gain below margin 0.03"
+    },
+    {
+      "round": 3,
+      "name": "dislike-avoid-more-novelty",
+      "hash": "066f90972ef0",
+      "rationale": "Prevent the advisor from re‑using recently disliked features and increase the novelty reward so the learner is encouraged to try fresh combinations that avoid immediate boredom.",
+      "params": {
+        "advisorStartVote": 3,
+        "advisorEveryNVotes": 2,
+        "historyWindow": 18,
+        "candidateCount": 3,
+        "llmCandidateBonus": 0.05,
+        "noveltyBonus": 0.1,
+        "temperature": 0.4
+      },
+      "meanDiff": -0.010499999999999983,
+      "lo": -0.039,
+      "hi": 0.019000000000000006,
+      "accept": false,
+      "adopted": false,
+      "reason": "stage A (valA): gain below margin 0.03"
+    },
+    {
+      "round": 3,
+      "name": "more-candidates-diverse",
+      "hash": "29dcf58ca4fb",
+      "rationale": "Ask the advisor for more candidates each turn and raise the temperature to increase diversity, while lowering the advisor bonus so the learner can weigh its own estimates more heavily.",
+      "params": {
+        "advisorStartVote": 3,
+        "advisorEveryNVotes": 3,
+        "historyWindow": 12,
+        "candidateCount": 5,
+        "llmCandidateBonus": -0.02,
+        "noveltyBonus": 0.1,
+        "temperature": 0.6
+      },
+      "meanDiff": 0.008,
+      "lo": -0.01900000000000001,
+      "hi": 0.038500000000000006,
+      "accept": false,
+      "adopted": false,
+      "reason": "stage A (valA): gain below margin 0.03"
+    },
+    {
+      "round": 3,
+      "name": "adaptive-window",
+      "hash": "078c745a378e",
+      "rationale": "Enlarge the history window to detect longer‑term feature fatigue, delay advisor activation to let the learner warm up, and add a modest novelty bonus to reward genuinely new combos.",
+      "params": {
+        "advisorStartVote": 5,
+        "advisorEveryNVotes": 3,
+        "historyWindow": 24,
+        "candidateCount": 3,
+        "llmCandidateBonus": 0.03,
+        "noveltyBonus": 0.08,
+        "temperature": 0.35
+      },
+      "meanDiff": -0.0030000000000000035,
+      "lo": -0.031500000000000014,
+      "hi": 0.024,
+      "accept": false,
+      "adopted": false,
+      "reason": "stage A (valA): gain below margin 0.03"
+    }
+  ]
+}

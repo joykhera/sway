@@ -1,0 +1,59 @@
+{
+  "variants": [
+    {
+      "name": "variant-a",
+      "rationale": "Delay advisor activation to let the learner gather more signal, add a concrete anti‑repetition rule and a modest novelty bonus to encourage fresh features without destabilizing the learner.",
+      "bundle": {
+        "advisorPrompt": "You help choose the next musical direction for an instrumental music stream. You are given the listener's vote history (thumbs up/down on feature combinations) and the allowed feature vocabulary. Propose exactly three candidate combinations, each using only allowed feature IDs, different from each other. Prefer changing one or two features from a liked combination. Occasionally propose a bolder combination. Do not propose a combination that has appeared in the last 3 votes. When changing one or two features from a liked combo, ensure at least one of the changed features has not been used in the last 5 votes. Occasionally (≈1-in-4 proposals) submit a bolder combo that introduces a feature unseen in the last 10 votes. Reply with JSON only: {\"candidates\":[{\"features\":[\"id\", ...],\"why\":\"short reason\"}, ...]}\n",
+        "playbook": "- If a combination gets a thumbs‑up, vary at least one feature in the next proposal; repeating the same combo within two steps usually leads to a thumbs‑down.\n- Monitor feature‑level fatigue: if a feature appears in two consecutive liked votes, deprioritize it for the next advisor call.\n- Introduce a novel feature roughly every fourth proposal to keep the stream fresh.\n",
+        "params": {
+          "advisorStartVote": 5,
+          "advisorEveryNVotes": 3,
+          "historyWindow": 12,
+          "candidateCount": 3,
+          "llmCandidateBonus": 0,
+          "noveltyBonus": 0.08,
+          "temperature": 0.3
+        }
+      },
+      "warnings": []
+    },
+    {
+      "name": "variant-b",
+      "rationale": "Consult the advisor on every vote to react quickly to taste shifts, ban immediate feature reuse, and penalize recently disliked features while relying more on the learner’s estimates.",
+      "bundle": {
+        "advisorPrompt": "You help choose the next musical direction for an instrumental music stream. You are given the listener's vote history (thumbs up/down on feature combinations) and the allowed feature vocabulary. Propose exactly three candidate combinations, each using only allowed feature IDs, different from each other. Prefer changing one or two features from a liked combination. Occasionally propose a bolder combination. Never repeat any feature from the immediately previous vote. If the last vote was disliked, avoid all its features. When building from a liked combo, change at least two features, and ensure at least one new feature not seen in the last 10 votes. Every third proposal, propose a completely novel combo using features unseen in the last 15 votes. Reply with JSON only: {\"candidates\":[{\"features\":[\"id\", ...],\"why\":\"short reason\"}, ...]}\n",
+        "playbook": "- After any vote, refrain from reusing any feature from that vote in the very next proposal.\n- If a feature receives a thumbs‑down, avoid it for the next two advisor calls.\n- When a liked combo appears, change at least two features to explore new territory.\n",
+        "params": {
+          "advisorStartVote": 3,
+          "advisorEveryNVotes": 1,
+          "historyWindow": 30,
+          "candidateCount": 3,
+          "llmCandidateBonus": -0.05,
+          "noveltyBonus": 0,
+          "temperature": 0.5
+        }
+      },
+      "warnings": []
+    },
+    {
+      "name": "variant-c",
+      "rationale": "Ask the advisor for more candidates each turn, bias toward under‑used features, and schedule a bolder exploration every third call to increase chance of discovering higher‑reward regions.",
+      "bundle": {
+        "advisorPrompt": "You help choose the next musical direction for an instrumental music stream. You are given the listener's vote history (thumbs up/down on feature combinations) and the allowed feature vocabulary. Propose exactly three candidate combinations, each using only allowed feature IDs, different from each other. Prefer changing one or two features from a liked combination. Occasionally propose a bolder combination. Track feature usage in the last 12 votes. Prioritize features with lowest usage. When modifying a liked combo, change one or two features, picking at least one from the bottom quartile of usage. Occasionally (≈1-in-3) propose a bolder combo that adds a feature with zero usage in the window. Reply with JSON only: {\"candidates\":[{\"features\":[\"id\", ...],\"why\":\"short reason\"}, ...]}\n",
+        "playbook": "- Keep a running count of how often each feature appears in the recent window; favor the least‑used ones when crafting new combos.\n- When adjusting a liked combo, replace one feature with one from the bottom 25 % of usage.\n- Every third advisor call, submit a bolder combination that introduces at least one completely unused feature.\n",
+        "params": {
+          "advisorStartVote": 3,
+          "advisorEveryNVotes": 3,
+          "historyWindow": 18,
+          "candidateCount": 4,
+          "llmCandidateBonus": 0.02,
+          "noveltyBonus": 0.12,
+          "temperature": 0.45
+        }
+      },
+      "warnings": []
+    }
+  ],
+  "rejected": []
+}

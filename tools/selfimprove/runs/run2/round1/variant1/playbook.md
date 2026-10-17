@@ -1,0 +1,2 @@
+- If a combination receives a thumbs‑up, immediately vary at least one feature in the next proposal; repeating the same combo within two steps usually leads to a thumbs‑down.
+- Track feature‑level dislike streaks; if a feature has been disliked in two consecutive votes, deprioritize it for the next advisor call.

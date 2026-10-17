@@ -1,0 +1,3 @@
+- If a combination gets a thumbs‑up, vary at least one feature in the next proposal; repeating the same combo within two steps usually leads to a thumbs‑down.
+- Monitor feature‑level fatigue: if a feature appears in two consecutive liked votes, deprioritize it for the next advisor call.
+- Introduce a novel feature roughly every fourth proposal to keep the stream fresh.

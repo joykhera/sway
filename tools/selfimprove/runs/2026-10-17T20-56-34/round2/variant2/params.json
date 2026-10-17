@@ -1,0 +1,9 @@
+{
+  "advisorStartVote": 3,
+  "advisorEveryNVotes": 2,
+  "historyWindow": 15,
+  "candidateCount": 3,
+  "llmCandidateBonus": 0.05,
+  "noveltyBonus": 0.07,
+  "temperature": 0.6
+}

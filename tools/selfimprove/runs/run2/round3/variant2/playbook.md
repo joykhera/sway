@@ -1,0 +1,3 @@
+- Having multiple alternatives increases the chance that at least one matches the listener’s current taste; keep a shortlist of the top‑scoring candidates from the advisor.
+- If the learner’s top‑scoring candidate differs from the advisor’s best, favor the learner’s choice unless the advisor’s candidate includes a novel feature not seen in the last 8 votes.
+- Periodically (every 5 advisor calls) force inclusion of a feature that has not been used in the last 12 votes to encourage exploration.

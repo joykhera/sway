@@ -1,0 +1,1 @@
+- Do not propose any combination that appeared in the last two votes, regardless of like/dislike. If all valid candidates violate this, fall back to changing exactly two features from the most recent liked combination in the window.

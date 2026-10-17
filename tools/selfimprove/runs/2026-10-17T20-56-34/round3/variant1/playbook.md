@@ -1,0 +1,2 @@
+- Do not propose any combination that appeared in the last three votes. If all valid candidates violate this, fall back to changing at least two features from the most recent liked combo.
+- Do not propose a combination that appeared in the previous vote if it was liked; if it was disliked, change at least two features before re‑using it.

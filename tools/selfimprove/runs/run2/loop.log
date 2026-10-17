@@ -1,0 +1,28 @@
+[   0s] run2 dir tools/selfimprove/runs/run2; rounds=3 variants=3 train=12x1 valA=40x2 valB=40x2 concurrency=16 gate A>=0.03 B>=0.02 deadline=40 min
+[   0s] reference: deterministic learner valA 30.5%, valB 35.7%
+[   0s] round 1: train run of gen0
+[  55s] round 1: diagnosis written (3345 chars); rewriting
+[ 222s] round 1: incumbent gen0 valA 32.7%
+[ 287s] round 1: stage A "anti-rep-novelty" valA 31.4% gain -1.4 CI [-4.8, +2.0] -> fail (gain below margin 0.03)
+[ 424s] round 1: stage A "dislike-streak-immediate" valA 32.6% gain -0.1 CI [-2.9, +2.7] -> fail (gain below margin 0.03)
+[ 540s] round 1: stage A "bold-exploration" valA 32.6% gain -0.2 CI [-3.6, +3.1] -> fail (gain below margin 0.03)
+[ 540s] round 1: no variant passed stage A; kept gen0
+[ 540s] round 2: train run of gen0
+[ 540s] round 2: diagnosis written (3345 chars); rewriting
+[ 626s] round 2: incumbent gen0 valA 32.7%
+[ 700s] round 2: stage A "variant-a" valA 33.7% gain +0.9 CI [-2.1, +4.0] -> fail (gain below margin 0.03)
+[ 954s] round 2: stage A "variant-b" valA 31.9% gain -0.8 CI [-3.9, +2.1] -> fail (gain below margin 0.03)
+[1064s] round 2: stage A "variant-c" valA 31.8% gain -0.9 CI [-3.9, +2.0] -> fail (gain below margin 0.03)
+[1064s] round 2: no variant passed stage A; kept gen0
+[1064s] round 3: train run of gen0
+[1064s] round 3: diagnosis written (3345 chars); rewriting
+[1148s] round 3: incumbent gen0 valA 32.7%
+[1274s] round 3: stage A "dislike-avoid-more-novelty" valA 31.7% gain -1.0 CI [-3.9, +1.9] -> fail (gain below margin 0.03)
+[1385s] round 3: stage A "more-candidates-diverse" valA 33.5% gain +0.8 CI [-1.9, +3.9] -> fail (gain below margin 0.03)
+[1463s] round 3: stage A "adaptive-window" valA 32.4% gain -0.3 CI [-3.2, +2.4] -> fail (gain below margin 0.03)
+[1463s] round 3: no variant passed stage A; kept gen0
+[1463s] done: final gen0 (3 complete rounds); valA learner 30.5%, gen0 32.7%, final 32.7%
+[1463s] llm advisor: 9457 calls (+307 cache hits, 0 errors), 7239366+1413218 tokens
+[1463s] llm reviewer: 1 calls (+2 cache hits, 0 errors), 7509+1211 tokens
+[1463s] llm rewriter: 3 calls (+0 cache hits, 0 errors), 5805+10058 tokens
+[1463s] next (lead only, once): npx tsx --env-file-if-exists=.env tools/selfimprove/final.ts --test-set run2 --run tools/selfimprove/runs/run2

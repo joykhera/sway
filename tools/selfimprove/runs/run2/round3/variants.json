@@ -1,0 +1,59 @@
+{
+  "variants": [
+    {
+      "name": "dislike-avoid-more-novelty",
+      "rationale": "Prevent the advisor from re‑using recently disliked features and increase the novelty reward so the learner is encouraged to try fresh combinations that avoid immediate boredom.",
+      "bundle": {
+        "advisorPrompt": "You help choose the next musical direction for an instrumental music stream. You are given the listener's vote history (thumbs up/down on feature combinations) and the allowed feature vocabulary. Propose exactly three candidate combinations, each using only allowed feature IDs, different from each other. Do not propose a combination that has appeared in the last 3 votes. Do not include any feature that received a thumbs‑down in the last 2 votes. When changing one or two features from a liked combination, ensure at least one of the changed features has not been used in the last 5 votes. Occasionally (≈1‑in‑4 proposals) submit a bolder combo that introduces a feature unseen in the last 10 votes. Reply with JSON only: {\"candidates\":[{\"features\":[\"id\", ...],\"why\":\"short reason\"}, ...]}\n",
+        "playbook": "- If a combination receives a thumbs‑up, immediately vary at least one feature in the next proposal; repeating the same combo within two steps usually leads to a thumbs‑down.\n- Track feature‑level dislike streaks; if a feature has been disliked in two consecutive votes, deprioritize it for the next advisor call.\n- When the advisor introduces a new feature, give it a chance to appear in at least two future proposals before discarding it, to allow the learner to assess its value.\n",
+        "params": {
+          "advisorStartVote": 3,
+          "advisorEveryNVotes": 2,
+          "historyWindow": 18,
+          "candidateCount": 3,
+          "llmCandidateBonus": 0.05,
+          "noveltyBonus": 0.1,
+          "temperature": 0.4
+        }
+      },
+      "warnings": []
+    },
+    {
+      "name": "more-candidates-diverse",
+      "rationale": "Ask the advisor for more candidates each turn and raise the temperature to increase diversity, while lowering the advisor bonus so the learner can weigh its own estimates more heavily.",
+      "bundle": {
+        "advisorPrompt": "You help choose the next musical direction for an instrumental music stream. You are given the listener's vote history (thumbs up/down on feature combinations) and the allowed feature vocabulary. Propose exactly five candidate combinations, each using only allowed feature IDs, different from each other. Prefer changing one or two features from a liked combination. Occasionally propose a bolder combination. Reply with JSON only: {\"candidates\":[{\"features\":[\"id\", ...],\"why\":\"short reason\"}, ...]}\n",
+        "playbook": "- Having multiple alternatives increases the chance that at least one matches the listener’s current taste; keep a shortlist of the top‑scoring candidates from the advisor.\n- If the learner’s top‑scoring candidate differs from the advisor’s best, favor the learner’s choice unless the advisor’s candidate includes a novel feature not seen in the last 8 votes.\n- Periodically (every 5 advisor calls) force inclusion of a feature that has not been used in the last 12 votes to encourage exploration.\n",
+        "params": {
+          "advisorStartVote": 3,
+          "advisorEveryNVotes": 3,
+          "historyWindow": 12,
+          "candidateCount": 5,
+          "llmCandidateBonus": -0.02,
+          "noveltyBonus": 0.1,
+          "temperature": 0.6
+        }
+      },
+      "warnings": []
+    },
+    {
+      "name": "adaptive-window",
+      "rationale": "Enlarge the history window to detect longer‑term feature fatigue, delay advisor activation to let the learner warm up, and add a modest novelty bonus to reward genuinely new combos.",
+      "bundle": {
+        "advisorPrompt": "You help choose the next musical direction for an instrumental music stream. You are given the listener's vote history (thumbs up/down on feature combinations) and the allowed feature vocabulary. Propose exactly three candidate combinations, each using only allowed feature IDs, different from each other. Do not propose a combination that has appeared in the last 3 votes. When changing one or two features from a liked combination, ensure at least one of the changed features has not been used in the last 5 votes. Occasionally propose a bolder combination. Reply with JSON only: {\"candidates\":[{\"features\":[\"id\", ...],\"why\":\"short reason\"}, ...]}\n",
+        "playbook": "- A longer voting history helps detect fatigue; if a feature appears in more than half of the last 12 votes, consider it overused and avoid it in the next advisor round.\n- After a disliked combination, wait at least one vote before re‑using any of its features.\n- When the advisor’s proposals are all similar to the recent liked combo, deliberately swap in a feature from the least‑used half of the vocabulary to diversify.\n",
+        "params": {
+          "advisorStartVote": 5,
+          "advisorEveryNVotes": 3,
+          "historyWindow": 24,
+          "candidateCount": 3,
+          "llmCandidateBonus": 0.03,
+          "noveltyBonus": 0.08,
+          "temperature": 0.35
+        }
+      },
+      "warnings": []
+    }
+  ],
+  "rejected": []
+}

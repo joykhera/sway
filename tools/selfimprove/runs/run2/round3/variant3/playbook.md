@@ -1,0 +1,3 @@
+- A longer voting history helps detect fatigue; if a feature appears in more than half of the last 12 votes, consider it overused and avoid it in the next advisor round.
+- After a disliked combination, wait at least one vote before re‑using any of its features.
+- When the advisor’s proposals are all similar to the recent liked combo, deliberately swap in a feature from the least‑used half of the vocabulary to diversify.

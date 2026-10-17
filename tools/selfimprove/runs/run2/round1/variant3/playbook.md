@@ -1,0 +1,2 @@
+- When the advisor proposes a bolder combo (new features), it often uncovers higher‑reward regions; keep track of which novel features receive likes.
+- If a feature has not appeared in any liked combo for the last 12 votes, consider it a candidate for exploration.

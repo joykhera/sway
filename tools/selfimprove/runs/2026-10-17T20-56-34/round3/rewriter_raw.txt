@@ -1,0 +1,51 @@
+
+
+{
+  "variants": [
+    {
+      "name": "anti_repeat_3vote",
+      "rationale": "Extend anti-repeat memory to the last three votes to block short-loop boredom, and increase advisor frequency to catch repeats sooner.",
+      "advisor_prompt": "You help choose the next musical direction for an instrumental music stream.\nYou are given the listener's vote history (thumbs up/down on feature combinations) and the allowed feature vocabulary.\nPropose exactly three candidate combinations, each using only allowed feature IDs, different from each other.\nDo not propose any combination that appeared in the last three votes.\nPrefer changing one or two features from a liked combination. Occasionally propose a bolder combination.",
+      "playbook": "- Do not propose any combination that appeared in the last three votes. If all valid candidates violate this, fall back to changing at least two features from the most recent liked combo.\n- Do not propose a combination that appeared in the previous vote if it was liked; if it was disliked, change at least two features before re‑using it.",
+      "params": {
+        "advisorStartVote": 3,
+        "advisorEveryNVotes": 1,
+        "historyWindow": 20,
+        "candidateCount": 3,
+        "llmCandidateBonus": 0.05,
+        "noveltyBonus": 0.0,
+        "temperature": 0.4
+      }
+    },
+    {
+      "name": "novelty_temp_moderate",
+      "rationale": "Slightly increase novelty bonus and temperature to encourage exploration while raising LLM influence to reduce invalid outputs.",
+      "advisor_prompt": "You help choose the next musical direction for an instrumental music stream.\nYou are given the listener's vote history (thumbs up/down on feature combinations) and the allowed feature vocabulary.\nPropose exactly three candidate combinations, each using only allowed feature IDs, different from each other.\nPrefer changing one or two features from a liked combination. Occasionally propose a bolder combination.",
+      "playbook": "- Do not propose a combination that appeared in the previous vote if it was liked; if it was disliked, change at least two features before re‑using it.",
+      "params": {
+        "advisorStartVote": 3,
+        "advisorEveryNVotes": 3,
+        "historyWindow": 15,
+        "candidateCount": 3,
+        "llmCandidateBonus": 0.1,
+        "noveltyBonus": 0.04,
+        "temperature": 0.5
+      }
+    },
+    {
+      "name": "two_feature_shift_explicit",
+      "rationale": "Force the advisor to change exactly one or two features from the most recent liked (or disliked) combo, eliminating zero‑change repeats and overly bold jumps.",
+      "advisor_prompt": "You help choose the next musical direction for an instrumental music stream.\nYou are given the listener's vote history (thumbs up/down on feature combinations) and the allowed feature vocabulary.\nPropose exactly three candidate combinations, each using only allowed feature IDs, different from each other.\nFor each candidate, start from the most recent liked combination in the window and change exactly one or two features (never zero or three).\nIf no liked combination exists in the window, start from the most recent disliked combination and change exactly one or two features.",
+      "playbook": "- Do not propose a combination that appeared in the previous vote if it was liked; if it was disliked, change at least two features before re‑using it.",
+      "params": {
+        "advisorStartVote": 3,
+        "advisorEveryNVotes": 2,
+        "historyWindow": 15,
+        "candidateCount": 3,
+        "llmCandidateBonus": 0.0,
+        "noveltyBonus": 0.02,
+        "temperature": 0.5
+      }
+    }
+  ]
+}

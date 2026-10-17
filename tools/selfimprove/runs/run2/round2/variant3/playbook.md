@@ -1,0 +1,3 @@
+- Keep a running count of how often each feature appears in the recent window; favor the least‑used ones when crafting new combos.
+- When adjusting a liked combo, replace one feature with one from the bottom 25 % of usage.
+- Every third advisor call, submit a bolder combination that introduces at least one completely unused feature.

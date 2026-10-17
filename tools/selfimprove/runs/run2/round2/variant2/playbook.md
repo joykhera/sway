@@ -1,0 +1,3 @@
+- After any vote, refrain from reusing any feature from that vote in the very next proposal.
+- If a feature receives a thumbs‑down, avoid it for the next two advisor calls.
+- When a liked combo appears, change at least two features to explore new territory.

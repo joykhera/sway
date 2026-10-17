@@ -1,0 +1,2 @@
+- After a liked combination, always change at least one feature in the next suggestion; repeating the same combo within two steps usually results in a thumbs‑down.
+- If a feature receives two consecutive dislikes, treat it as fatigued and skip it for the following advisor call.

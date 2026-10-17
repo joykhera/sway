@@ -1,0 +1,51 @@
+
+
+{
+  "variants": [
+    {
+      "name": "novelty_boost",
+      "rationale": "Increase noveltyBonus to reward new features and slightly raise temperature to encourage exploration, expecting to break repetitive loops.",
+      "advisor_prompt": "You help choose the next musical direction for an instrumental music stream.\nYou are given the listener's vote history (thumbs up/down on feature combinations) and the allowed feature vocabulary.\nPropose exactly three candidate combinations, each using only allowed feature IDs, different from each other.\nPrefer changing one or two features from a liked combination. Occasionally propose a bolder combination that introduces a feature not present in the last 6 votes.",
+      "playbook": "# Playbook (rewritten by the self-improvement loop; starts empty)\n\n- (no lessons yet)",
+      "params": {
+        "advisorStartVote": 3,
+        "advisorEveryNVotes": 3,
+        "historyWindow": 12,
+        "candidateCount": 3,
+        "llmCandidateBonus": 0.05,
+        "noveltyBonus": 0.12,
+        "temperature": 0.5
+      }
+    },
+    {
+      "name": "avoid_immediate_repeat",
+      "rationale": "Add a playbook rule to prevent immediate repetition of liked combos and increase advisor frequency to catch repeats sooner.",
+      "advisor_prompt": "You help choose the next musical direction for an instrumental music stream.\nYou are given the listener's vote history (thumbs up/down on feature combinations) and the allowed feature vocabulary.\nPropose exactly three candidate combinations, each using only allowed feature IDs, different from each other.\nPrefer changing one or two features from a liked combination. Occasionally propose a bolder combination.",
+      "playbook": "# Playbook (rewritten by the self-improvement loop; starts empty)\n\n- Do not propose a combination that appeared in the previous vote if it was liked; if it was disliked, change at least two features before re‑using it.",
+      "params": {
+        "advisorStartVote": 3,
+        "advisorEveryNVotes": 2,
+        "historyWindow": 15,
+        "candidateCount": 3,
+        "llmCandidateBonus": 0.05,
+        "noveltyBonus": 0,
+        "temperature": 0.4
+      }
+    },
+    {
+      "name": "bold_exploration",
+      "rationale": "Prompt the LLM to seek bold alternatives and increase its influence via higher llmCandidateBonus and temperature, while keeping novelty bonus low to rely on LLM creativity.",
+      "advisor_prompt": "You help choose the next musical direction for an instrumental music stream.\nYou are given the listener's vote history (thumbs up/down on feature combinations) and the allowed feature vocabulary.\nPropose exactly three candidate combinations, each using only allowed feature IDs, different from each other.\nPrefer changing one or two features from a liked combination, but also consider changing features from a disliked combo to avoid repetition. Occasionally propose a bolder combination that introduces a feature not present in the last 6 votes.",
+      "playbook": "# Playbook (rewritten by the self-improvement loop; starts empty)\n\n- (no lessons yet)",
+      "params": {
+        "advisorStartVote": 3,
+        "advisorEveryNVotes": 3,
+        "historyWindow": 12,
+        "candidateCount": 3,
+        "llmCandidateBonus": 0.10,
+        "noveltyBonus": 0.02,
+        "temperature": 0.7
+      }
+    }
+  ]
+}
