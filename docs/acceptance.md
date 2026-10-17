@@ -12,10 +12,10 @@
 
 | # | Test | Pass criteria | Result |
 | --- | --- | --- | --- |
-| 1 | Cold start | Fresh tab, tap Start, music with no setup. Record time-to-audio (A measured about 5.8 s to `ready`) | |
-| 2 | Downvote | Noticeable change within 5–15 s, no hard cut. **Record the measured seconds**, and report honestly if missed | |
-| 3 | Upvote | Liked qualities emphasize gradually, no restart | |
-| 4 | Rapid votes | 👎 three times during a ramp: no stall, no ignored click, final direction matches the last vote | |
+| 1 | Cold start | Fresh tab, tap Start, music with no setup. Record time-to-audio (A measured about 5.8 s to `ready`) | **Pass.** About 5-6 s to first sound, most runs (live Lyria, Pavan, 2026-10-17) |
+| 2 | Downvote | Noticeable change within 5–15 s, no hard cut. **Record the measured seconds**, and report honestly if missed | **Pass.** About 8-9 s to a clearly noticeable change, smooth with no hard cut. Pavan, 2026-10-17, subjective stopwatch timing, range not three separate readings |
+| 3 | Upvote | Liked qualities emphasize gradually, no restart | **Pass.** Style gradually leans into what was playing, no restart. Pavan, 2026-10-17 |
+| 4 | Rapid votes | 👎 three times during a ramp: no stall, no ignored click, final direction matches the last vote | **Pass.** Three quick 👎: buttons responsive, only the first vote carried `evidenceWeight` 1 (dedupe working). Pavan, 2026-10-17 |
 | 5 | Passive listening | 10+ min: slow variation, no score updates (check debug log shows no `vote` events) | |
 | 6 | Reconnect | After an upstream drop (or the ~10 min cap) audio resumes within ~10 s without refresh and without double-playing; status shows `reconnecting` then `playing` | |
 | 7 | Refresh | Scores reset, new random start | |
