@@ -5,6 +5,7 @@ import { createBrowserPreferencesStore } from '../preferences/index.ts';
 import type { PreferencesStore } from '../preferences/types.ts';
 import type { ListeningPurpose, PCMPlayer } from '../shared/protocol.ts';
 import { WebSocketTransport, defaultMusicUrl } from '../transport/index.ts';
+import { interpretMusicIntent, type IntentInterpreter } from './intent-client.ts';
 import { SessionController, type ControllerConfig } from './index.ts';
 
 export type BrowserControllerOptions = {
@@ -15,6 +16,7 @@ export type BrowserControllerOptions = {
   config?: Partial<ControllerConfig>;
   preferences?: PreferencesStore | false;
   lookahead?: boolean;
+  interpretIntent?: IntentInterpreter | false;
 };
 
 export function createBrowserController(opts: BrowserControllerOptions = {}): SessionController {
@@ -27,6 +29,7 @@ export function createBrowserController(opts: BrowserControllerOptions = {}): Se
     purpose: opts.purpose,
     config: opts.config,
     lookahead: opts.lookahead ?? true,
+    interpretIntent: opts.interpretIntent === false ? undefined : opts.interpretIntent ?? interpretMusicIntent,
     preferences: opts.preferences === false ? undefined : opts.preferences ?? createBrowserPreferencesStore(),
     restoreState: (value, purpose) => isAdaptiveState(value) && value.purpose === purpose ? value : undefined,
     // Dev-only: every vote logs the audible-blend estimate, useful when measuring downvote response time.

@@ -44,7 +44,7 @@ describe('start', () => {
     await c.start();
     const states: SessionState[] = [];
     c.subscribe((s) => states.push(s));
-    expect(states[0]).toEqual({ status: 'error', lastError: 'Audio could not start: blocked' });
+    expect(states[0]).toMatchObject({ status: 'error', lastError: 'Audio could not start: blocked' });
     expect(relay.transports).toHaveLength(0);
   });
 
@@ -238,7 +238,7 @@ describe('reconnect', () => {
       await vi.advanceTimersByTimeAsync(wait);
     }
     relay.last.drop();
-    expect(states.at(-1)).toEqual({ status: 'error', lastError: 'Could not reconnect to the music service' });
+    expect(states.at(-1)).toMatchObject({ status: 'error', lastError: 'Could not reconnect to the music service' });
     await vi.advanceTimersByTimeAsync(60_000);
     expect(relay.transports).toHaveLength(6);
   });
@@ -249,7 +249,7 @@ describe('server errors', () => {
     const { relay, player, states } = await boot();
     relay.last.serverMessage({ type: 'error', code: 'bad_message', message: 'nope', retryable: false });
     await vi.advanceTimersByTimeAsync(60_000);
-    expect(states.at(-1)).toEqual({ status: 'error', lastError: 'nope' });
+    expect(states.at(-1)).toMatchObject({ status: 'error', lastError: 'nope' });
     expect(relay.transports).toHaveLength(1);
     expect(relay.last.closed).toBe(true);
     expect(player.closed).toBe(1);

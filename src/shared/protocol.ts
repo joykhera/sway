@@ -1,3 +1,4 @@
+import type { MusicIntent } from './intent.ts';
 // Application protocol between browser and relay (NOT Google's wire protocol).
 // Owned by D after the initial scaffold; changes need a small PR approved by affected owners.
 // Browser-safe: no Node imports.
@@ -41,10 +42,11 @@ export type ErrorCode =
 // Audio chunks from server are raw BINARY WebSocket frames, not ServerMessage.
 
 export const MUSIC_WS_PATH = '/api/music';
+export const MAX_PROMPT_COUNT = 10;
 export const WEIGHT_MIN = 0.1;
 export const WEIGHT_MAX = 2.0;
 /** Max weighted prompts per client message — the relay guard rejects longer lists. */
-export const MAX_PROMPTS = 10;
+export const MAX_PROMPTS = MAX_PROMPT_COUNT;
 
 // ---- Learner contract (implemented by C in src/learner, consumed by D) ----
 
@@ -62,7 +64,7 @@ export type Target = {
   prompts: WeightedPrompt[];
   /** Set by the adaptive learner: how it answered the latest vote/evolve (issue #9 surfaces it). */
   lastDecision?: {
-    kind: 'initial' | 'hold' | 'redirect' | 'variation' | 'probe';
+    kind: 'initial' | 'hold' | 'redirect' | 'variation' | 'probe' | 'intent';
     reason: string;
     phase: string;
     step: number;
@@ -73,7 +75,9 @@ export type Target = {
 
 export interface Learner {
   createLearner(seed: number, purpose?: ListeningPurpose): LearnerState;
-  initialTarget(state: LearnerState): Target;
+  initialTarget(state: LearnerState, intent?: import('./intent').MusicIntent): Target;
+  // Apply or clear session context; this must not create preference evidence.
+  applyIntent?(args: { state: LearnerState; currentTarget: Target; intent?: import('./intent').MusicIntent }): Target;
   processVote(args: {
     state: LearnerState;
     audible: FeatureBlend;
@@ -83,11 +87,12 @@ export interface Learner {
     evidenceWeight?: number;
     // A recent explicitly rejected audible blend; a later Like can prefer the change.
     comparison?: { previous: FeatureBlend };
+    intent?: import('./intent').MusicIntent;
   }): { state: LearnerState; target: Target };
   // Must not change state.scores. Silence is not feedback.
-  evolveNoVote(args: { state: LearnerState; target: Target; step?: number }): Target;
+  evolveNoVote(args: { state: LearnerState; target: Target; step?: number; intent?: import('./intent').MusicIntent }): Target;
   // One step toward a feature the listener picked. Must not change state (not a vote).
-  nudge?(args: { state: LearnerState; target: Target; feature: string }): Target;
+  nudge?(args: { state: LearnerState; target: Target; feature: string; intent?: MusicIntent }): Target;
 }
 
 // ---- Playback contract (implemented by B in src/audio, consumed by D) ----
@@ -166,7 +171,7 @@ export type StreamLevels = {
 /** How the learner responded to the latest vote (from `Target.lastDecision`). */
 export type VoteDecision = {
   vote: Vote;
-  kind: 'initial' | 'hold' | 'redirect' | 'variation' | 'probe';
+  kind: 'initial' | 'hold' | 'redirect' | 'variation' | 'probe' | 'intent';
   reason: string;
   phase: string;
   at: number;
@@ -182,12 +187,18 @@ export type SessionState = {
   purpose?: ListeningPurpose;
   memory?: 'loading' | 'ready' | 'saving' | 'unavailable';
   savedVotes?: number;
-
+  intent?: MusicIntent;
+  intentStatus?: 'idle' | 'loading' | 'ready' | 'clarify' | 'unsupported' | 'error';
+  intentMessage?: string;
+  intentAvailable?: boolean;
+  intentText?: string;
 };
 
 export interface MusicSessionController {
   // Optional pre-session setup; persistent controllers restore separate memory per purpose.
   setPurpose?(purpose: ListeningPurpose): void;
+  interpretText?(text: string): Promise<void>;
+  clearIntent?(): void;
   resetPreferences?(): Promise<void>;
   exportFeedback?(): Promise<string>;
   // Visualizer inputs: the output spectrum and the blend estimated to be audible now.
