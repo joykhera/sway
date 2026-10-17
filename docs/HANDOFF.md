@@ -79,7 +79,7 @@
 | No vote | Slowly evolve within current style; **do not** interpret silence as liking or disliking |
 | Musical scope | Broad instrumental space: ambient, lo-fi, jazz, electronic, classical; instruments, moods, textures |
 | Exploration | Mostly change one or two characteristics; occasionally try a much different combination; stay close to positively rated styles |
-| Persistence | **Session only**; refresh/exit resets preferences. No user accounts or DB |
+| Persistence | ~~Session only~~ **Changed 2026-10-17 (decision: Pavan, via PR #10; Joy and Xueming to confirm):** preferences are saved **locally in the browser (IndexedDB, per listening purpose)** and restored on refresh. No server storage, no accounts. A raw per-click feedback log (up to 10,000 records, exportable) is also kept locally, which supersedes the earlier "no listening logs" rule for local browser storage only. There is a reset path (`resetPreferences()`) |
 | Deployment | **Hosted music API**, no self-hosted music model or GPUs. The relay runs **locally** (`127.0.0.1`) and each dev uses their own key. No hosted deploy for the MVP |
 | Multiuser sharing | Defer cross-user reuse/caching. For MVP, one Lyria session per tester is simpler |
 | Runtime general-purpose LLM | **Not required for baseline**. Treat LLM-guided exploration as an optional controlled experiment, not a launch dependency |
@@ -87,7 +87,7 @@
 
 ### What is explicitly OUT of scope
 
-Sign-in, subscription/billing, user profiles, preference persistence, track library, cross-user reuse, permanent logs of listening behavior, skip, like history, text prompting, editing, export, cross-fades between different tracks, recommender embeddings, training/fine-tuning a foundation model, multi-agent orchestration, social features, playlists, native apps, moderation dashboard, complex observability.
+Sign-in, subscription/billing, user profiles, server-side preference persistence, track library, cross-user reuse, server-side logs of listening behavior, skip, like history, text prompting, editing, export, cross-fades between different tracks, recommender embeddings, training/fine-tuning a foundation model, multi-agent orchestration, social features, playlists, native apps, moderation dashboard, complex observability.
 
 ### Critical distinction
 
@@ -451,7 +451,7 @@ Useful research context:
 4. **Rapid votes:** Press 👎 three times rapidly while a transition is in progress; no stalls or ignored clicks, and final target reflects newest feedback.
 5. **Passive listening:** Leave music on for at least 10 minutes; slow variation occurs without explicit reward updates.
 6. ~~**Mobile**~~ Out of scope for the MVP. Instead, **Reconnect:** after an upstream drop (or the ~10 min cap), audio resumes within ~10 s without a page refresh and without double-playing.
-7. **Refresh:** Clears scores and returns to randomized state.
+7. **Refresh:** ~~Clears scores~~ **Updated:** saved taste is restored from browser storage; after `resetPreferences()` (or clearing site data) it returns to a randomized start.
 8. **Security:** API key is absent from bundled JS, browser requests and error text; excessive unauthenticated streaming is blocked.
 
 ### Success metric for first experiment
@@ -487,7 +487,7 @@ Potential later research metric: compare blind, equal-duration clips sampled nea
 5. Over ~8 seconds, controller sends stepped prompt updates while audio continues. Perceptible response target is 5–15 seconds; measure it.
 6. User presses 👍 mid-change. Controller uses the latest audible estimate, reinforces the present features, and redirects ramp to a stronger version of that mixture without restarting.
 7. User stops voting. Music slowly varies within the current style; scores stay unchanged.
-8. Refresh tab. Session preferences reset to zero.
+8. Refresh tab. ~~Session preferences reset to zero.~~ Saved preferences are restored from the browser (see the Persistence row); reset clears them.
 
 If all eight work with a real Lyria connection, the MVP is ready for a small qualitative test.
 

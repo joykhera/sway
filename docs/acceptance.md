@@ -18,12 +18,12 @@
 | 4 | Rapid votes | 👎 three times during a ramp: no stall, no ignored click, final direction matches the last vote | **Pass.** Three quick 👎: buttons responsive, only the first vote carried `evidenceWeight` 1 (dedupe working). Pavan, 2026-10-17 |
 | 5 | Passive listening | 10+ min: slow variation, no score updates (check debug log shows no `vote` events) | **Pass.** 10+ min passive listen with slow variation, as reported by Pavan, 2026-10-17 (no measurements taken) |
 | 6 | Reconnect | After an upstream drop (or the ~10 min cap) audio resumes within ~10 s without refresh and without double-playing; status shows `reconnecting` then `playing` | **Pass.** Recovery after the upstream drop / 10-min cap worked, as reported by Pavan, 2026-10-17 (no timing recorded) |
-| 7 | Refresh | Scores reset, new random start | **Pass.** Reported by Pavan, 2026-10-17 |
+| 7 | Refresh / saved taste | Vote a few times, refresh, tap Start: music starts from the saved taste, not a fresh random mix (DevTools, Application, IndexedDB, `sway-preferences` shows the profile). If the UI has a reset control, reset, refresh, and confirm a fresh random start | **Original test (fresh start on refresh) passed on the pre-PR-#10 build.** Needs a re-run against the new expectation on latest `main` |
 | 8 | Security | Key absent from bundled JS, network panel and error text; beyond `MAX_STREAMS` the relay refuses (relay binds 127.0.0.1) | **Pass.** Reported by Pavan, and independently checked by D on a production build of the branch source: neither `GEMINI_API_KEY` nor `CRUSOE_API_KEY` (value or name) appears anywhere in the bundled output. Not checked: relay stream cap under load |
 
 Note: Lyria hard-caps sessions at 10:00 (confirmed, see `docs/lyria-smoke-report.md`; expect about 5 s of silence at each cap). The relay reconnects upstream itself (`reconnecting`, then a fresh `ready`); the controller keeps its ramp state and the player must reconfigure without double-playing.
 
-> **Build caveat (D):** the manual results above were taken on a build from before PR #10 (directional preferences and saved browser profiles). That PR adds about 200 lines to the controller and stores preferences in IndexedDB, so a refresh no longer necessarily resets preferences (test 7 as written) and the controller has new behaviour. Re-run tests 2, 4, 6 and 7 on the latest `main` before the final demo. The handoff's "session only, refresh resets preferences" rule needs a team decision.
+> **Build caveat (D):** the manual results above were taken on a build from before PR #10 (directional preferences and saved browser profiles). **Decision (Pavan, 2026-10-17): keep persistence.** Test 7 therefore changed meaning (see row 7). Re-run tests 2, 4, 6 and 7 on the latest `main` before the final demo. Joy and Xueming to confirm the decision.
 
 ## Measuring the downvote response (test 2)
 
