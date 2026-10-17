@@ -47,7 +47,8 @@
 - Controller handles repeated `ready`, relay-side `reconnecting`, `prompt_filtered` (stream keeps playing, retargets without learning), retryable errors (new socket, backoff, restarts from latest target) and non-retryable errors (status `error`).
 - Revisions: the controller keeps counting across reconnects (always increasing, which the reset-on-`start` rule allows).
 - Checked against A's relay in mock mode (`tests/e2e/relay.e2e.test.ts`). **Not yet done:** the live Lyria run and the measured downvote latency, which need B's player and C's learner.
-- **Blocked on:** C (`src/learner` must satisfy `Learner` in `protocol.ts`) and B (`src/audio` must satisfy `PCMPlayer`). Neither has pushed yet. Tests use fakes from `tests/e2e/harness.ts`; reuse them.
+- **C's learner is on `main` and works with the controller (Checkpoint 2 passed):** `tests/e2e/learner.integration.test.ts` drives it through 200 simulated votes. Every prompt set is valid (weights within 0.1–2.0, never empty), revisions strictly increase, and runs are reproducible per seed.
+- **Blocked on:** B (`src/audio` must satisfy `PCMPlayer`; nothing pushed yet). Until then tests use the fake player in `tests/e2e/harness.ts`; reuse it. Live Lyria and the downvote latency measurement wait on B.
 
 **Action items by owner:**
 - **B:** (1) The jitter buffer must hold **≥2.5–3 s** before playback starts. Audio arrives in 2 s blocks, so 0.5–1.5 s will underrun. (2) `ready` can arrive **again** after `reconnecting`; reconfigure without double-playing. (3) Drop the mobile checks.
