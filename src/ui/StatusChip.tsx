@@ -12,6 +12,7 @@ const LABELS: Record<KnownStatus, string> = {
   reconnecting: 'reconnecting…',
   unavailable: 'temporarily unavailable',
   stopped: 'stopped',
+  error: 'something went wrong',
 };
 
 /** Small top-left session indicator. Unknown status strings render verbatim. */

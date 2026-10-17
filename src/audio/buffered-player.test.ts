@@ -98,7 +98,7 @@ describe('BufferedPCMPlayer', () => {
     expect(player.getBufferedDurationMs()).toBe(0);
     await player.initializeFromUserGesture();
     const ctx = contexts[0]!;
-    expect(ctx.sources).toHaveLength(0); // only 2 s, below 3 s preroll
+    expect(ctx.sources).toHaveLength(0); // only 2 s, below the initial preroll
     player.enqueuePcm(pcm(96000, -32768, 32767));
     expect(ctx.sources).toHaveLength(16);
     expect(player.getBufferedDurationMs()).toBeCloseTo(4000);
@@ -156,7 +156,7 @@ describe('BufferedPCMPlayer', () => {
     player.enqueuePcm(pcm(48000));
     expect(player.getStats().priming).toBe(true);
     const before = ctx.sources.length;
-    player.enqueuePcm(pcm(24000));
+    player.enqueuePcm(pcm(36000)); // 1.75 s total reaches the shared re-prime threshold
     expect(ctx.sources.length).toBeGreaterThan(before);
     expect(ctx.sources[before]!.startAt).toBe(3);
     expect(player.getStats()).toMatchObject({ priming: false, underruns: 1 });

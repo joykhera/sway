@@ -18,8 +18,8 @@ Pipeline: `enqueuePcm(bytes)` → byte assembler (chunks may split mid-frame; le
 
 | Constant | Value | Rationale |
 |---|---|---|
-| `PREROLL_MS` | 750 | Output stays silent until this much decoded audio is buffered at start. Handoff hypothesis 0.5–1.5 s; starting at the midpoint, tuned against real Lyria jitter later. |
-| `REPRIME_MS` | 300 | After an underrun, re-prime with less than the initial preroll — recovering quickly beats deep padding. |
+| `PREROLL_MS` | 2750 | Output stays silent until this much decoded audio is buffered at start. Measured: Lyria delivers ~2 s chunks every ~2 s at ~1× realtime (lyria-smoke-report.md), so the initial preroll must clear roughly one full block plus jitter — the handoff's 0.5–1.5 s hypothesis would underrun. |
+| `REPRIME_MS` | 1750 | After an underrun, re-prime with a bit less than the initial preroll — recovering quickly beats deep padding. |
 | `RING_CAPACITY_MS` | 20 000 | R9: Lyria generates "as fast as possible", so bursts are the normal case. 20 s absorbs them; past capacity the ring drops the **oldest** frames — stale audio is steer latency against the 5–15 s target. |
 | `STATS_INTERVAL_MS` | 100 | Worklet→main stats cadence. Fine enough for D's audible-blend estimate, cheap over `postMessage`. |
 | `PENDING_CHUNK_LIMIT` | 256 | Main-thread queue while init/configure is pending (e.g. chunks arrive before the Start gesture). Bounds memory; oldest dropped beyond it. |

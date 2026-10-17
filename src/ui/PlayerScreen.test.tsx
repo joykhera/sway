@@ -67,6 +67,38 @@ describe('PlayerScreen — pre-start view', () => {
     expect(f.start).toHaveBeenCalledTimes(1);
   });
 
+  it('error shows the pre-start view with the lastError text and a working Start button', () => {
+    const f = makeFake({
+      status: 'error',
+      lastError: 'Could not reconnect to the music service',
+    });
+    render(<PlayerScreen controller={f.controller} />);
+    expect(screen.getByText('sway')).toBeTruthy();
+    expect(screen.getByText('Could not reconnect to the music service')).toBeTruthy();
+    // live-session chrome stays hidden — no thumbs, no "end session"
+    expect(screen.queryByLabelText(UP)).toBeNull();
+    expect(screen.queryByLabelText(DOWN)).toBeNull();
+    expect(screen.queryByRole('button', { name: 'end session' })).toBeNull();
+    // Start is the way back — start() accepts 'error'
+    fireEvent.click(screen.getByRole('button', { name: 'start listening' }));
+    expect(f.start).toHaveBeenCalledTimes(1);
+  });
+
+  it('error without lastError still shows a fallback message', () => {
+    const f = makeFake({ status: 'error' });
+    render(<PlayerScreen controller={f.controller} />);
+    expect(screen.getByText('something went wrong')).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'start listening' })).toBeTruthy();
+  });
+
+  it('arrow keys do not vote while in error state', () => {
+    const f = makeFake({ status: 'error', lastError: 'quota exhausted' });
+    render(<PlayerScreen controller={f.controller} />);
+    fireEvent.keyDown(window, { key: 'ArrowUp' });
+    fireEvent.keyDown(window, { key: 'ArrowDown' });
+    expect(f.vote).not.toHaveBeenCalled();
+  });
+
   it('arrow keys do not vote while idle', () => {
     const f = makeFake({ status: 'idle' });
     render(<PlayerScreen controller={f.controller} />);
@@ -158,7 +190,7 @@ describe('PlayerScreen — active session view', () => {
     async (status) => {
       const f = makeFake({ status });
       render(<PlayerScreen controller={f.controller} />);
-      await act(async () => {}); // flush the subscribe → emit → re-render cycle
+      await act(async () => { }); // flush the subscribe → emit → re-render cycle
       const up = screen.getByLabelText(UP) as HTMLButtonElement;
       const down = screen.getByLabelText(DOWN) as HTMLButtonElement;
       expect(up.disabled).toBe(false);
@@ -170,7 +202,7 @@ describe('PlayerScreen — active session view', () => {
   it('clicking thumbs votes synchronously (up then down)', async () => {
     const f = makeFake({ status: 'playing' });
     render(<PlayerScreen controller={f.controller} />);
-    await act(async () => {});
+    await act(async () => { });
     fireEvent.click(screen.getByLabelText(UP));
     expect(f.vote).toHaveBeenCalledTimes(1);
     expect(f.vote).toHaveBeenLastCalledWith('up');
@@ -182,7 +214,7 @@ describe('PlayerScreen — active session view', () => {
   it('three rapid clicks produce three vote calls', async () => {
     const f = makeFake({ status: 'playing' });
     render(<PlayerScreen controller={f.controller} />);
-    await act(async () => {});
+    await act(async () => { });
     const up = screen.getByLabelText(UP);
     fireEvent.click(up);
     fireEvent.click(up);
@@ -193,7 +225,7 @@ describe('PlayerScreen — active session view', () => {
   it('shows the mapped label plus lastError text when unavailable', async () => {
     const f = makeFake({ status: 'unavailable', lastError: 'relay offline' });
     render(<PlayerScreen controller={f.controller} />);
-    await act(async () => {});
+    await act(async () => { });
     expect(screen.getByText('temporarily unavailable')).toBeTruthy();
     expect(screen.getByText('relay offline')).toBeTruthy();
   });
@@ -201,14 +233,14 @@ describe('PlayerScreen — active session view', () => {
   it('renders an unknown status verbatim in the chip', async () => {
     const f = makeFake({ status: 'buffering_hard' });
     render(<PlayerScreen controller={f.controller} />);
-    await act(async () => {});
+    await act(async () => { });
     expect(screen.getByText('buffering_hard')).toBeTruthy();
   });
 
   it('ArrowUp / ArrowDown vote while a session is active', async () => {
     const f = makeFake({ status: 'playing' });
     render(<PlayerScreen controller={f.controller} />);
-    await act(async () => {});
+    await act(async () => { });
     fireEvent.keyDown(window, { key: 'ArrowUp' });
     fireEvent.keyDown(window, { key: 'ArrowDown' });
     expect(f.vote).toHaveBeenCalledTimes(2);
@@ -219,7 +251,7 @@ describe('PlayerScreen — active session view', () => {
   it('"end session" calls stop()', async () => {
     const f = makeFake({ status: 'playing' });
     render(<PlayerScreen controller={f.controller} />);
-    await act(async () => {});
+    await act(async () => { });
     fireEvent.click(screen.getByRole('button', { name: 'end session' }));
     expect(f.stop).toHaveBeenCalledTimes(1);
   });
@@ -245,7 +277,7 @@ describe('PlayerScreen — active session view', () => {
   it('unmount unsubscribes from the controller', async () => {
     const f = makeFake({ status: 'playing' });
     const { unmount } = render(<PlayerScreen controller={f.controller} />);
-    await act(async () => {});
+    await act(async () => { });
     expect(f.listenerCount()).toBe(1);
     unmount();
     expect(f.listenerCount()).toBe(0);

@@ -9,7 +9,14 @@ export type { ListeningPurpose, Vote };
 /** `status` is intentionally an open string; the UI labels known values and shows unknown ones verbatim. */
 export type SessionUiState = { status: string; lastError?: string };
 
-export type KnownStatus = 'idle' | 'connecting' | 'playing' | 'reconnecting' | 'unavailable' | 'stopped';
+export type KnownStatus =
+  | 'idle'
+  | 'connecting'
+  | 'playing'
+  | 'reconnecting'
+  | 'unavailable'
+  | 'stopped'
+  | 'error';
 
 export interface MusicSessionController {
   /** Optional pre-session setup. Changing purpose starts a fresh preference session. */
