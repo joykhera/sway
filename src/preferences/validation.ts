@@ -1,3 +1,4 @@
+import { INTENT_LIMITS, parseMusicIntent } from '../shared/intent.ts';
 import type { ListeningPurpose } from '../shared/protocol';
 import type { FeedbackRecord, SavedProfile } from './types';
 
@@ -63,6 +64,12 @@ function numericMap(value: unknown, nonnegative: boolean): boolean {
     key.length > 0 && key.length <= 128 && finite(weight) && (!nonnegative || weight >= 0));
 }
 
+function intentFields(value: JsonRecord): boolean {
+  return (!('intent' in value) || parseMusicIntent(value.intent) !== null)
+    && (!('intentText' in value) || (typeof value.intentText === 'string'
+      && value.intentText.length <= INTENT_LIMITS.text && 'intent' in value));
+}
+
 function target(value: unknown): boolean {
   return record(value) && numericMap(value.features, true) && Array.isArray(value.prompts)
     && value.prompts.length > 0 && value.prompts.length <= 64
@@ -76,7 +83,7 @@ export function snapshotProfile(value: unknown): SavedProfile {
     || !numericMap(copy.state.scores, false) || !Number.isSafeInteger(copy.state.votes)
     || (copy.state.votes as number) < 0 || !Number.isSafeInteger(copy.state.seed)
     || (copy.state.seed as number) < 0 || (copy.state.seed as number) > 0xffff_ffff
-    || ('purpose' in copy.state && copy.state.purpose !== copy.purpose)) {
+    || ('purpose' in copy.state && copy.state.purpose !== copy.purpose) || !intentFields(copy)) {
     throw new TypeError('Invalid saved preference profile');
   }
   return copy as SavedProfile;
@@ -89,7 +96,8 @@ export function snapshotFeedback(value: unknown): FeedbackRecord {
     || (copy.vote !== 'up' && copy.vote !== 'down') || !numericMap(copy.audible, true)
     || ('previous' in copy && !numericMap(copy.previous, true))
     || !finite(copy.evidenceWeight) || copy.evidenceWeight < 0 || copy.evidenceWeight > 1
-    || !target(copy.targetBefore) || !target(copy.targetAfter)) {
+    || !target(copy.targetBefore) || !target(copy.targetAfter) || !intentFields(copy)
+    || ('intentAppliedToAudible' in copy && typeof copy.intentAppliedToAudible !== 'boolean')) {
     throw new TypeError('Invalid saved feedback record');
   }
   return copy as FeedbackRecord;
