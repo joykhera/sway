@@ -22,6 +22,7 @@ type FakeCtx = AudioContextLike & {
   resumes: number;
   closes: number;
   modules: string[];
+  analysers: FakeAnalyser[];
   setState(state: string): void;
 };
 
@@ -32,12 +33,22 @@ type FakeCtxOptions = {
   addModuleGate?: Promise<void>;
 };
 
+class FakeAnalyser {
+  fftSize = 0;
+  smoothingTimeConstant = 1;
+  readonly connections: unknown[] = [];
+  disconnects = 0;
+  connect(destination: unknown) { this.connections.push(destination); }
+  disconnect() { this.disconnects++; }
+}
+
 function makeFakeCtx(opts: FakeCtxOptions = {}): FakeCtx {
   const ctx = {
     calls: [] as string[],
     resumes: 0,
     closes: 0,
     modules: [] as string[],
+    analysers: [] as FakeAnalyser[],
     sampleRate: opts.sampleRate ?? 48000,
     state: opts.state ?? 'running',
     destination: {} as AudioNode,
@@ -48,6 +59,11 @@ function makeFakeCtx(opts: FakeCtxOptions = {}): FakeCtx {
         ctx.modules.push(url);
         return opts.addModuleGate ?? Promise.resolve();
       },
+    },
+    createAnalyser: () => {
+      const analyser = new FakeAnalyser();
+      ctx.analysers.push(analyser);
+      return analyser as unknown as AnalyserNode;
     },
     resume: () => {
       ctx.calls.push('resume');
@@ -344,5 +360,33 @@ describe('WorkletPCMPlayer', () => {
     });
     expect(typeof player.initializeFromUserGesture).toBe('function');
     expect(typeof player.close).toBe('function');
+  });
+});
+
+describe('output tap', () => {
+  it('routes the worklet through an analyser and exposes it via getAnalyser', async () => {
+    const { player, contexts, nodes } = makeRig();
+    player.configure({ ...ready });
+    await player.initializeFromUserGesture();
+    const analyser = contexts[0]!.analysers[0]!;
+    expect(analyser.fftSize).toBe(2048);
+    expect(analyser.smoothingTimeConstant).toBe(0.5);
+    expect(analyser.connections).toEqual([contexts[0]!.destination]);
+    expect(nodes[0]!.connections).toEqual([analyser]);
+    expect(player.getAnalyser()).toBe(analyser);
+    await player.close();
+    expect(analyser.disconnects).toBe(1);
+    expect(player.getAnalyser()).toBeNull();
+  });
+
+  it('rebuilds the tap on re-init', async () => {
+    const { player, contexts } = makeRig();
+    await player.initializeFromUserGesture();
+    await player.close();
+    await player.initializeFromUserGesture();
+    expect(contexts).toHaveLength(2);
+    expect(contexts[1]!.analysers).toHaveLength(1);
+    expect(player.getAnalyser()).toBe(contexts[1]!.analysers[0]);
+    await player.close();
   });
 });

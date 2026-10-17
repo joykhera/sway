@@ -74,6 +74,8 @@ export class FakePlayer implements PCMPlayer {
   closed = 0;
   bufferedMs = 0;
   initFails: Error | undefined;
+  /** Set to fake a visualizer tap; null = a context without `createAnalyser`. */
+  analyser: AnalyserNode | null = null;
   async initializeFromUserGesture() {
     if (this.initFails) throw this.initFails;
     this.initialized++;
@@ -81,6 +83,7 @@ export class FakePlayer implements PCMPlayer {
   configure(a: AudioFormat) { this.configured.push(a); }
   enqueuePcm() { this.chunks++; }
   getBufferedDurationMs() { return this.bufferedMs; }
+  getAnalyser() { return this.analyser; }
   async close() { this.closed++; }
 }
 

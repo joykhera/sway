@@ -97,6 +97,8 @@ export interface PCMPlayer {
   getBufferedDurationMs(): number;
   /** Latest diagnostics snapshot (live telemetry + readiness), optional for test/alternative players. */
   getStats?(): PCMPlayerStats;
+  // Spectrum tap of the player's output, for the visualizer.
+  getAnalyser?(): AnalyserNode | null;
   close(): Promise<void>;
 }
 
@@ -182,6 +184,13 @@ export interface MusicSessionController {
   setPurpose?(purpose: ListeningPurpose): void;
   resetPreferences?(): Promise<void>;
   exportFeedback?(): Promise<string>;
+  // Visualizer inputs: the output spectrum and the blend estimated to be audible now.
+  getAnalyser?(): AnalyserNode | null;
+  getAudibleFeatures?(): FeatureBlend;
+  // Taste and moments: learner scores, and liked moments to return to (never votes).
+  getTaste?(): Record<string, number>;
+  captureMoment?(): Target | null;
+  recallMoment?(moment: Target): void;
   start(): Promise<void>;
   vote(v: Vote): void; // synchronous, never locked out
   stop(): void;

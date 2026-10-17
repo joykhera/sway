@@ -456,3 +456,68 @@ describe('vote responsiveness (issue #9)', () => {
     c.stop();
   });
 });
+
+describe('taste and moments', () => {
+  it('captures the heard prompts and steers back to them without a vote', async () => {
+    const { relay, controller, calls } = await boot();
+    const ambient = controller.captureMoment();
+    expect(ambient?.prompts).toEqual([{ text: 'ambient', weight: 1 }]);
+    controller.vote('down');
+    await vi.advanceTimersByTimeAsync(8000);
+    expect(relay.last.steers.at(-1)!.prompts).toEqual([{ text: 'jazz', weight: 1 }]);
+    controller.recallMoment(ambient!);
+    await vi.advanceTimersByTimeAsync(8000);
+    expect(relay.last.steers.at(-1)!.prompts).toEqual([{ text: 'ambient', weight: 1 }]);
+    expect(calls.vote).toHaveLength(1);
+  });
+
+  it('has no moment to capture before playback', () => {
+    const c = new SessionController({ learner: fakeLearner().learner, player: new FakePlayer(), createTransport: fakeRelay().create });
+    expect(c.captureMoment()).toBeNull();
+  });
+
+  it('has no moment once the session has stopped', async () => {
+    const { controller } = await boot();
+    controller.stop();
+    expect(controller.captureMoment()).toBeNull();
+  });
+
+  it('exposes a copy of the learned scores', async () => {
+    const { controller } = await boot();
+    controller.vote('up');
+    const taste = controller.getTaste();
+    expect(taste).toEqual({ ambient: 1 });
+    taste.ambient = 99;
+    expect(controller.getTaste()).toEqual({ ambient: 1 });
+  });
+
+  it('getAudibleFeatures estimates the heard blend without consuming it', async () => {
+    const { player, controller, calls } = await boot();
+    controller.vote('down');
+    await vi.advanceTimersByTimeAsync(4000);
+    player.bufferedMs = 3000;
+    // Same estimate the vote path would make: what was sent ~3 s ago.
+    expect(controller.getAudibleFeatures()).toEqual({ ambient: 0.75, jazz: 0.25 });
+    // Read-only: the next vote attributes the same blend — the cursor was not consumed.
+    controller.vote('up');
+    expect(calls.vote[1]!.audible).toEqual({ ambient: 0.75, jazz: 0.25 });
+  });
+
+  it('recallMoment is a steer, not a vote: no decision, no learner call', async () => {
+    const { controller, calls, states } = await boot();
+    const ambient = controller.captureMoment();
+    controller.recallMoment(ambient!);
+    expect(calls.vote).toHaveLength(0);
+    expect(states.at(-1)!.decision).toBeUndefined();
+    controller.stop();
+  });
+
+  it('exposes the player analyser tap, or null when the player has none', async () => {
+    const { controller, player } = await boot();
+    expect(controller.getAnalyser()).toBeNull();
+    const analyser = { fftSize: 2048 } as unknown as AnalyserNode;
+    player.analyser = analyser;
+    expect(controller.getAnalyser()).toBe(analyser);
+    controller.stop();
+  });
+});

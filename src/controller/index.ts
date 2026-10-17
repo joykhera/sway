@@ -673,13 +673,59 @@ export class SessionController implements MusicSessionController {
 
   // Best guess of what the listener hears: the newest blend we sent early enough to have cleared the buffer.
   private estimateAudible(): FeatureBlend {
-    const cutoff = this.now() - this.deps.player.getBufferedDurationMs() - this.cfg.generationLatencyMs;
     // A growing queue cannot make already heard music become unheard again.
-    if (this.hasAudiblePlayback()) this.audibleCursor = Math.max(this.audibleCursor, cutoff);
+    if (this.hasAudiblePlayback()) this.audibleCursor = Math.max(this.audibleCursor, this.audibleCutoff());
+    this.heard = this.pickHeard(this.audibleCursor);
+    return this.heard?.features ?? this.sentFeatures;
+  }
+
+  private audibleCutoff(): number {
+    return this.now() - this.deps.player.getBufferedDurationMs() - this.cfg.generationLatencyMs;
+  }
+
+  private pickHeard(cursor: number): Sent | undefined {
     let pick = this.heard ?? this.history[0];
-    for (const h of this.history) if (h.at <= this.audibleCursor && (!pick || h.at >= pick.at)) pick = h;
-    this.heard = pick;
-    return pick?.features ?? this.sentFeatures;
+    for (const h of this.history) if (h.at <= cursor && (!pick || h.at >= pick.at)) pick = h;
+    return pick;
+  }
+
+  /** Read-only twin of estimateAudible for the visualizer: never moves the vote-attribution cursor. */
+  getAudibleFeatures(): FeatureBlend {
+    const cursor = this.hasAudiblePlayback() ? Math.max(this.audibleCursor, this.audibleCutoff()) : this.audibleCursor;
+    return this.pickHeard(cursor)?.features ?? this.sentFeatures;
+  }
+
+  /** Spectrum of what is playing, for the visualizer. Null before init and after close. */
+  getAnalyser(): AnalyserNode | null {
+    return this.deps.player.getAnalyser?.() ?? null;
+  }
+
+  /** The learner's current per-feature scores, for showing what it has learned. */
+  getTaste(): Record<string, number> {
+    return { ...this.learnerState.scores };
+  }
+
+  /** What is audible right now, as a target that can be returned to later. Null when nothing is playing. */
+  captureMoment(): Target | null {
+    if (!this.canHear()) return null;
+    const cursor = this.hasAudiblePlayback() ? Math.max(this.audibleCursor, this.audibleCutoff()) : this.audibleCursor;
+    const heard = this.pickHeard(cursor);
+    return heard?.prompts ? { features: { ...heard.features }, prompts: heard.prompts.map((p) => ({ ...p })) } : null;
+  }
+
+  /**
+   * Steer back to a captured moment. The same prompts give a similar sound, not
+   * the same audio. Not a vote: the learner's state is untouched.
+   */
+  recallMoment(moment: Target): void {
+    if (!this.canHear() || moment.prompts.length === 0) return;
+    this.log('recall', { target: moment.features });
+    // Keep learner metadata (e.g. the phrasing salt) so later votes continue from here.
+    this.retarget(
+      { ...this.target, features: { ...moment.features }, prompts: moment.prompts.map((p) => ({ ...p })) },
+      true,
+      this.cfg.voteRampMs,
+    );
   }
 
   private resetHearing(features: FeatureBlend, prompts?: WeightedPrompt[]): void {

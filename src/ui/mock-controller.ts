@@ -12,6 +12,7 @@ import { DEFAULT_SAMPLE_RATE_HZ, TELEMETRY_SILENCE_FLOOR, TELEMETRY_WINDOW_MS } 
 import type { PCMPlayer } from '../audio/types.ts';
 import type { MockPreset } from '../audio/index.ts';
 import type {
+  MomentTarget,
   MusicSessionController,
   MusicSignature,
   SessionUiState,
@@ -65,6 +66,18 @@ const PRESET_SIGNATURES: Readonly<Record<string, MusicSignature>> = {
   tide: { genre: 'ambient', instrument: 'deep drones', mood: 'melancholic', texture: 'layered', focus: 'tide' },
 };
 
+/**
+ * The feature blend each preset stands in for — what the visualizer "hears" in
+ * `?mock` mode. Keys are real feature ids so the look/taste lanes behave the same
+ * as with the live controller.
+ */
+const PRESET_FEATURES: Readonly<Record<string, Record<string, number>>> = {
+  dusk: { ambient: 0.6, synth: 0.5, calm: 0.7, layered: 0.4 },
+  glass: { ambient: 0.5, percussion: 0.35, dreamy: 0.65, sparse: 0.6 },
+  ember: { lofi: 0.65, piano: 0.5, hopeful: 0.55, layered: 0.4 },
+  tide: { ambient: 0.55, strings: 0.45, melancholic: 0.6, layered: 0.5 },
+};
+
 export class MockMusicSessionController implements MusicSessionController {
   private readonly playerFactory?: () => PCMPlayer;
   private readonly generatorFactory?: () => MockPcmGeneratorLike;
@@ -99,6 +112,8 @@ export class MockMusicSessionController implements MusicSessionController {
   private decision: VoteDecision | undefined;
   private pendingSteer: { vote: Vote; at: number; etaMs: number; generationAtVote: number; doneAt?: number } | undefined;
   private nowPlayingSig: MusicSignature | undefined;
+  /** Mock learner scores: votes add/subtract the audible blend. Persists across restarts, like the real controller. */
+  private taste: Record<string, number> = {};
   /** Last known generator preset (from `preset`, `cyclePreset`'s return, or `setPreset`). */
   private activePreset: string | undefined;
   /** Rolling ~TELEMETRY_WINDOW_MS aggregates over recently pumped PCM. */
@@ -211,6 +226,9 @@ export class MockMusicSessionController implements MusicSessionController {
   vote(v: Vote): void {
     if (this.state.status !== 'playing') return;
     this.lastSteerMs = this.now(); // reset the idle-evolve clock
+    // Mirror the learner: the vote judges the blend that was audible, not the pending steer.
+    const blend = this.audibleBlend();
+    for (const [id, w] of Object.entries(blend)) this.taste[id] = (this.taste[id] ?? 0) + (v === 'up' ? w : -w);
     const from = this.signatureNow();
     const buffered = this.player?.getBufferedDurationMs?.() ?? 0;
     this.decision = {
@@ -242,6 +260,59 @@ export class MockMusicSessionController implements MusicSessionController {
       this.refreshSignature(); // preset steers update the identity — status stays 'playing'
     }, this.steerDelayMs);
     // No status emit on the vote itself — votes never change status.
+  }
+
+  /** The mock tone's spectrum, so the visualizer reacts in `?mock` too. */
+  getAnalyser(): AnalyserNode | null {
+    return this.player?.getAnalyser?.() ?? null;
+  }
+
+  /** The blend currently audible — the active preset's feature mix. Empty when silent. */
+  getAudibleFeatures(): Record<string, number> {
+    return this.state.status === 'playing' ? this.audibleBlend() : {};
+  }
+
+  /** Scores accumulated from votes against the audible blend — mirrors the learner's scores. */
+  getTaste(): Record<string, number> {
+    return { ...this.taste };
+  }
+
+  /** What is audible now, as a target recallMoment can steer back to. Null when not playing. */
+  captureMoment(): MomentTarget | null {
+    if (this.state.status !== 'playing') return null;
+    const name = this.generator?.preset ?? this.activePreset;
+    if (!name) return null;
+    return {
+      features: this.audibleBlend(),
+      // The preset name round-trips through the prompt text so recallMoment can restore it.
+      prompts: [{ text: name, weight: 1 }],
+    };
+  }
+
+  /**
+   * Steer straight back to a captured moment's preset. Not a vote: scores,
+   * the decision, and the pending-steer meter are all untouched.
+   */
+  recallMoment(moment: MomentTarget): void {
+    if (this.state.status !== 'playing' || moment.prompts.length === 0) return;
+    this.lastSteerMs = this.now(); // a steer resets the idle-evolve clock, like a vote
+    if (this.voteHandle !== null) {
+      this.timers.clearTimeout(this.voteHandle); // a pending vote steer is superseded, like a retarget
+      this.voteHandle = null;
+    }
+    const name = moment.prompts[0]!.text;
+    // A name the generator doesn't know (custom/injected generators) is ignored, not fatal.
+    try {
+      this.generator?.setPreset?.(name as MockPreset);
+    } catch { /* unknown preset */ }
+    this.activePreset = name;
+    this.refreshSignature(); // steering updates the identity — status stays 'playing'
+  }
+
+  /** Feature mix of the current preset; unknown presets fall back to their bare name. */
+  private audibleBlend(): Record<string, number> {
+    const name = this.generator?.preset ?? this.activePreset;
+    return { ...(name ? (PRESET_FEATURES[name] ?? { [name]: 1 }) : {}) };
   }
 
   stop(): void {

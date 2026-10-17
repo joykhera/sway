@@ -24,6 +24,8 @@ export interface PCMPlayer {
   getBufferedDurationMs(): number;
   /** Latest diagnostics snapshot (includes live signal telemetry), if the implementation exposes it. */
   getStats?(): PCMPlayerStats;
+  /** Optional spectrum tap of what is playing, for the visualizer. Null before init. */
+  getAnalyser?(): AnalyserNode | null;
   /** Release all audio resources. Idempotent. Further `enqueuePcm` calls are ignored. */
   close(): Promise<void>;
 }
