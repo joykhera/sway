@@ -23,7 +23,7 @@
 
 Note: Lyria hard-caps sessions at 10:00 (confirmed, see `docs/lyria-smoke-report.md`; expect about 5 s of silence at each cap). The relay reconnects upstream itself (`reconnecting`, then a fresh `ready`); the controller keeps its ramp state and the player must reconfigure without double-playing.
 
-> **Build caveat (D):** the manual results above were taken on a build from before PR #10 (directional preferences and saved browser profiles). **Decision (Pavan, 2026-10-17): keep persistence.** Test 7 therefore changed meaning (see row 7). Re-run tests 2, 4, 6 and 7 on the latest `main` before the final demo. Joy and Xueming to confirm the decision.
+> **Build caveat (D):** the manual results above were taken on a build from before PR #10 (directional preferences and saved browser profiles). **Decision (Pavan, 2026-10-17): keep persistence.** Test 7 therefore changed meaning (see row 7). Re-run tests 2, 4, 6 and 7 on the latest `main` before the final demo. **Also note (PR #14):** vote-driven transitions now ramp over 2.5 s (`voteRampMs`) instead of 8 s, so the downvote response measured in test 2 (about 8-9 s) was taken with the old ramp and needs re-measuring. Joy and Xueming to confirm the decision.
 
 ## Measuring the downvote response (test 2)
 
