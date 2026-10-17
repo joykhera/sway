@@ -3,6 +3,8 @@ import { FakePlayer, fakeLearner, FORMAT } from '../../tests/e2e/harness.ts';
 import type { AudioFormat, ClientMessage, LearnerState, SessionState } from '../shared/protocol.ts';
 import type { MusicTransport, TransportHandlers } from '../transport/types.ts';
 import type { FeedbackRecord, PreferencesStore, SavedProfile } from '../preferences/types.ts';
+import { adaptiveLearner } from '../learner/adaptive/adapter.ts';
+import type { MusicIntent } from '../shared/intent.ts';
 import { SessionController } from './index.ts';
 
 beforeEach(() => vi.useFakeTimers());
@@ -149,4 +151,30 @@ describe('prepared feedback branches through the controller', () => {
     r.c.stop(); await vi.advanceTimersByTimeAsync(20000);
     expect(r.wires).toHaveLength(3);
   });
+});
+
+
+it('replaces both prepared branches only when a valid intent applies and propagates the new constraints', async () => {
+  const wires: Wire[] = [];
+  const player = new SwapPlayer();
+  const learner = { ...adaptiveLearner };
+  const predict = vi.spyOn(learner, 'processVote');
+  const intent: MusicIntent = { schemaVersion: 1, summary: 'Jazz only', purposeHint: null,
+    requiredFeatures: ['jazz'], excludedFeatures: [], featureHints: [], contextPrompt: '', avoid: [], references: [] };
+  let resolve!: (result: { status: 'ready'; intent: MusicIntent }) => void;
+  const pending = new Promise<{ status: 'ready'; intent: MusicIntent }>(done => { resolve = done; });
+  const c = new SessionController({ learner, player, seed: 3, lookahead: true, interpretIntent: async () => pending,
+    createTransport: () => { const wire = new Wire(); wires.push(wire); return wire; },
+    config: { generationLatencyMs: 0, noVoteEvolveMs: 45000, rampMs: 1000, stepMs: 100 } });
+  await c.start(); await vi.advanceTimersByTimeAsync(1100);
+  expect(wires).toHaveLength(3);
+  const request = c.interpretText('jazz only'); await vi.advanceTimersByTimeAsync(0);
+  expect(wires.slice(1).every(wire => !wire.closed)).toBe(true);
+  resolve({ status: 'ready', intent }); await request;
+  expect(wires[0]!.closed).toBe(false); expect(wires.slice(1).every(wire => wire.closed)).toBe(true);
+  await vi.advanceTimersByTimeAsync(2100);
+  expect(wires).toHaveLength(5);
+  expect(predict.mock.calls.slice(-2).every(([args]) => args.intent?.requiredFeatures[0] === 'jazz')).toBe(true);
+  expect(predict.mock.results.slice(-2).every(result => result.value.target.features.jazz > 0)).toBe(true);
+  c.stop(); expect(wires.every(wire => wire.closed)).toBe(true);
 });

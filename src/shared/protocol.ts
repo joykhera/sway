@@ -42,6 +42,7 @@ export type ErrorCode =
 // Audio chunks from server are raw BINARY WebSocket frames, not ServerMessage.
 
 export const MUSIC_WS_PATH = '/api/music';
+export const MAX_PROMPT_COUNT = 10;
 export const WEIGHT_MIN = 0.1;
 export const WEIGHT_MAX = 2.0;
 

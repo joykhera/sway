@@ -8,7 +8,7 @@ export default defineConfig({
   server: {
     host: '127.0.0.1',
     proxy: {
-      '/api/intent': { target: `http://127.0.0.1:${serverPort}` },
+      '/api/intent': { target: `http://127.0.0.1:${serverPort}`, changeOrigin: false },
       '/api/music': { target: `ws://127.0.0.1:${serverPort}`, ws: true },
     },
   },

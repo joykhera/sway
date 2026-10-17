@@ -1,4 +1,5 @@
 import { beforeEach, afterEach, describe, it, expect, vi } from 'vitest';
+import { validateClientMessage } from '../../server/guard.ts';
 import { SessionController } from './index.ts';
 import { adaptiveLearner, isAdaptiveState } from '../learner/adaptive/adapter.ts';
 import { FakePlayer, fakeRelay } from '../../tests/e2e/harness.ts';
@@ -113,4 +114,31 @@ describe('text intent controller', () => {
     expect(r.vote.mock.calls.at(-1)![0].evidenceWeight).toBe(1);
     r.controller.stop();
   });
+
+  it('clearing during memory load cannot resurrect the saved brief', async () => {
+    const db = memory(); const pending = deferred<Awaited<ReturnType<PreferencesStore['load']>>>();
+    db.store.load = () => pending.promise;
+    const r = rig(undefined, db.store);
+    r.controller.clearIntent();
+    const state = r.learner.createLearner(11, 'explore');
+    pending.resolve({ profiles: { explore: { purpose: 'explore', state, updatedAt: 1, intent: jazz, intentText: 'jazz' } } });
+    await flush(); await r.controller.exportFeedback();
+    expect(r.state.intent).toBeUndefined(); expect(db.profile?.intent).toBeUndefined();
+    expect(db.profile?.state).toEqual(state);
+  });
+
+  it('never sends an oversized prompt union between two valid requests', async () => {
+    const a: MusicIntent = { ...jazz, contextPrompt: 'A quiet reading room',
+      avoid: ['A'.repeat(80), 'B'.repeat(80), 'C'.repeat(80), 'D'.repeat(80), 'E'.repeat(80), 'F'.repeat(80)] };
+    const b: MusicIntent = { ...electronic, contextPrompt: 'A high energy gym',
+      avoid: ['G'.repeat(80), 'H'.repeat(80), 'I'.repeat(80), 'J'.repeat(80), 'K'.repeat(80), 'L'.repeat(80)] };
+    let intent = a;
+    const r = rig(async () => ready(intent)); await r.controller.interpretText('reading'); await r.start();
+    intent = b; await r.controller.interpretText('workout'); await vi.advanceTimersByTimeAsync(2100);
+    expect(r.relay.last.steers.length).toBeGreaterThan(0);
+    for (const message of r.relay.last.sent) expect(validateClientMessage(message).ok).toBe(true);
+    expect(r.relay.last.steers.at(-1)!.prompts).toEqual(r.apply.mock.results.at(-1)!.value.prompts);
+    r.controller.stop();
+  });
+
 });

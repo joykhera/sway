@@ -1,8 +1,8 @@
-import { WEIGHT_MAX, WEIGHT_MIN } from '../src/shared/protocol.ts';
+import { MAX_PROMPT_COUNT, WEIGHT_MAX, WEIGHT_MIN } from '../src/shared/protocol.ts';
 import type { ClientMessage, StreamConfig, WeightedPrompt } from '../src/shared/protocol.ts';
 import { validPrefetchMs } from './prefetch.ts';
 
-export const MAX_PROMPTS = 10;
+export const MAX_PROMPTS = MAX_PROMPT_COUNT;
 export const MAX_PROMPT_CHARS = 200;
 
 export type GuardResult = { ok: true; msg: ClientMessage } | { ok: false; error: string };

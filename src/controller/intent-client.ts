@@ -4,7 +4,7 @@ export type IntentInterpreter = (request: InterpretRequest, signal: AbortSignal)
 
 /** Only our same-origin server knows the model credentials or provider contract. */
 export const interpretMusicIntent: IntentInterpreter = async (request, signal) => {
-  const timeout = AbortSignal.timeout(25_000);
+  const timeout = AbortSignal.timeout(30_000);
   const response = await fetch(INTENT_PATH, {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
     credentials: 'same-origin', body: JSON.stringify(request), signal: AbortSignal.any([signal, timeout]),

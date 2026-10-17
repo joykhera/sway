@@ -14,6 +14,7 @@ import type {
   Vote,
   WeightedPrompt,
 } from '../shared/protocol.ts';
+import { MAX_PROMPT_COUNT } from '../shared/protocol.ts';
 import type { MusicTransport, TransportFactory, TransportHandlers } from '../transport/types.ts';
 import { lerpBlend, lerpPrompts } from './blend.ts';
 import { LookaheadPool } from './lookahead.ts';
@@ -226,7 +227,14 @@ export class SessionController implements MusicSessionController {
 
   clearIntent(): void {
     this.cancelIntentRequest();
-    if (this.resetting || this.memoryLoading || !this.deps.learner.applyIntent) return;
+    if (this.resetting || !this.deps.learner.applyIntent) return;
+    if (this.memoryLoading) {
+      const request = this.intentRequest;
+      void this.memoryReady.then(() => {
+        if (request === this.intentRequest && !this.resetting) this.applyIntent(undefined, '');
+      });
+      return;
+    }
     this.applyIntent(undefined, '');
   }
 
@@ -395,6 +403,7 @@ export class SessionController implements MusicSessionController {
   private applyVote(v: Vote, at = this.now(), beforePlayback = false, session = this.feedbackSession): void {
     const audible = beforePlayback ? this.target.features : this.estimateAudible();
     const evidenceWeight = beforePlayback ? 0 : this.evidenceWeight(audible);
+    const intentAppliedToAudible = this.heard?.intentRevision === this.intentRevision;
     const previous = v === 'up' && evidenceWeight > 0 && this.rejected
       && this.now() - this.rejected.at <= this.cfg.comparisonWindowMs
       && blendDistance(this.rejected.features, audible) >= this.cfg.evidenceBlendDistance
@@ -421,7 +430,7 @@ export class SessionController implements MusicSessionController {
       purpose: this.purpose, vote: v, audible: { ...audible }, ...(previous ? { previous } : {}), evidenceWeight,
       targetBefore: structuredClone(targetBefore), targetAfter: structuredClone(result.target),
       ...(this.intent ? { intent: structuredClone(this.intent), intentText: this.intentText } : {}),
-      intentAppliedToAudible: this.heard?.intentRevision === this.intentRevision,
+      intentAppliedToAudible,
     });
   }
 
@@ -597,7 +606,11 @@ export class SessionController implements MusicSessionController {
       if (resetEvolve && (directionChanged || this.evolveTimer === undefined)) this.scheduleEvolve();
       return;
     }
-    this.ramp = { fromIntentRevision: this.sentIntentRevision, fromFeatures: this.sentFeatures, fromPrompts: this.sentPrompts, target, step: 0 };
+    // Endpoints fit the relay, but two different briefs can exceed its prompt count
+    // when blended. Send the complete new target in that case; never drop constraints.
+    const tooMany = new Set([...this.sentPrompts, ...target.prompts].map(prompt => prompt.text)).size > MAX_PROMPT_COUNT;
+    this.ramp = { fromIntentRevision: this.sentIntentRevision, fromFeatures: this.sentFeatures, fromPrompts: this.sentPrompts,
+      target, step: tooMany ? Math.ceil(this.cfg.rampMs / this.cfg.stepMs) : 0 };
     this.tick();
     if (resetEvolve) this.scheduleEvolve();
   }
