@@ -1,8 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { ListeningPurpose, MusicSessionController, SessionUiState, Vote } from './contracts.ts';
 import { useSessionState } from './use-session-state.ts';
-import { MetricsPanel } from './MetricsPanel.tsx';
-import { NowPlayingPanel } from './NowPlayingPanel.tsx';
 import { ThumbsControls } from './ThumbsControls.tsx';
 import { FlowVisualizer, Visualizer } from './Visualizer.tsx';
 import { supportsFlowRenderer } from './viz/flow-renderer.ts';
@@ -14,7 +12,6 @@ import { lookForBlend } from './viz/looks.ts';
 import { SessionRecorder, type SessionLog, type SessionMoment } from './viz/session-log.ts';
 import { createTasteField } from './viz/verse.ts';
 import './ui.css';
-import './hud.css';
 
 export type PlayerScreenProps = {
   controller: MusicSessionController;
@@ -42,6 +39,16 @@ function wantsFlow(): boolean {
   if (window.matchMedia?.('(prefers-reduced-motion: reduce)').matches) return false;
   return supportsFlowRenderer();
 }
+/** Visually-hidden status line — the only words the live view keeps, for screen readers. */
+const SR_LABELS: Record<string, string> = {
+  connecting: 'connecting…',
+  playing: 'playing',
+  reconnecting: 'reconnecting…',
+  unavailable: 'temporarily unavailable',
+  stopped: 'stopped',
+  error: 'something went wrong',
+};
+
 const PURPOSES: { value: ListeningPurpose; label: string }[] = [
   { value: 'focus', label: 'Focus' },
   { value: 'relax', label: 'Relax' },
@@ -313,6 +320,10 @@ export function PlayerScreen({ controller }: PlayerScreenProps) {
 
   return (
     <main className="app app--live">
+      <p className="sr-only" role="status">
+        <span>{SR_LABELS[state.status] ?? state.status}</span>
+        {state.lastError ? <span>{state.lastError}</span> : null}
+      </p>
       <div className="app__stage" ref={stageRef}>
         {flow ? (
           <FlowVisualizer active={active} lastVote={lastVote} source={controller} field={field} onUnavailable={() => setFlow(false)} />
@@ -338,11 +349,7 @@ export function PlayerScreen({ controller }: PlayerScreenProps) {
           ))}
         </div>
       ) : null}
-      <div className="app__scrim" aria-hidden="true" />
-      <div className="hud">
-        <NowPlayingPanel state={state} controller={controller} />
-        <MetricsPanel controller={controller} />
-      </div>
+
       <footer className="app__controls">
         <MomentsTray moments={moments} onRecall={handleRecall} recalling={recalling} />
         <ThumbsControls onVote={handleVote} lastVote={lastVote} controller={controller} />

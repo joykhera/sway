@@ -387,57 +387,16 @@ describe('PlayerScreen — active session view', () => {
     expect(f.vote.mock.calls[1]?.[0]).toBe('down');
   });
 
-  it('shows the musical identity in the now-playing panel when the controller emits one', async () => {
+  it('renders no visible HUD panels — only an sr-only status remains', async () => {
     const f = makeFake({
       status: 'playing',
-      signature: {
-        genre: 'lofi',
-        instrument: 'piano',
-        mood: 'calm',
-        texture: 'sparse',
-        focus: 'warm ambient pads',
-      },
+      signature: { genre: 'lofi', instrument: 'piano', mood: 'calm', texture: 'sparse', focus: 'warm ambient pads' },
     });
     const { container } = render(<PlayerScreen controller={f.controller} />);
     await act(async () => { });
-    expect(container.querySelector('.now')).toBeTruthy();
-    expect(container.querySelector('.now__field[data-field="genre"] .now__value')?.textContent).toBe('lofi');
-    expect(container.querySelector('.now__field[data-field="instrument"] .now__value')?.textContent).toBe('piano');
-    expect(container.querySelector('.now__field[data-field="mood"] .now__value')?.textContent).toBe('calm');
-    expect(container.querySelector('.now__field[data-field="texture"] .now__value')?.textContent).toBe('sparse');
-    expect(container.querySelector('.now__focus')?.textContent).toContain('warm ambient pads');
-  });
-
-  it('partial signatures drop absent fields', async () => {
-    const f = makeFake({
-      status: 'playing',
-      signature: { mood: 'calm', focus: 'soft keys' },
-    });
-    const { container } = render(<PlayerScreen controller={f.controller} />);
-    await act(async () => { });
-    expect(container.querySelectorAll('.now__field')).toHaveLength(1);
-    expect(container.querySelector('.now__field[data-field="mood"] .now__value')?.textContent).toBe('calm');
-    expect(container.querySelector('.now__focus')?.textContent).toContain('soft keys');
-  });
-
-  it('renders no now-playing block while the signature is absent', async () => {
-    const f = makeFake({ status: 'playing' });
-    const { container } = render(<PlayerScreen controller={f.controller} />);
-    await act(async () => { });
-    expect(container.querySelector('.now__block')).toBeNull();
-  });
-
-  it('updates the panel on a signature-only emission, status untouched', async () => {
-    const f = makeFake({ status: 'playing' });
-    const { container } = render(<PlayerScreen controller={f.controller} />);
-    await act(async () => { });
-    expect(container.querySelector('.now__block')).toBeNull();
-    await act(async () => {
-      f.emit({ status: 'playing', signature: { genre: 'ambient', texture: 'drone' } });
-    });
-    expect(container.querySelector('.now__field[data-field="genre"] .now__value')?.textContent).toBe('ambient');
-    expect(container.querySelector('.now__field[data-field="texture"] .now__value')?.textContent).toBe('drone');
-    expect(screen.getByText('playing')).toBeTruthy(); // status label unchanged
+    expect(container.querySelector('.now, .metrics, .hud, .app__scrim, .status-chip')).toBeNull();
+    const status = container.querySelector('.sr-only[role="status"]');
+    expect(status?.textContent).toBe('playing');
   });
 
   it('"end session" calls stop()', async () => {
