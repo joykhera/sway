@@ -1,7 +1,7 @@
 // Plain-words labels for feature blends and learned taste.
-import { FEATURE_GROUPS, GROUP_IDS, type FeatureGroup } from '../../learner/vocabulary.ts';
+import { FEATURE_GROUPS, FEATURE_IDS, GROUP_IDS, type FeatureGroup } from '../../learner/vocabulary.ts';
 
-export { FEATURE_GROUPS, GROUP_IDS, type FeatureGroup };
+export { FEATURE_GROUPS, FEATURE_IDS, GROUP_IDS, type FeatureGroup };
 
 const positive = (value: number | undefined): value is number => typeof value === 'number' && Number.isFinite(value) && value > 0;
 

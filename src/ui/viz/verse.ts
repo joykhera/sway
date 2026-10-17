@@ -94,3 +94,24 @@ export function poemWords(audible: Record<string, number>, max = 4, minShare = 0
     .sort((a, b) => b.share - a.share || a.id.localeCompare(b.id))
     .slice(0, max);
 }
+
+/**
+ * The rim word a pointer at (x, y) picks: the nearest by angle, anywhere within
+ * `band` px of the lettering, so each word owns a generous slice of the ring.
+ * A word reaches halfway to its neighbours, so the opening at the bottom stays
+ * empty. Null when off the band.
+ */
+export function pickRimWord(places: readonly RimPlace[], ring: { x: number; y: number; r: number }, x: number, y: number, band: number): string | null {
+  if (!places.length) return null;
+  const dx = x - ring.x;
+  const dy = y - ring.y;
+  if (Math.abs(Math.hypot(dx, dy) - ring.r) > band) return null;
+  const pointer = Math.atan2(dy, dx);
+  const apart = (a: number, b: number) => Math.abs(Math.atan2(Math.sin(a - b), Math.cos(a - b)));
+  let best = 0;
+  places.forEach((place, i) => { if (apart(pointer, place.angle) < apart(pointer, places[best]!.angle)) best = i; });
+  const prev = places[best - 1];
+  const next = places[best + 1];
+  const reach = Math.max(prev ? apart(prev.angle, places[best]!.angle) : 0, next ? apart(next.angle, places[best]!.angle) : 0) / 2;
+  return places.length === 1 || apart(pointer, places[best]!.angle) <= reach ? places[best]!.id : null;
+}

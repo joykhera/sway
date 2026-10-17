@@ -99,6 +99,8 @@ export interface MusicSessionController {
   captureMoment?(): MomentTarget | null;
   /** Optional: steer back toward a captured moment. Not a vote. */
   recallMoment?(moment: MomentTarget): void;
+  /** Optional: gradually steer toward one feature (e.g. a tapped style word). Not a vote. */
+  nudge?(feature: string): void;
   /** Call synchronously inside the user's Start gesture (autoplay policy). Idempotent while a session is active. */
   start(): Promise<void>;
   /** Synchronous local update; never blocks, never locks the buttons. Ignored when no session is active. */

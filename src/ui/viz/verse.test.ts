@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { createTasteField, layoutRim, MAX_FIELD_WORDS, packField, poemWords } from './verse.ts';
+import { createTasteField, layoutRim, MAX_FIELD_WORDS, packField, pickRimWord, poemWords } from './verse.ts';
 
 const GAP = Math.PI / 2;
 const opts = { gap: GAP, wordSpace: 10, groupSpace: 30 };
@@ -67,5 +67,30 @@ describe('packField', () => {
     expect(out[1]).toBeCloseTo(1);
     expect(out[2]).toBeCloseTo(0.4);
     expect(out[3]).toBeCloseTo(-0.5);
+  });
+});
+
+describe('pickRimWord', () => {
+  // Three words spread over the top of a ring of radius 100 centred at (0, 0).
+  const places = [
+    { id: 'jazz', angle: Math.PI, flip: false },
+    { id: 'piano', angle: (3 * Math.PI) / 2, flip: false },
+    { id: 'calm', angle: 0, flip: false },
+  ];
+  const ring = { x: 0, y: 0, r: 100 };
+  const at = (angle: number, r = 100) => [Math.cos(angle) * r, Math.sin(angle) * r] as const;
+
+  it('picks the nearest word by angle anywhere in the band', () => {
+    expect(pickRimWord(places, ring, ...at((3 * Math.PI) / 2 + 0.3, 120), 30)).toBe('piano');
+    expect(pickRimWord(places, ring, ...at(Math.PI - 0.2, 85), 30)).toBe('jazz');
+  });
+
+  it('ignores the centre and the far outside', () => {
+    expect(pickRimWord(places, ring, 0, 0, 30)).toBeNull();
+    expect(pickRimWord(places, ring, ...at(Math.PI, 200), 30)).toBeNull();
+  });
+
+  it('leaves the opening at the bottom empty', () => {
+    expect(pickRimWord(places, ring, ...at(Math.PI / 2), 30)).toBeNull();
   });
 });

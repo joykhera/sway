@@ -9,7 +9,7 @@ import { supportsFlowRenderer } from './viz/flow-renderer.ts';
 import { TasteVerse } from './TasteVerse.tsx';
 import { MomentsTray } from './MomentsTray.tsx';
 import { SessionPortrait } from './SessionPortrait.tsx';
-import { describeBlend } from './viz/describe.ts';
+import { describeBlend, FEATURE_IDS } from './viz/describe.ts';
 import { lookForBlend } from './viz/looks.ts';
 import { SessionRecorder, type SessionLog, type SessionMoment } from './viz/session-log.ts';
 import { createTasteField } from './viz/verse.ts';
@@ -327,7 +327,16 @@ export function PlayerScreen({ controller }: PlayerScreenProps) {
           lastVote={lastVote}
           field={flow ? field : undefined}
           anchor={flow ? undefined : () => stageRef.current?.querySelector('.visualizer')?.getBoundingClientRect()}
+          onPick={controller.nudge ? (id) => controller.nudge?.(id) : undefined}
         />
+      ) : null}
+      {controller.nudge ? (
+        // The ring of words is a canvas; keyboard and screen-reader users steer from here.
+        <div className="sr-only" role="group" aria-label="lean the music toward a style">
+          {FEATURE_IDS.map((id) => (
+            <button key={id} type="button" onClick={() => controller.nudge?.(id)}>more {id}</button>
+          ))}
+        </div>
       ) : null}
       <div className="app__scrim" aria-hidden="true" />
       <div className="hud">

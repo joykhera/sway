@@ -521,3 +521,27 @@ describe('taste and moments', () => {
     controller.stop();
   });
 });
+
+describe('nudge', () => {
+  it('ramps toward the picked feature without voting', async () => {
+    const relay = fakeRelay(true);
+    const { learner, calls } = fakeLearner();
+    learner.nudge = ({ target, feature }) => ({
+      features: { ...target.features, [feature]: 1 },
+      prompts: [...target.prompts, { text: feature, weight: 1 }],
+    });
+    const controller = new SessionController({ learner, player: new FakePlayer(), createTransport: relay.create, seed: 1, config: { generationLatencyMs: 0 } });
+    await controller.start();
+    await flush();
+    controller.nudge('jazz');
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(relay.last.steers.at(-1)!.prompts).toEqual([{ text: 'ambient', weight: 1 }, { text: 'jazz', weight: 1 }]);
+    expect(calls.vote).toHaveLength(0);
+  });
+
+  it('does nothing without a learner nudge or before playback', async () => {
+    const { relay, controller } = await boot();
+    controller.nudge('jazz');
+    expect(relay.last.steers).toHaveLength(0);
+  });
+});

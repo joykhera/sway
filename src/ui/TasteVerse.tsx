@@ -2,7 +2,7 @@ import { useEffect, useRef } from 'react';
 import type { MusicSessionController, Vote } from './contracts.ts';
 import { BandTracker, type Bands } from './viz/audio-bands.ts';
 import { FEATURE_GROUPS, GROUP_IDS, normalizeTaste } from './viz/describe.ts';
-import { layoutRim, poemWords, RING_IN_RIM, type RimPlace, type TasteField } from './viz/verse.ts';
+import { layoutRim, pickRimWord, poemWords, RING_IN_RIM, type RimPlace, type TasteField } from './viz/verse.ts';
 
 export type TasteVerseProps = {
   source: Pick<MusicSessionController, 'getTaste' | 'getAudibleFeatures' | 'getAnalyser'>;
@@ -14,6 +14,8 @@ export type TasteVerseProps = {
   field?: TasteField;
   /** The fallback ring's box: it sits in the stage rather than mid-screen, at a third of its width. */
   anchor?: () => DOMRect | null | undefined;
+  /** Tapping a word in the ring (anywhere in its slice) steers toward it. Omit to make the ring read-only. */
+  onPick?: (id: string) => void;
 };
 
 /** Re-read taste and the audible blend this often; drawing eases between reads. */
@@ -31,6 +33,10 @@ const RIM_GROW = 15;
 /** How long a word takes to fly from the poem to the ring, and the stagger per letter. */
 const FLIGHT_S = 1.5;
 const LETTER_DELAY_S = 0.045;
+/** How far from the lettering (px) a tap still picks a word. */
+const PICK_BAND = 44;
+/** Elements whose taps are their own; the ring ignores them. */
+const OWN_CLICKS = 'button, a, input, select, textarea, label, [role="dialog"], .hud > *';
 /** Glyphs are measured once at this size and scaled. */
 const REF_PX = 100;
 const SERIF = '"Instrument Serif", Georgia, "Times New Roman", serif';
@@ -99,7 +105,7 @@ const turn = (a: number, b: number) => Math.atan2(Math.sin(b - a), Math.cos(b - 
  * audible now is set as a short poem that breathes with the music; vote and
  * its words lift off and fly out into the ring, where your taste is kept.
  */
-export function TasteVerse({ source, ringFraction, lastVote, field, anchor }: TasteVerseProps) {
+export function TasteVerse({ source, ringFraction, lastVote, field, anchor, onPick }: TasteVerseProps) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const sourceRef = useRef(source);
   const voteRef = useRef(lastVote);
@@ -111,6 +117,8 @@ export function TasteVerse({ source, ringFraction, lastVote, field, anchor }: Ta
   fieldRef.current = field;
   ringRef.current = ringFraction;
   anchorRef.current = anchor;
+  const pickRef = useRef(onPick);
+  pickRef.current = onPick;
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -145,6 +153,9 @@ export function TasteVerse({ source, ringFraction, lastVote, field, anchor }: Ta
     let centre: { x: number; y: number; r: number } | null = null;
     let raf = 0;
     let lastFrame = 0;
+    /** The ring as last drawn (CSS px), for picking words under the pointer. */
+    let layout: { ring: { x: number; y: number; r: number }; places: RimPlace[] } | null = null;
+    let hovered: string | null = null;
 
     // Advance widths per character at REF_PX, per style; kerning is ignored.
     const widths = new Map<string, number>();
@@ -262,7 +273,8 @@ export function TasteVerse({ source, ringFraction, lastVote, field, anchor }: Ta
         const age = now - word.flashAt;
         const flash = age >= 0 && age < FLASH_S ? Math.pow(1 - age / FLASH_S, 2) : 0;
         const italic = like > 0.12;
-        const size = RIM_SIZE + RIM_GROW * like + 5 * flash * motion;
+        // A word under the pointer lifts slightly: tapping it leans the music its way.
+        const size = RIM_SIZE + RIM_GROW * like + 5 * flash * motion + (hovered === word.id ? 3 : 0);
         // Disliked words come loose: their letters drift apart under the strike.
         const tracking = italic ? 0.01 : 0.06 + 0.14 * dislike;
         return { word, like, dislike, flash, italic, size, tracking, width: wordWidth(word.id, size, italic, tracking) };
@@ -272,6 +284,7 @@ export function TasteVerse({ source, ringFraction, lastVote, field, anchor }: Ta
         r,
         { gap: GAP_RADIANS, wordSpace: 18, groupSpace: 46 },
       );
+      layout = { ring: { x: cx, y: cy, r }, places };
       const placeOf = new Map(places.map((p) => [p.id, p]));
       const glyphsOf = new Map<string, Glyph[]>();
 
@@ -289,7 +302,8 @@ export function TasteVerse({ source, ringFraction, lastVote, field, anchor }: Ta
         let color = mix(ink, warm, clamp01(s.like * 1.5));
         color = mix(color, cool, clamp01(s.dislike * 1.3));
         if (s.flash > 0) color = mix(color, s.word.flashSign >= 0 ? warm : cool, s.flash);
-        const base = Math.min(1, 0.3 + 0.62 * Math.max(s.like, s.dislike * 0.6) + 0.3 * heard + 0.5 * s.flash);
+        const hover = hovered === s.word.id ? 1 : 0;
+        const base = Math.min(1, 0.3 + 0.62 * Math.max(s.like, s.dislike * 0.6) + 0.3 * heard + 0.5 * s.flash + 0.45 * hover);
         setFont(s.italic);
         // Heard words burn nearly white, whatever you think of them.
         ctx.fillStyle = rgb(mix(color, [255, 248, 236], heard * 0.7));
@@ -487,15 +501,44 @@ export function TasteVerse({ source, ringFraction, lastVote, field, anchor }: Ta
       if (document.visibilityState === 'visible') raf = requestAnimationFrame(loop);
     };
 
+    // The canvas lets taps through to the controls; the ring picks from window events instead.
+    const pick = (e: PointerEvent | MouseEvent): string | null => {
+      if (!pickRef.current || !layout) return null;
+      if (e.target instanceof Element && e.target.closest(OWN_CLICKS)) return null;
+      const own = canvas.getBoundingClientRect();
+      return pickRimWord(layout.places, layout.ring, e.clientX - own.left, e.clientY - own.top, PICK_BAND);
+    };
+    const onMove = (e: PointerEvent) => {
+      const id = e.pointerType === 'mouse' ? pick(e) : null;
+      if (id === hovered) return;
+      hovered = id;
+      document.body.style.cursor = id ? 'pointer' : '';
+    };
+    const onClick = (e: MouseEvent) => {
+      const id = pick(e);
+      if (!id) return;
+      const word = byId.get(id);
+      if (word) {
+        word.flashAt = performance.now() / 1000;
+        word.flashSign = 1;
+      }
+      pickRef.current?.(id);
+    };
+
     const observer = typeof ResizeObserver === 'function' ? new ResizeObserver(resize) : null;
     observer?.observe(canvas);
     document.addEventListener('visibilitychange', sync);
+    window.addEventListener('pointermove', onMove);
+    window.addEventListener('click', onClick);
     resize();
     sync();
     return () => {
       cancelAnimationFrame(raf);
       observer?.disconnect();
       document.removeEventListener('visibilitychange', sync);
+      window.removeEventListener('pointermove', onMove);
+      window.removeEventListener('click', onClick);
+      document.body.style.cursor = '';
     };
   }, []);
 
