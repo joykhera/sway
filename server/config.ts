@@ -3,6 +3,7 @@ export type MusicMode = 'live' | 'mock';
 export type Config = {
   mode: MusicMode;
   apiKey: string | undefined;
+  intentApiKey: string | undefined;
   host: string;
   port: number;
   maxStreams: number;
@@ -21,6 +22,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   return {
     mode,
     apiKey,
+    intentApiKey: env.CRUSOE_API_KEY?.trim() || undefined,
     // Loopback by default (local-only plan). Deploys set HOST=0.0.0.0.
     host: env.HOST?.trim() || '127.0.0.1',
     port: intEnv(env, 'PORT', 8787, 0, 65535),
