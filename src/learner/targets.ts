@@ -57,29 +57,30 @@ export function projectFeatures(input: FeatureBlend, fallback: FeatureBlend = {}
 }
 
 /**
- * One step toward a feature the listener picked: strengthen it if it's playing,
- * otherwise bring it in at a step's intensity. A full group (2 genres or
- * instruments, 1 mood or texture) gives up its weakest member to make room.
+ * One step toward a feature the listener picked. If it's playing, it gains a
+ * step and the rest of its group gives up half a step. Otherwise it enters at
+ * most of its group leader's strength, so the first click is audible; a full
+ * group (2 genres or instruments, 1 mood or texture) gives up its weakest member.
  */
 export function nudgeFeatures(features: FeatureBlend, id: FeatureId, step = P.nudgeStep): FeatureBlend {
   const next = sanitizeFeatures(features);
   const group = GROUP_IDS.find((g) => (FEATURE_GROUPS[g] as readonly FeatureId[]).includes(id));
   if (!group) return projectFeatures(next);
-  const current = next[id] ?? 0;
-  if (current > 0) {
-    next[id] = Math.min(P.maxIntensity, current + step);
-  } else {
-    const limit = group === 'genre' || group === 'instrument' ? 2 : 1;
-    const members = activeIds(next, group).sort((a, b) => next[a]! - next[b]!);
-    if (members.length >= limit) {
-      // Take over the weakest member's place, so the swap is a step, not a jump.
-      const weakest = members[0]!;
-      next[id] = next[weakest]!;
-      delete next[weakest];
-    } else {
-      next[id] = Math.max(P.minActiveIntensity, step);
-    }
+  const others = activeIds(next, group).filter((other) => other !== id).sort((a, b) => next[a]! - next[b]!);
+  if ((next[id] ?? 0) > 0) {
+    next[id] = Math.min(P.maxIntensity, next[id]! + step);
+    for (const other of others) next[other] = Math.max(P.minActiveIntensity, next[other]! - step / 2);
+    return projectFeatures(next);
   }
+  const lead = others.length ? next[others.at(-1)!]! : INITIAL_INTENSITY[group];
+  let entry = lead * P.nudgeEntry;
+  const limit = group === 'genre' || group === 'instrument' ? 2 : 1;
+  if (others.length >= limit) {
+    const weakest = others[0]!;
+    entry = Math.max(entry, next[weakest]!);
+    delete next[weakest];
+  }
+  next[id] = clamp(entry, P.minActiveIntensity, P.maxIntensity);
   return projectFeatures(next);
 }
 
