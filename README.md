@@ -1,11 +1,11 @@
 # Sway
 
-Infinite instrumental music (Google Lyria RealTime) that adapts to 👍 / 👎. Full spec: [docs/HANDOFF.md](docs/HANDOFF.md).
+Infinite instrumental music (Google Lyria RealTime) that adapts to 👍 / 👎. Full spec: [docs/HANDOFF.md](docs/HANDOFF.md). The app now uses the [adaptive learner integration](docs/adaptive-integration.md) through the existing UI, controller, worklet player and relay.
 
 ## Run
 
 ```sh
-pnpm install
+pnpm install --frozen-lockfile
 cp .env.example .env     # GEMINI_API_KEY for live mode; or set MUSIC_MODE=mock for a test tone
 pnpm dev                 # vite + relay (the dev server proxies /api/music)
 pnpm test                # unit + integration (includes the relay e2e, mock mode, no Google calls)
@@ -22,15 +22,15 @@ UI (B)  ──vote()/start()/stop()──▶  SessionController (D, src/controll
                                       └─ MusicTransport (D, src/transport) ⇄ relay (A, server/) ⇄ Lyria
 ```
 
-Wiring (in B's `App.tsx` once the learner and player exist):
+`App.tsx` already uses `createBrowserController()`. Its wiring is:
 
 ```ts
-import * as learner from './learner/index.ts';
+import { adaptiveLearner } from './learner/adaptive/adapter.ts';
 import { SessionController } from './controller/index.ts';
 import { WebSocketTransport, defaultMusicUrl } from './transport/index.ts';
 
 const controller = new SessionController({
-  learner,                       // must satisfy `Learner` in shared/protocol.ts
+  learner: adaptiveLearner,       // full adaptive model behind the shared Learner contract
   player,                        // B's PCMPlayer
   createTransport: () => new WebSocketTransport(defaultMusicUrl(location)),
   log: import.meta.env.DEV ? console.debug : undefined,
@@ -40,20 +40,25 @@ const controller = new SessionController({
 
 ## Controller behaviour (what D guarantees)
 
-- **Votes are never queued or locked out.** Each vote runs `learner.processVote`, supersedes any ramp in flight, and sends the first step of the new ramp immediately.
+- **Votes are never queued or locked out.** Each active-session vote runs `learner.processVote`. A changed target replaces the ramp and sends its first step immediately; an unchanged target preserves the current ramp or held direction. Likes hold the estimated heard blend; Dislikes select another direction using learned preference and uncertainty.
 - **Ramp:** 8 steps, one per second (`rampMs` / `stepMs` in `src/controller/config.ts`). Step *k* is a linear blend of the last-sent prompts and the new target, by prompt text; blends below the 0.1 minimum weight are dropped, never sent as 0. Lyria normalizes weights, so only ratios matter.
-- **What was audible at click time:** the newest blend we sent at least `buffered ms (+ generationLatencyMs)` ago. This is an estimate, logged on every vote (`log('vote', …)`).
-- **Silence:** after 45 s without a vote the controller calls `learner.evolveNoVote` and ramps to the result. It never calls the score-updating path. Any vote restarts the timer.
-- **Vote while connecting:** the learner updates at once. Before the socket opens, `start` carries the new target. After `start` is sent, the controller ramps to it on `ready`.
+- **What was audible at click time:** the newest blend we sent at least `buffered ms (+ generationLatencyMs)` ago. The estimated heard timeline cannot move backward when the buffer grows. This remains an estimate, logged on every vote (`log('vote', …)`).
+- **Evidence:** feedback before playback, during reconnect, priming or audio suspension has zero learning weight. Judgments of a similar heard blend within six seconds count as one independent observation. Every click still acts on the requested direction.
+- **Freshness:** after 45 s the controller calls `learner.evolveNoVote` with an increasing novelty step and ramps to the result. It never creates preference evidence. Likes holding the same direction do not postpone this timer; actual direction changes restart it. Disconnected or inaudible playback pauses variation.
+- **Vote while connecting:** the action updates the pending direction immediately with zero learning weight. Before the socket opens, `start` carries the new target. After `start` is sent, the controller ramps to it on `ready`.
 - **Reconnect:** on socket close or a retryable relay error, a new socket is opened with backoff (1, 2, 4, 8, 8 s), and `start` carries the **latest target** (no continuity to protect). Learner scores survive. After the schedule is exhausted the status becomes `error`. Relay-side upstream reconnects (`status:'reconnecting'` then a repeated `ready`) are handled without restarting ramps.
 - **`prompt_filtered`:** the stream keeps playing; the controller moves to another combination via `evolveNoVote` (no score change).
-- **Refresh** resets everything (no persistence, by design).
+- **Purpose:** optional Focus, Relax, Energy or Explore supplies a weak starting hint. Stop/Start with the same purpose retains preferences; changing purpose while stopped starts a fresh model.
+- **Refresh** resets everything (session memory only).
 
 ## Tests
 
 | File | Covers |
 | --- | --- |
 | `src/controller/controller.test.ts` | ramps, strictly increasing revisions, rapid votes superseding, audible estimate, no-vote, pre-ready votes, reconnect, error handling, stop cleanup |
+| `src/controller/adaptive-controller.test.ts` | purpose lifecycle, audible evidence gating, correlated clicks, monotonic heard estimates, continued variations after Likes |
+| `src/learner/adaptive/*.test.ts` | joint model, exploration, recovery, no-vote invariants, complete-state adapter |
+| `tests/e2e/adaptive.integration.test.ts` | actual adaptive learner and browser factory through the controller, transport and real relay with a mock upstream |
 | `src/controller/blend.test.ts` | prompt/feature interpolation, weight floor |
 | `tests/e2e/relay.e2e.test.ts` | controller + `WebSocketTransport` against the real relay (mock upstream): audio, steering, slot release, reconnect, capacity |
 | `tests/e2e/harness.ts` | fake relay, player and learner for other lanes to reuse |
