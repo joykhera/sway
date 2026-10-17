@@ -63,6 +63,13 @@ describe('bounded intent interpreter', () => {
     expect((await createIntentInterpreter({ apiKey: 'key', fetcher })({ ...input, text: 'Only jazz and only ambient' }, signal())).status).toBe('clarify');
     expect(fetcher).toHaveBeenCalledTimes(1);
   });
+  it('repairs observed unknown vocal feature IDs with specific safe validation feedback', async () => {
+    const fetcher = fetchSequence(completion(ready({ requiredFeatures: ['energetic'], excludedFeatures: ['vocals'], featureHints: ['rhythmic'] })), completion(ready({ requiredFeatures: [], excludedFeatures: [], featureHints: ['energetic', 'rhythmic'], avoid: ['vocals'] })));
+    expect((await createIntentInterpreter({ apiKey: 'key', fetcher })({ ...input, text: 'Workout music, no vocals' }, signal())).status).toBe('ready');
+    const repairedBody = JSON.parse(fetcher.mock.calls[1]![1]!.body as string);
+    expect(repairedBody.messages.at(-1).content).toContain('excludedFeatures must contain only vocabulary IDs');
+    expect(repairedBody.messages.at(-1).content).toContain('vocals only in avoid');
+  });
   it('keeps unnamed inferred features learnable and refuses invented exclusions', async () => {
     const fetcher = fetchSequence(completion(ready({ requiredFeatures: ['jazz'] })));
     expect(await createIntentInterpreter({ apiKey: 'key', fetcher })(input, signal())).toMatchObject({ status: 'ready', intent: { requiredFeatures: [], featureHints: ['jazz', 'ambient'] } });

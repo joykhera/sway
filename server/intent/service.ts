@@ -58,7 +58,7 @@ export function createIntentInterpreter(options: InterpreterOptions): IntentInte
           if (!(cause instanceof InvalidPlan) || repaired) throw cause;
           repaired = true;
           // The invalid provider output is deliberately not echoed into a repair prompt.
-          messages.push({ role: 'user', content: 'Your previous response was invalid. Return one JSON object matching the exact schema. Use verified source IDs only, keep supplemental context free of vocabulary features, observe all length and enum bounds, and use hard feature constraints only when explicitly named by the listener or retained from their prior intent.' });
+          messages.push({ role: 'user', content: `Validation issue: ${cause.message}. Return one corrected JSON object matching the exact schema. Use verified source IDs only, keep supplemental context free of vocabulary features, observe all length and enum bounds, and use hard feature constraints only when explicitly named by the listener or retained from their prior intent.` });
         }
       }
     };
