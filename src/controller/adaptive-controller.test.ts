@@ -184,19 +184,35 @@ describe('fresh variations and reconnects', () => {
     expect(r.relay.last.steers.at(-1)!.prompts).toEqual([{ text: 'electronic', weight: 1 }]);
   });
 
-  it('holds a liked target without redundant steers, then varies after 45 seconds without a vote', async () => {
+  it('holds a liked target without redundant steers or postponing the 45-second variation deadline', async () => {
     const r = rig();
     await r.start();
     await vi.advanceTimersByTimeAsync(30_000);
     r.controller.vote('up');
     expect(r.relay.last.steers).toHaveLength(0);
-    await vi.advanceTimersByTimeAsync(44_999);
+    await vi.advanceTimersByTimeAsync(14_999);
     expect(r.evolve).not.toHaveBeenCalled();
     await vi.advanceTimersByTimeAsync(1);
     expect(r.evolve.mock.calls[0]![0].step).toBe(1);
     expect(r.evolve.mock.calls[0]![0].state.votes).toBe(1);
     expect(r.vote).toHaveBeenCalledTimes(1);
     expect(r.log).toHaveBeenCalledWith('evolve', { step: 1, target: { ambient: 1 } });
+  });
+
+  it('continues fresh variations when held-target Likes keep arriving faster than the cadence', async () => {
+    const r = rig({ config: { noVoteEvolveMs: 100 } });
+    await r.start();
+    for (let i = 0; i < 6; i++) {
+      await vi.advanceTimersByTimeAsync(40);
+      r.controller.vote('up');
+    }
+    // The Likes at 40/80ms must not move the first deadline; Likes during the
+    // resulting ramp must not move subsequent deadlines either.
+    expect(r.evolve.mock.calls.map(([args]) => args.step)).toEqual([1, 2]);
+    expect(r.vote).toHaveBeenCalledTimes(6);
+    await vi.advanceTimersByTimeAsync(60);
+    expect(r.evolve.mock.calls.map(([args]) => args.step)).toEqual([1, 2, 3]);
+    expect(r.vote).toHaveBeenCalledTimes(6); // Timed freshness adds no votes.
   });
 
   it('pauses relay-side reconnect ramps, novelty and evidence until ready, then resumes the latest target', async () => {

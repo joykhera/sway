@@ -262,6 +262,7 @@ export class SessionController implements MusicSessionController {
   // ---- steering ----
 
   private retarget(target: Target, resetEvolve = true): void {
+    const directionChanged = !sameTarget(this.target, target);
     this.target = target;
     if (!this.ready || this.awaitingReady) {
       clearTimeout(this.rampTimer);
@@ -274,14 +275,15 @@ export class SessionController implements MusicSessionController {
     // Holding the same pending target should not restart an in-flight ramp.
     if (this.ramp && sameTarget(this.ramp.target, target)) {
       this.ramp.target = target;
-      if (resetEvolve) this.scheduleEvolve();
+      if (resetEvolve && (directionChanged || this.evolveTimer === undefined)) this.scheduleEvolve();
       return;
     }
     clearTimeout(this.rampTimer);
     this.rampTimer = undefined;
     if (sameTarget({ features: this.sentFeatures, prompts: this.sentPrompts }, target)) {
       this.ramp = undefined;
-      if (resetEvolve) this.scheduleEvolve();
+      // Likes can keep arriving without postponing fresh variations forever.
+      if (resetEvolve && (directionChanged || this.evolveTimer === undefined)) this.scheduleEvolve();
       return;
     }
     this.ramp = { fromFeatures: this.sentFeatures, fromPrompts: this.sentPrompts, target, step: 0 };

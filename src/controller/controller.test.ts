@@ -167,10 +167,10 @@ describe('no vote', () => {
     void controller;
   });
 
-  it('restarts the silence timer on every vote', async () => {
+  it('restarts the variation timer when a vote changes direction', async () => {
     const { controller, calls } = await boot();
     await vi.advanceTimersByTimeAsync(30_000);
-    controller.vote('up');
+    controller.vote('down');
     await vi.advanceTimersByTimeAsync(44_000);
     expect(calls.evolve).toBe(0);
     await vi.advanceTimersByTimeAsync(1000);

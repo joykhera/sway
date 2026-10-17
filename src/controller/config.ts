@@ -2,7 +2,7 @@
 export type ControllerConfig = {
   rampMs: number; // duration of a transition toward a new target
   stepMs: number; // interval between intermediate steer messages
-  noVoteEvolveMs: number; // silence -> small within-style variation (never a score update)
+  noVoteEvolveMs: number; // fresh-variation cadence; held-target Likes do not defer it (never a score update)
   generationLatencyMs: number; // extra delay between a steer being sent and it being audible, beyond the buffer
   historyRetentionMs: number;
   evidenceWindowMs: number; // repeated judgments of a similar heard blend share one observation
