@@ -404,11 +404,67 @@ body {
 }
 
 .purpose-choice__hint {
-  margin: 12px 0 0;
+  margin: 12px auto 0;
   max-width: 34ch;
   color: var(--muted);
   font-size: 10px;
   line-height: 1.6;
+}
+
+.app button:disabled {
+  cursor: default;
+  opacity: 0.5;
+}
+
+.local-memory {
+  margin-top: 24px;
+  max-width: 36ch;
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.6;
+}
+
+.local-memory__status,
+.local-memory__notice {
+  margin: 0;
+}
+
+.local-memory__actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 4px 18px;
+  margin-top: 8px;
+}
+
+.local-memory__actions button {
+  appearance: none;
+  padding: 8px 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font-size: 10px;
+  cursor: pointer;
+  text-decoration: underline;
+  text-decoration-color: var(--hairline);
+  text-underline-offset: 4px;
+}
+
+.local-memory__notice {
+  margin-top: 8px;
+}
+
+.local-memory__notice--error {
+  color: var(--accent-warm);
+}
+
+.local-memory__live {
+  max-width: 40ch;
+  margin: 8px 0 0;
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.6;
+  text-align: center;
 }
 
 @media (hover: hover) {

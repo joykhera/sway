@@ -7,7 +7,13 @@ import type { ListeningPurpose, Vote } from '../shared/protocol.ts';
 export type { ListeningPurpose, Vote };
 
 /** `status` is intentionally an open string; the UI labels known values and shows unknown ones verbatim. */
-export type SessionUiState = { status: string; lastError?: string };
+export type SessionUiState = {
+  status: string;
+  lastError?: string;
+  purpose?: ListeningPurpose;
+  memory?: 'loading' | 'ready' | 'saving' | 'unavailable';
+  savedVotes?: number;
+};
 
 export type KnownStatus =
   | 'idle'
@@ -19,8 +25,12 @@ export type KnownStatus =
   | 'error';
 
 export interface MusicSessionController {
-  /** Optional pre-session setup. Changing purpose starts a fresh preference session. */
+  /** Optional pre-session setup. Persistent controllers keep separate memory per purpose. */
   setPurpose?(purpose: ListeningPurpose): void;
+  /** Clears all saved browser profiles and feedback while no session is active. */
+  resetPreferences?(): Promise<void>;
+  /** Returns a local feedback export as JSON; never sends it to another service. */
+  exportFeedback?(): Promise<string>;
   /** Call synchronously inside the user's Start gesture (autoplay policy). Idempotent while a session is active. */
   start(): Promise<void>;
   /** Synchronous local update; never blocks, never locks the buttons. Ignored when no session is active. */

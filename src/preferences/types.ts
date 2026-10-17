@@ -1,0 +1,43 @@
+import type { FeatureBlend, LearnerState, ListeningPurpose, Target, Vote } from '../shared/protocol';
+
+export type SavedProfile = {
+  purpose: ListeningPurpose;
+  state: LearnerState;
+  updatedAt: number;
+};
+
+export type FeedbackRecord = {
+  id: string;
+  at: number;
+  sessionId: string;
+  purpose: ListeningPurpose;
+  vote: Vote;
+  audible: FeatureBlend;
+  previous?: FeatureBlend;
+  evidenceWeight: number;
+  targetBefore: Target;
+  targetAfter: Target;
+};
+
+export type SavedPreferences = {
+  purpose?: ListeningPurpose;
+  profiles: Partial<Record<ListeningPurpose, SavedProfile>>;
+};
+
+export interface PreferencesStore {
+  load(): Promise<SavedPreferences>;
+  save(profile: SavedProfile, event?: FeedbackRecord): Promise<void>;
+  selectPurpose(purpose: ListeningPurpose): Promise<void>;
+  export(): Promise<string>;
+  clear(): Promise<void>;
+}
+
+export type BrowserPreferencesOptions = {
+  /** Omit to use this browser's IndexedDB; null explicitly disables storage. */
+  indexedDB?: IDBFactory | null;
+  databaseName?: string;
+  /** Global retained feedback limit, at most 10,000. Profiles are not pruned. */
+  maxEvents?: number;
+  /** Bounds opening and each transaction, including blocked opens. Default: 3 seconds. */
+  timeoutMs?: number;
+};

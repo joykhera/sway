@@ -3,7 +3,7 @@
 // Browser-safe: no Node imports.
 
 export type Vote = 'up' | 'down';
-export type ListeningPurpose = 'focus' | 'relax' | 'energy' | 'explore';
+export type ListeningPurpose = 'focus' | 'relax' | 'energy' | 'explore' | 'crazy';
 
 // Lyria normalizes weights to sum to 1.0, so only ratios between prompts matter.
 export type WeightedPrompt = { text: string; weight: number };
@@ -69,6 +69,8 @@ export interface Learner {
     vote: Vote;
     // Correlated clicks or pre-playback actions can steer without inventing evidence.
     evidenceWeight?: number;
+    // A recent explicitly rejected audible blend; a later Like can prefer the change.
+    comparison?: { previous: FeatureBlend };
   }): { state: LearnerState; target: Target };
   // Must not change state.scores. Silence is not feedback.
   evolveNoVote(args: { state: LearnerState; target: Target; step?: number }): Target;
@@ -91,11 +93,19 @@ export interface PCMPlayer {
 
 export type SessionStatus = 'idle' | 'connecting' | 'playing' | 'reconnecting' | 'stopped' | 'error';
 
-export type SessionState = { status: SessionStatus; lastError?: string };
+export type SessionState = {
+  status: SessionStatus;
+  lastError?: string;
+  purpose?: ListeningPurpose;
+  memory?: 'loading' | 'ready' | 'saving' | 'unavailable';
+  savedVotes?: number;
+};
 
 export interface MusicSessionController {
-  // Optional pre-session setup; changing purpose starts a fresh preference session.
+  // Optional pre-session setup; persistent controllers restore separate memory per purpose.
   setPurpose?(purpose: ListeningPurpose): void;
+  resetPreferences?(): Promise<void>;
+  exportFeedback?(): Promise<string>;
   start(): Promise<void>;
   vote(v: Vote): void; // synchronous, never locked out
   stop(): void;
