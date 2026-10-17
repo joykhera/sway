@@ -6,13 +6,14 @@ import type { Rng } from '../rng';
 import { activeIds, fingerprint, nudgeFeatures, signature } from '../targets';
 import { PARAMETERS as P } from './constants';
 import { dot, factor, solve, uncertainty, vector } from './model';
-import { CRAZY_VARIANTS, renderTarget } from './phrasing';
+import { CRAZY_VARIANTS, featureOfPrompt, renderTarget } from './phrasing';
 import { RECIPES, changedGroups, distance, purposePrior } from './recipes';
 import { intentPrior, matchesIntent, validatedIntent, withIntentPrompts } from './intent';
 import type { Decision, FeatureBlend, FeatureId, LearnerState, Purpose, Target } from './types';
 
 export type { Decision, FeatureBlend, FeatureId, LearnerState, Purpose, Target } from './types';
 export { PARAMETERS } from './constants';
+export { matchesIntent } from './intent';
 
 const coefficients = (theta: number[]) => Object.fromEntries(FEATURE_IDS.map((id, i) => [id, theta[i]!])) as Record<FeatureId, number>;
 const clamp01 = (value: number) => Math.max(0, Math.min(1, value));
@@ -277,7 +278,18 @@ export function evolveNoVote(args: { state: LearnerState; target: Target; step?:
  * Steer one step toward a feature the listener picked. Not a vote: no evidence
  * changes, and the target keeps its decision and wording for retained features.
  */
-export function nudge(args: { state: LearnerState; target: Target; feature: FeatureId }): Target {
+export function nudge(args: { state: LearnerState; target: Target; feature: FeatureId; intent?: MusicIntent }): Target {
+  const intent = validatedIntent(args.intent);
+  if (intent) {
+    const current = compliantTarget(args.state, args.target, intent);
+    const features = nudgeFeatures(current.features, args.feature);
+    const allowed = matchesIntent(features, intent);
+    return withDecision(allowed ? { ...current, features } : current, allowed ? 'variation' : 'hold',
+      allowed ? `Leaning toward ${args.feature} within the active request; this adds no preference evidence.`
+        : `Keeping the active request; ${args.feature} conflicts with its explicit constraints. Edit or clear the request to use it.`,
+      args.state, current.lastDecision?.step ?? 0, phrasingSalt(current, args.state), current.prompts, false, intent);
+  }
+  // Preserve main's no-intent nudge exactly, including decision metadata.
   const salt = phrasingSalt(args.target, args.state);
   const features = nudgeFeatures(args.target.features, args.feature);
   return {
@@ -285,6 +297,44 @@ export function nudge(args: { state: LearnerState; target: Target; feature: Feat
     ...renderTarget(features, {}, { keep: args.target.prompts, salt }, args.state.purpose),
     phrasingSalt: salt,
   };
+}
+
+/** Repair stale/incomplete destinations before any request-constrained manual action. */
+function compliantTarget(state: LearnerState, target: Target, intent: MusicIntent): Target {
+  const rendered = renderTarget(target.features, {}, { keep: target.prompts, salt: phrasingSalt(target, state) }, 'explore');
+  return matchesIntent(target.features, intent) && matchesIntent(rendered.features, intent)
+    ? { ...target, ...rendered } : applyIntent({ state, currentTarget: target, intent });
+}
+
+/** Recall a blend, not its old request text. Like/nudge/recall never clear constraints implicitly. */
+export function restoreTarget(args: { state: LearnerState; currentTarget: Target; moment: Target; intent?: MusicIntent }): Target {
+  const intent = validatedIntent(args.intent);
+  if (!intent) {
+    // Main permits exact mid-ramp snapshots, with more than one mood/texture.
+    // Do not project these or recompute their weights when there is no request.
+    // Only remove old request overlays; known feature wording remains intact.
+    const prompts = args.moment.prompts.filter(({ text }) => {
+      const id = featureOfPrompt(text);
+      return id !== undefined && (args.moment.features[id] ?? 0) > 0;
+    }).map(prompt => ({ ...prompt }));
+    const { intentRendering: _oldRequest, ...current } = args.currentTarget;
+    return {
+      ...current,
+      ...(prompts.length ? { features: { ...args.moment.features }, prompts }
+        : renderTarget(args.moment.features, current.features,
+          { salt: phrasingSalt(current, args.state) }, args.state.purpose)),
+    };
+  }
+  const current = compliantTarget(args.state, args.currentTarget, intent);
+  const salt = phrasingSalt(current, args.state);
+  const restored = renderTarget(args.moment.features, current.features,
+    { keep: args.moment.prompts, salt }, 'explore');
+  if (!matchesIntent(args.moment.features, intent) || !matchesIntent(restored.features, intent)) {
+    return withDecision(current, 'hold', 'Keeping the active request; that saved moment conflicts with its explicit constraints. Edit or clear the request to recall it.',
+      args.state, current.lastDecision?.step ?? 0, salt, current.prompts, false, intent);
+  }
+  return withDecision(restored, 'variation', 'Returning to the saved blend with current request wording; this adds no preference evidence.',
+    args.state, current.lastDecision?.step ?? 0, salt, restored.prompts, false, intent);
 }
 
 export function inspect(state: LearnerState, target: Target) {

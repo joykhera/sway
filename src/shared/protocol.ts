@@ -93,6 +93,8 @@ export interface Learner {
   evolveNoVote(args: { state: LearnerState; target: Target; step?: number; intent?: import('./intent').MusicIntent }): Target;
   // One step toward a feature the listener picked. Must not change state (not a vote).
   nudge?(args: { state: LearnerState; target: Target; feature: string; intent?: MusicIntent }): Target;
+  // Recall saved features under the current request, without learning or replaying stale context.
+  restoreTarget?(args: { state: LearnerState; currentTarget: Target; moment: Target; intent?: MusicIntent }): Target;
 }
 
 // ---- Playback contract (implemented by B in src/audio, consumed by D) ----

@@ -90,7 +90,8 @@ export const adaptiveLearner: Learner = {
     return { state: result.state, target: sharedTarget(result.target) };
   },
   evolveNoVote: (args) => sharedTarget(adaptive.evolveNoVote({ ...args, state: requireState(args.state) })),
-  nudge: ({ state, target, feature }) => (FEATURE_IDS as readonly string[]).includes(feature)
-    ? sharedTarget(adaptive.nudge({ state: requireState(state), target, feature: feature as FeatureId }))
+  nudge: ({ state, target, feature, intent }) => (FEATURE_IDS as readonly string[]).includes(feature)
+    ? sharedTarget(adaptive.nudge({ state: requireState(state), target, feature: feature as FeatureId, intent }))
     : target,
+  restoreTarget: (args) => sharedTarget(adaptive.restoreTarget({ ...args, state: requireState(args.state) })),
 };
