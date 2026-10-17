@@ -1,7 +1,7 @@
 import type { Learner, LearnerState as SharedState, Target as SharedTarget } from '../../shared/protocol';
 import { FEATURE_IDS } from '../vocabulary';
 import * as adaptive from './index';
-import type { LearnerState, Target } from './types';
+import type { FeatureId, LearnerState, Target } from './types';
 import { PARAMETERS as P } from './constants';
 import { factor, solve } from './model';
 import { distance } from './recipes';
@@ -89,4 +89,7 @@ export const adaptiveLearner: Learner = {
     return { state: result.state, target: sharedTarget(result.target) };
   },
   evolveNoVote: (args) => sharedTarget(adaptive.evolveNoVote({ ...args, state: requireState(args.state) })),
+  nudge: ({ state, target, feature }) => (FEATURE_IDS as readonly string[]).includes(feature)
+    ? sharedTarget(adaptive.nudge({ state: requireState(state), target, feature: feature as FeatureId }))
+    : target,
 };

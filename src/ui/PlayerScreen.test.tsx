@@ -480,3 +480,14 @@ describe('PlayerScreen — active session view', () => {
     });
   });
 });
+
+describe('PlayerScreen — leaning toward a style', () => {
+  it('offers keyboard-reachable buttons that nudge toward each style', () => {
+    const f = makeFake({ status: 'playing' });
+    const nudge = vi.fn();
+    render(<PlayerScreen controller={{ ...f.controller, nudge }} />);
+    fireEvent.click(screen.getByRole('button', { name: 'more jazz' }));
+    expect(nudge).toHaveBeenCalledWith('jazz');
+    expect(f.vote).not.toHaveBeenCalled();
+  });
+});

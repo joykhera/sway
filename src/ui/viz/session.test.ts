@@ -12,9 +12,10 @@ describe('describe', () => {
     expect(describeBlend({})).toBe('');
   });
 
-  it('normalizes by the largest score but keeps small early scores small', () => {
+  it('keeps an absolute scale so repeat likes still show, compressing only beyond ±1', () => {
+    expect(normalizeTaste({ jazz: 0.52, piano: -0.3 })).toEqual({ jazz: 0.52, piano: -0.3 });
+    expect(normalizeTaste({ jazz: 0.73, piano: -0.3 }).jazz).toBeGreaterThan(normalizeTaste({ jazz: 0.52, piano: -0.3 }).jazz!);
     expect(normalizeTaste({ jazz: 2, piano: -1 })).toEqual({ jazz: 1, piano: -0.5 });
-    expect(normalizeTaste({ jazz: 0.1 })).toEqual({ jazz: 0.2 });
   });
 
   it('picks the best-liked feature per group and skips groups with nothing liked', () => {

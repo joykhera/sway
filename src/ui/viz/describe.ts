@@ -1,7 +1,7 @@
 // Plain-words labels for feature blends and learned taste.
-import { FEATURE_GROUPS, GROUP_IDS, type FeatureGroup } from '../../learner/vocabulary.ts';
+import { FEATURE_GROUPS, FEATURE_IDS, GROUP_IDS, type FeatureGroup } from '../../learner/vocabulary.ts';
 
-export { FEATURE_GROUPS, GROUP_IDS, type FeatureGroup };
+export { FEATURE_GROUPS, FEATURE_IDS, GROUP_IDS, type FeatureGroup };
 
 const positive = (value: number | undefined): value is number => typeof value === 'number' && Number.isFinite(value) && value > 0;
 
@@ -14,10 +14,15 @@ export function describeBlend(features: Record<string, number>): string {
   }).filter(Boolean).join(' · ');
 }
 
-/** Scores scaled to -1..1 by the largest magnitude; small early scores stay small. */
+/**
+ * Scores on an absolute -1..1 scale. The adaptive learner's scores already sit
+ * about there and keep climbing with repeat likes (0.52, 0.73, 0.85, …), so
+ * each like visibly strengthens a favourite; only scores beyond ±1 compress.
+ * (Dividing by the strongest score hid those likes: the ratios don't change.)
+ */
 export function normalizeTaste(taste: Record<string, number>): Record<string, number> {
   const values = Object.values(taste).filter(Number.isFinite);
-  const scale = Math.max(0.5, ...values.map(Math.abs));
+  const scale = Math.max(1, ...values.map(Math.abs));
   return Object.fromEntries(Object.entries(taste).map(([id, v]) => [id, Number.isFinite(v) ? v / scale : 0]));
 }
 

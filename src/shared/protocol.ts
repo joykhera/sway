@@ -85,6 +85,8 @@ export interface Learner {
   }): { state: LearnerState; target: Target };
   // Must not change state.scores. Silence is not feedback.
   evolveNoVote(args: { state: LearnerState; target: Target; step?: number }): Target;
+  // One step toward a feature the listener picked. Must not change state (not a vote).
+  nudge?(args: { state: LearnerState; target: Target; feature: string }): Target;
 }
 
 // ---- Playback contract (implemented by B in src/audio, consumed by D) ----
@@ -191,6 +193,8 @@ export interface MusicSessionController {
   getTaste?(): Record<string, number>;
   captureMoment?(): Target | null;
   recallMoment?(moment: Target): void;
+  // Gradually steer toward one feature the listener picked (not a vote).
+  nudge?(feature: string): void;
   start(): Promise<void>;
   vote(v: Vote): void; // synchronous, never locked out
   stop(): void;

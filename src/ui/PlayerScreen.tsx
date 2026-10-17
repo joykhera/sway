@@ -6,12 +6,13 @@ import { NowPlayingPanel } from './NowPlayingPanel.tsx';
 import { ThumbsControls } from './ThumbsControls.tsx';
 import { FlowVisualizer, Visualizer } from './Visualizer.tsx';
 import { supportsFlowRenderer } from './viz/flow-renderer.ts';
-import { TasteConstellation } from './TasteConstellation.tsx';
+import { TasteVerse } from './TasteVerse.tsx';
 import { MomentsTray } from './MomentsTray.tsx';
 import { SessionPortrait } from './SessionPortrait.tsx';
-import { describeBlend } from './viz/describe.ts';
+import { describeBlend, FEATURE_IDS } from './viz/describe.ts';
 import { lookForBlend } from './viz/looks.ts';
 import { SessionRecorder, type SessionLog, type SessionMoment } from './viz/session-log.ts';
+import { createTasteField } from './viz/verse.ts';
 import './ui.css';
 import './hud.css';
 
@@ -76,6 +77,9 @@ export function PlayerScreen({ controller }: PlayerScreenProps) {
   const [lastVote, setLastVote] = useState<{ v: Vote; at: number } | null>(null);
   const [flow, setFlow] = useState(wantsFlow);
   const recorder = useRef(new SessionRecorder()).current;
+  // Where the taste lettering sits, so the smoke can reach for the words it's playing.
+  const field = useRef(createTasteField()).current;
+  const stageRef = useRef<HTMLDivElement | null>(null);
   const [moments, setMoments] = useState<SessionMoment[]>([]);
   const [recalling, setRecalling] = useState<SessionMoment | null>(null);
   const [portrait, setPortrait] = useState<SessionLog | null>(null);
@@ -309,14 +313,31 @@ export function PlayerScreen({ controller }: PlayerScreenProps) {
 
   return (
     <main className="app app--live">
-      <div className="app__stage">
+      <div className="app__stage" ref={stageRef}>
         {flow ? (
-          <FlowVisualizer active={active} lastVote={lastVote} source={controller} onUnavailable={() => setFlow(false)} />
+          <FlowVisualizer active={active} lastVote={lastVote} source={controller} field={field} onUnavailable={() => setFlow(false)} />
         ) : (
           <Visualizer active={active} lastVote={lastVote} />
         )}
       </div>
-      {controller.getTaste ? <TasteConstellation source={controller} ringFraction={flow ? 0.42 : 0.35} /> : null}
+      {controller.getTaste ? (
+        <TasteVerse
+          source={controller}
+          ringFraction={flow ? 0.42 : 0.35}
+          lastVote={lastVote}
+          field={flow ? field : undefined}
+          anchor={flow ? undefined : () => stageRef.current?.querySelector('.visualizer')?.getBoundingClientRect()}
+          onPick={controller.nudge ? (id) => controller.nudge?.(id) : undefined}
+        />
+      ) : null}
+      {controller.nudge ? (
+        // The ring of words is a canvas; keyboard and screen-reader users steer from here.
+        <div className="sr-only" role="group" aria-label="lean the music toward a style">
+          {FEATURE_IDS.map((id) => (
+            <button key={id} type="button" onClick={() => controller.nudge?.(id)}>more {id}</button>
+          ))}
+        </div>
+      ) : null}
       <div className="app__scrim" aria-hidden="true" />
       <div className="hud">
         <NowPlayingPanel state={state} controller={controller} />

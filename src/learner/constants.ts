@@ -14,6 +14,8 @@ export const LEARNER_PARAMETERS = Object.freeze({
   minActiveIntensity: 0.1,
   maxIntensity: 1,
   promptScale: 2,
+  /** How far one click on a style word moves toward it (feature intensity). */
+  nudgeStep: 0.15,
   initialJitter: 0.05,
 });
 

@@ -69,6 +69,23 @@ float hash(vec2 p) {
   return fract((p3.x + p3.y) * p3.z);
 }`;
 
+// The taste lettering around the ring (see verse.ts): xy = direction (GL space),
+// z = audible share, w = taste. Each word casts a narrow lobe at its angle.
+const WORDS = /* glsl */ `
+uniform vec4 uWords[18];
+uniform int uWordCount;
+// Sum over words of weight * lobe toward that word; sharper lobes for higher power.
+float wordLobe(vec2 dir, float sharp, int channel) {
+  float sum = 0.0;
+  for (int i = 0; i < 18; i++) {
+    if (i >= uWordCount) break;
+    vec4 w = uWords[i];
+    float weight = channel == 0 ? w.z : channel == 1 ? max(w.w, 0.0) : max(-w.w, 0.0);
+    sum += weight * pow(max(dot(dir, w.xy), 0.0), sharp);
+  }
+  return sum;
+}`;
+
 export const SIM_FS = /* glsl */ `#version 300 es
 precision highp float;
 precision highp sampler2D;
@@ -79,6 +96,7 @@ uniform float uBass, uMid, uBeat, uUp, uDown;
 out vec4 outState;
 ${SIMPLEX}
 ${HASH}
+${WORDS}
 // Divergence-free flow from a noise potential: particles swirl like ink, never clump.
 vec2 curl(vec2 p, float t) {
   const float e = 0.02;
@@ -104,12 +122,18 @@ void main() {
   }
   vec2 d = x / max(r, 1e-4);
   vec2 tangent = vec2(-d.y, d.x);
+  // The ring reaches out toward the words you're hearing, a petal per word.
+  float reach = min(wordLobe(d, 40.0, 0) * 2.0, 1.0);
   // Bass and onsets swell the ring; a like blooms it outward, a dislike tightens it.
-  float target = uRadius * (1.0 + 0.22 * uBass + 0.12 * uBeat + 0.18 * uUp - 0.1 * uDown);
+  float target = uRadius * (1.0 + 0.16 * uBass + 0.1 * uBeat + 0.18 * uUp - 0.1 * uDown + 0.75 * reach);
   float jitter = fract(seed * 17.31);
-  vec2 v = curl(x * uNoiseScale, uTime * 0.12 * uFlow) * uTurb * (0.3 + 0.9 * uMid + 1.5 * uDown)
-    + tangent * uSwirl * (0.6 + 0.8 * uBass)
-    + d * (target - r) * uPull * (1.0 + 2.0 * abs(target - r))
+  // Turbulence is held down off the petals so loud music stirs the ring without dissolving it.
+  // Some of the particles under a heard word let go and rise toward it, a plume of smoke.
+  float plume = reach * step(jitter, 0.3);
+  vec2 v = curl(x * uNoiseScale, uTime * 0.12 * uFlow) * uTurb * (0.25 + 0.5 * uMid + 1.2 * uDown) * (0.7 + 0.6 * reach)
+    + tangent * uSwirl * (0.6 + 0.8 * uBass) * (1.0 - 0.7 * reach)
+    + d * (target - r) * uPull * (1.4 + 3.0 * abs(target - r)) * (1.0 - plume)
+    + d * plume * (0.8 + 0.6 * uBass)
     + d * (uBeat * uBurst + uUp * 1.4) * (0.3 + jitter);
   x += v * uDt * uSpeed * 0.35;
   outState = vec4(x, life, seed);
@@ -140,6 +164,7 @@ uniform int uSide;
 uniform float uAspect, uPointSize, uHigh, uTime, uUp, uDown, uDensity;
 uniform vec3 uColorA, uColorB, uHighlight, uWarm, uCool;
 out vec3 vColor;
+${WORDS}
 void main() {
   vec4 s = texelFetch(uState, ivec2(gl_VertexID % uSide, gl_VertexID / uSide), 0);
   gl_Position = vec4(s.x / uAspect, s.y, 0.0, 1.0);
@@ -150,6 +175,10 @@ void main() {
   float angle = atan(s.y, s.x);
   vec3 c = mix(uColorA, uColorB, 0.5 + 0.5 * sin(angle * 2.0 + uTime * 0.15 + seed * 6.2831));
   c = mix(c, uHighlight, clamp(step(0.94, fract(seed * 31.1)) + sparkle * 0.6, 0.0, 1.0));
+  // The smoke takes on your taste where it passes a word: warm by liked words, cool by disliked.
+  vec2 dir = s.xy / max(length(s.xy), 1e-4);
+  c = mix(c, uWarm, clamp(wordLobe(dir, 14.0, 1), 0.0, 1.0) * 0.5);
+  c = mix(c, uCool, clamp(wordLobe(dir, 14.0, 2), 0.0, 1.0) * 0.4);
   c = mix(c, uWarm, clamp(uUp, 0.0, 1.0) * 0.65);
   c = mix(c, uCool, clamp(uDown, 0.0, 1.0) * 0.65);
   vColor = c * fade * uDensity;
@@ -168,7 +197,7 @@ export const DISPLAY_FS = /* glsl */ `#version 300 es
 precision highp float;
 uniform sampler2D uTrail;
 uniform vec2 uRes;
-uniform float uAspect, uExposure, uTime;
+uniform float uAspect, uExposure, uTime, uRim, uRing;
 uniform vec3 uBackground;
 out vec4 outColor;
 void main() {
@@ -184,8 +213,13 @@ void main() {
     glow += texture(uTrail, uv + dir * px * 18.0).rgb * 0.6;
   }
   t += glow * 0.04;
-  vec3 col = 1.0 - exp(-t * uExposure);
   vec2 c = (uv - 0.5) * vec2(uAspect, 1.0);
+  // Ring-space radius (1 = half the height). Keep the eye of the ring dark for the
+  // poem, and let the smoke thin out before it reaches the lettering.
+  float r = length(c) * 2.0;
+  t *= mix(0.35, 1.0, smoothstep(0.15 * uRing, 0.8 * uRing, r));
+  if (uRim > 0.0) t *= mix(1.0, 0.1, smoothstep(uRim - 0.12, uRim + 0.03, r));
+  vec3 col = 1.0 - exp(-t * uExposure);
   vec3 bg = uBackground * (1.25 - 0.9 * length(c));
   col += bg * (1.0 - col);
   // Dither away banding in the long dark gradients.

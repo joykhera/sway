@@ -2,6 +2,7 @@
 // with feedback trails. Framework-free; Visualizer.tsx owns the loop and inputs.
 import type { Bands } from './audio-bands.ts';
 import type { Look, Rgb } from './looks.ts';
+import { MAX_FIELD_WORDS, packField, RING_IN_RIM, type TasteField } from './verse.ts';
 import { DISPLAY_FS, FADE_FS, FULLSCREEN_VS, POINTS_FS, POINTS_VS, SIM_FS } from './shaders.ts';
 
 export type FlowFrame = {
@@ -17,6 +18,8 @@ export type FlowFrame = {
   active: boolean;
   warm: Rgb;
   cool: Rgb;
+  /** Taste lettering around the ring, if any. */
+  field?: TasteField;
 };
 
 export interface FlowRenderer {
@@ -134,6 +137,7 @@ export function createFlowRenderer(canvas: HTMLCanvasElement, opts: { side?: num
   let height = 1;
   let dpr = 1;
   let disposed = false;
+  const words = new Float32Array(MAX_FIELD_WORDS * 4);
 
   const onLost = (event: Event) => {
     event.preventDefault();
@@ -173,6 +177,10 @@ export function createFlowRenderer(canvas: HTMLCanvasElement, opts: { side?: num
       const dt = Math.min(Math.max(frame.dt, 0), 0.05);
       const aspect = width / height;
       const pace = frame.active ? 1 : 0.35;
+      const wordCount = frame.field ? packField(frame.field, words) : 0;
+      // On narrow screens the lettering comes in from the sides; keep the ring inside it.
+      const rim = frame.field?.rim ?? 0;
+      const ring = rim > 0 ? Math.min(RING_RADIUS, rim * RING_IN_RIM) : RING_RADIUS;
 
       // 1. Simulate.
       gl.disable(gl.BLEND);
@@ -183,7 +191,7 @@ export function createFlowRenderer(canvas: HTMLCanvasElement, opts: { side?: num
       const f = (name: string, value: number) => gl.uniform1f(sim.uniform(name), value);
       f('uTime', frame.time);
       f('uDt', dt * pace);
-      f('uRadius', RING_RADIUS);
+      f('uRadius', ring);
       f('uSpread', look.spread);
       f('uSwirl', look.swirl);
       f('uTurb', look.turbulence);
@@ -197,6 +205,8 @@ export function createFlowRenderer(canvas: HTMLCanvasElement, opts: { side?: num
       f('uBeat', bands.beat);
       f('uUp', frame.up);
       f('uDown', frame.down);
+      gl.uniform4fv(sim.uniform('uWords'), words);
+      gl.uniform1i(sim.uniform('uWordCount'), wordCount);
       gl.drawArrays(gl.TRIANGLES, 0, 3);
       current = 1 - current;
 
@@ -210,10 +220,10 @@ export function createFlowRenderer(canvas: HTMLCanvasElement, opts: { side?: num
       gl.uniform2f(fade.uniform('uRes'), width, height);
       gl.uniform1f(fade.uniform('uAspect'), aspect);
       gl.uniform1f(fade.uniform('uFade'), Math.pow(Math.min(look.trail, 0.95), dt));
-      gl.uniform1f(fade.uniform('uZoom'), look.drift * dt * pace * (1 + bands.beat * 1.5));
+      gl.uniform1f(fade.uniform('uZoom'), look.drift * 0.6 * dt * pace * (1 + bands.beat));
       gl.uniform1f(fade.uniform('uRot'), look.spin * dt * pace);
       gl.uniform1f(fade.uniform('uTime'), frame.time);
-      gl.uniform1f(fade.uniform('uWarp'), 0.05 * dt);
+      gl.uniform1f(fade.uniform('uWarp'), 0.03 * dt);
       gl.drawArrays(gl.TRIANGLES, 0, 3);
 
       // 3. Particles, additively.
@@ -236,6 +246,8 @@ export function createFlowRenderer(canvas: HTMLCanvasElement, opts: { side?: num
       gl.uniform3fv(points.uniform('uHighlight'), look.highlight);
       gl.uniform3fv(points.uniform('uWarm'), frame.warm);
       gl.uniform3fv(points.uniform('uCool'), frame.cool);
+      gl.uniform4fv(points.uniform('uWords'), words);
+      gl.uniform1i(points.uniform('uWordCount'), wordCount);
       gl.drawArrays(gl.POINTS, 0, count);
       gl.disable(gl.BLEND);
       trailCurrent = 1 - trailCurrent;
@@ -247,9 +259,11 @@ export function createFlowRenderer(canvas: HTMLCanvasElement, opts: { side?: num
       bindTexture(display, 'uTrail', next.texture);
       gl.uniform2f(display.uniform('uRes'), width, height);
       gl.uniform1f(display.uniform('uAspect'), aspect);
-      gl.uniform1f(display.uniform('uExposure'), 1.6);
+      gl.uniform1f(display.uniform('uExposure'), 1.2);
       gl.uniform1f(display.uniform('uTime'), frame.time);
       gl.uniform3fv(display.uniform('uBackground'), look.background);
+      gl.uniform1f(display.uniform('uRim'), rim);
+      gl.uniform1f(display.uniform('uRing'), ring);
       gl.drawArrays(gl.TRIANGLES, 0, 3);
     },
 

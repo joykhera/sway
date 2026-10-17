@@ -728,6 +728,17 @@ export class SessionController implements MusicSessionController {
     );
   }
 
+  /**
+   * Steer one step toward a feature the listener picked, over the usual ramp.
+   * Repeat clicks go further. Not a vote: the learner's state is untouched.
+   */
+  nudge(feature: string): void {
+    if (!this.canHear() || !this.deps.learner.nudge) return;
+    const target = this.deps.learner.nudge({ state: this.learnerState, target: this.target, feature });
+    this.log('nudge', { feature, target: target.features });
+    this.retarget(target);
+  }
+
   private resetHearing(features: FeatureBlend, prompts?: WeightedPrompt[]): void {
     this.history = [{ at: this.now(), features, prompts }];
     this.heard = this.history[0];
