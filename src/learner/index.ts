@@ -1,10 +1,10 @@
-import type { Vote } from '../shared/protocol';
+import type { Vote, WeightedPrompt } from '../shared/protocol';
 import { INITIAL_INTENSITY, LEARNER_PARAMETERS as P } from './constants';
 import { createRng, hashText, normalizeSeed, pick } from './rng';
 import { chooseAlternative } from './selection';
-import { activeIds, clamp, fingerprint, sanitizeFeatures, toTarget } from './targets';
+import { activeIds, choosePhrasing, clamp, fingerprint, sanitizeFeatures, toTarget, type Phrasing } from './targets';
 import type { FeatureBlend, LearnerState, Target } from './types';
-import { FEATURE_GROUPS, FEATURE_IDS, GROUP_IDS } from './vocabulary';
+import { FEATURE_GROUPS, FEATURE_IDS, GROUP_IDS, PROMPT_VARIANTS } from './vocabulary';
 import type { FeatureId } from './vocabulary';
 
 export type { FeatureBlend, LearnerState, Target } from './types';
@@ -24,7 +24,7 @@ export function initialTarget(state: LearnerState): Target {
     features[pick(FEATURE_GROUPS[group] as readonly FeatureId[], rng)] =
       INITIAL_INTENSITY[group] + (rng.next() * 2 - 1) * P.initialJitter;
   }
-  return toTarget(features);
+  return toTarget(features, {}, { salt: state.seed });
 }
 
 function learn(state: LearnerState, audible: FeatureBlend, vote: Vote): LearnerState {
@@ -37,7 +37,7 @@ function learn(state: LearnerState, audible: FeatureBlend, vote: Vote): LearnerS
   return { scores, votes: state.votes + 1, seed: state.seed };
 }
 
-function amplify(state: LearnerState, base: Target, audible: FeatureBlend): Target {
+function amplify(state: LearnerState, base: Target, audible: FeatureBlend, phrasing: Phrasing): Target {
   const features = { ...base.features };
   const candidates = activeIds(features).filter((id) => (audible[id] ?? 0) > 0);
   candidates.sort((a, b) => state.scores[b] - state.scores[a] || features[b]! - features[a]!);
@@ -46,7 +46,7 @@ function amplify(state: LearnerState, base: Target, audible: FeatureBlend): Targ
     // Increase one current quality relative to the others. Uniform scaling is ineffective.
     features[focus] = Math.min(P.maxIntensity, features[focus]! + P.likeBoost);
   }
-  return toTarget(features);
+  return toTarget(features, {}, phrasing);
 }
 
 /** One immediate immutable update per explicit click. D owns ramps and revisions. */
@@ -63,9 +63,11 @@ export function processVote(args: {
   rng.next(); // Advance explicitly even when the like path needs no random choice.
   const pending = toTarget(args.currentTarget.features);
   const base = toTarget(audible, pending.features);
+  // Features that stay keep their wording; newly added ones get a seeded phrasing.
+  const phrasing: Phrasing = { keep: args.currentTarget.prompts, salt: state.seed };
   const target = args.vote === 'up'
-    ? amplify(state, base, audible)
-    : toTarget(chooseAlternative(state, base.features, pending.features, rng));
+    ? amplify(state, base, audible, phrasing)
+    : toTarget(chooseAlternative(state, base.features, pending.features, rng), {}, phrasing);
   return { state: { ...state, seed: rng.seed }, target };
 }
 
@@ -85,5 +87,13 @@ export function evolveNoVote(args: { state: LearnerState; target: Target }): Tar
   if (next < P.minActiveIntensity) next = 2 * P.minActiveIntensity - next;
   if (next > P.maxIntensity) next = 2 * P.maxIntensity - next;
   features[id] = next;
-  return toTarget(features);
+  // Sometimes also reword one active feature: a within-style change, never a score change.
+  let keep: readonly WeightedPrompt[] = args.target.prompts;
+  if (rng.next() < P.phrasingDriftProbability) {
+    const reworded = pick(activeIds(features), rng);
+    const current = choosePhrasing(reworded, { keep });
+    const others = PROMPT_VARIANTS[reworded].filter((text) => text !== current);
+    keep = [...keep.filter((p) => p.text !== current), { text: pick(others, rng), weight: 1 }];
+  }
+  return toTarget(features, {}, { keep });
 }
