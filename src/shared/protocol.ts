@@ -1,3 +1,4 @@
+import type { MusicIntent } from './intent.ts';
 // Application protocol between browser and relay (NOT Google's wire protocol).
 // Owned by D after the initial scaffold; changes need a small PR approved by affected owners.
 // Browser-safe: no Node imports.
@@ -103,11 +104,18 @@ export type SessionState = {
   purpose?: ListeningPurpose;
   memory?: 'loading' | 'ready' | 'saving' | 'unavailable';
   savedVotes?: number;
+  intent?: MusicIntent;
+  intentStatus?: 'idle' | 'loading' | 'ready' | 'clarify' | 'unsupported' | 'error';
+  intentMessage?: string;
+  intentAvailable?: boolean;
+  intentText?: string;
 };
 
 export interface MusicSessionController {
   // Optional pre-session setup; persistent controllers restore separate memory per purpose.
   setPurpose?(purpose: ListeningPurpose): void;
+  interpretText?(text: string): Promise<void>;
+  clearIntent?(): void;
   resetPreferences?(): Promise<void>;
   exportFeedback?(): Promise<string>;
   start(): Promise<void>;
