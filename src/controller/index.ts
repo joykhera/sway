@@ -29,7 +29,8 @@ export type ControllerDeps = {
 };
 
 type Ramp = { fromFeatures: FeatureBlend; fromPrompts: WeightedPrompt[]; target: Target; step: number };
-type Sent = { at: number; features: FeatureBlend };
+// `prompts` lets a liked moment be revisited with its exact wording.
+type Sent = { at: number; features: FeatureBlend; prompts?: WeightedPrompt[] };
 
 function blendDistance(a: FeatureBlend, b: FeatureBlend): number {
   const total = (blend: FeatureBlend) => Object.values(blend).reduce((sum, value) => sum + (Number.isFinite(value) && value > 0 ? value : 0), 0);
@@ -89,7 +90,7 @@ export class SessionController implements MusicSessionController {
     this.target = deps.learner.initialTarget(this.learnerState);
     this.sentFeatures = this.target.features;
     this.sentPrompts = this.target.prompts;
-    this.resetHearing(this.sentFeatures);
+    this.resetHearing(this.sentFeatures, this.sentPrompts);
   }
 
   setPurpose(purpose: ListeningPurpose): void {
@@ -100,7 +101,7 @@ export class SessionController implements MusicSessionController {
     this.sentFeatures = this.target.features;
     this.sentPrompts = this.target.prompts;
     this.noveltyStep = 0;
-    this.resetHearing(this.sentFeatures);
+    this.resetHearing(this.sentFeatures, this.sentPrompts);
   }
 
   async start(): Promise<void> {
@@ -157,7 +158,7 @@ export class SessionController implements MusicSessionController {
     // Start from the latest target: after a (re)connect there is no audio continuity to protect.
     this.sentFeatures = this.target.features;
     this.sentPrompts = this.target.prompts;
-    this.resetHearing(this.sentFeatures);
+    this.resetHearing(this.sentFeatures, this.sentPrompts);
     this.ready = false;
     this.awaitingReady = false;
     const transport = this.deps.createTransport();
@@ -188,7 +189,7 @@ export class SessionController implements MusicSessionController {
         this.attempts = 0;
         this.setState({ status: 'playing' });
         const started = this.started;
-        if (resetHearing) this.resetHearing(started?.features ?? this.sentFeatures);
+        if (resetHearing) this.resetHearing(started?.features ?? this.sentFeatures, started?.prompts ?? this.sentPrompts);
         this.started = undefined; // `ready` can repeat after an upstream reconnect; only the first one matters
         if (started && started.prompts !== this.sentPrompts) {
           // Voted while connecting: the relay started on an older target, so ramp to the latest.
@@ -299,7 +300,7 @@ export class SessionController implements MusicSessionController {
     this.sentFeatures = t >= 1 ? ramp.target.features : lerpBlend(ramp.fromFeatures, ramp.target.features, t);
     this.sentPrompts = lerpPrompts(ramp.fromPrompts, ramp.target.prompts, t);
     const at = this.now();
-    this.history.push({ at, features: this.sentFeatures });
+    this.history.push({ at, features: this.sentFeatures, prompts: this.sentPrompts });
     this.history = this.history.filter((h, i) => i === 0 || at - h.at <= this.cfg.historyRetentionMs);
     this.transport?.send({ type: 'steer', revision: ++this.revision, prompts: this.sentPrompts });
     if (t < 1) this.rampTimer = setTimeout(() => this.tick(), this.cfg.stepMs);
@@ -334,8 +335,32 @@ export class SessionController implements MusicSessionController {
     return this.deps.player.getAnalyser?.() ?? null;
   }
 
-  private resetHearing(features: FeatureBlend): void {
-    this.history = [{ at: this.now(), features }];
+  /** The learner's current per-feature scores, for showing what it has learned. */
+  getTaste(): Record<string, number> {
+    return { ...this.learnerState.scores };
+  }
+
+  /** What is audible right now, as a target that can be returned to later. Null when nothing is playing. */
+  captureMoment(): Target | null {
+    if (!this.canHear()) return null;
+    const cursor = this.hasAudiblePlayback() ? Math.max(this.audibleCursor, this.audibleCutoff()) : this.audibleCursor;
+    const heard = this.pickHeard(cursor);
+    return heard?.prompts ? { features: { ...heard.features }, prompts: heard.prompts.map((p) => ({ ...p })) } : null;
+  }
+
+  /**
+   * Steer back to a captured moment. The same prompts give a similar sound, not
+   * the same audio. Not a vote: the learner's state is untouched.
+   */
+  recallMoment(moment: Target): void {
+    if (!this.canHear() || moment.prompts.length === 0) return;
+    this.log('recall', { target: moment.features });
+    // Keep learner metadata (e.g. the phrasing salt) so later votes continue from here.
+    this.retarget({ ...this.target, features: { ...moment.features }, prompts: moment.prompts.map((p) => ({ ...p })) });
+  }
+
+  private resetHearing(features: FeatureBlend, prompts: WeightedPrompt[]): void {
+    this.history = [{ at: this.now(), features, prompts }];
     this.heard = this.history[0];
     this.audibleCursor = -Infinity;
     this.evidenceHistory = [];

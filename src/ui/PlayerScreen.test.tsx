@@ -287,3 +287,30 @@ describe('PlayerScreen — active session view', () => {
     });
   });
 });
+
+describe('PlayerScreen — moments', () => {
+  it('a like keeps the heard sound as a moment, and tapping it steers back without voting', () => {
+    const f = makeFake({ status: 'playing' });
+    const heard = { features: { jazz: 0.45, piano: 0.4 }, prompts: [{ text: 'instrumental jazz', weight: 0.45 }] };
+    const recallMoment = vi.fn();
+    const controller = { ...f.controller, captureMoment: () => heard, recallMoment };
+    render(<PlayerScreen controller={controller} />);
+    expect(screen.queryByRole('group', { name: 'moments you liked' })).toBeNull();
+
+    fireEvent.click(screen.getByRole('button', { name: UP }));
+    const moment = screen.getByRole('button', { name: /^return to jazz · piano from 0:0\d$/ });
+    fireEvent.click(moment);
+    expect(recallMoment).toHaveBeenCalledWith(heard);
+    expect(f.vote).toHaveBeenCalledTimes(1);
+    expect(screen.getByText('returning to jazz · piano…')).toBeTruthy();
+  });
+
+  it('a dislike leaves no moment', () => {
+    const f = makeFake({ status: 'playing' });
+    const captureMoment = vi.fn(() => null);
+    render(<PlayerScreen controller={{ ...f.controller, captureMoment }} />);
+    fireEvent.click(screen.getByRole('button', { name: DOWN }));
+    expect(captureMoment).not.toHaveBeenCalled();
+    expect(screen.queryByRole('group', { name: 'moments you liked' })).toBeNull();
+  });
+});

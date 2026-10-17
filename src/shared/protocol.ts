@@ -101,6 +101,10 @@ export interface MusicSessionController {
   // Visualizer inputs: the output spectrum and the blend estimated to be audible now.
   getAnalyser?(): AnalyserNode | null;
   getAudibleFeatures?(): FeatureBlend;
+  // Taste and moments: learner scores, and liked moments to return to (never votes).
+  getTaste?(): Record<string, number>;
+  captureMoment?(): Target | null;
+  recallMoment?(moment: Target): void;
   start(): Promise<void>;
   vote(v: Vote): void; // synchronous, never locked out
   stop(): void;

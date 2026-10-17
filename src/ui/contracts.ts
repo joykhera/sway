@@ -6,6 +6,9 @@ import type { ListeningPurpose, Vote } from '../shared/protocol.ts';
 
 export type { ListeningPurpose, Vote };
 
+/** Opaque to the UI except for display: the prompt set behind a moment. */
+export type MomentTarget = { features: Record<string, number>; prompts: { text: string; weight: number }[] };
+
 /** `status` is intentionally an open string; the UI labels known values and shows unknown ones verbatim. */
 export type SessionUiState = { status: string; lastError?: string };
 
@@ -25,6 +28,12 @@ export interface MusicSessionController {
   getAnalyser?(): AnalyserNode | null;
   /** Optional visualizer input: feature weights estimated to be audible now (e.g. `{ jazz: 0.45, calm: 0.3 }`). */
   getAudibleFeatures?(): Record<string, number>;
+  /** Optional: the learner's per-feature scores (positive = leaning toward). */
+  getTaste?(): Record<string, number>;
+  /** Optional: what is audible now, to revisit later. Null when nothing is playing. */
+  captureMoment?(): MomentTarget | null;
+  /** Optional: steer back toward a captured moment. Not a vote. */
+  recallMoment?(moment: MomentTarget): void;
   /** Call synchronously inside the user's Start gesture (autoplay policy). Idempotent while a session is active. */
   start(): Promise<void>;
   /** Synchronous local update; never blocks, never locks the buttons. Ignored when no session is active. */

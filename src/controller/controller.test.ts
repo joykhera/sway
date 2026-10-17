@@ -346,3 +346,32 @@ describe('stop', () => {
     expect(relay.last.sent[0]).toEqual({ type: 'start', prompts: [{ text: 'jazz', weight: 1 }] });
   });
 });
+
+describe('taste and moments', () => {
+  it('captures the heard prompts and steers back to them without a vote', async () => {
+    const { relay, controller, calls } = await boot();
+    const ambient = controller.captureMoment();
+    expect(ambient?.prompts).toEqual([{ text: 'ambient', weight: 1 }]);
+    controller.vote('down');
+    await vi.advanceTimersByTimeAsync(8000);
+    expect(relay.last.steers.at(-1)!.prompts).toEqual([{ text: 'jazz', weight: 1 }]);
+    controller.recallMoment(ambient!);
+    await vi.advanceTimersByTimeAsync(8000);
+    expect(relay.last.steers.at(-1)!.prompts).toEqual([{ text: 'ambient', weight: 1 }]);
+    expect(calls.vote).toHaveLength(1);
+  });
+
+  it('has no moment to capture before playback', () => {
+    const c = new SessionController({ learner: fakeLearner().learner, player: new FakePlayer(), createTransport: fakeRelay().create });
+    expect(c.captureMoment()).toBeNull();
+  });
+
+  it('exposes a copy of the learned scores', async () => {
+    const { controller } = await boot();
+    controller.vote('up');
+    const taste = controller.getTaste();
+    expect(taste).toEqual({ ambient: 1 });
+    taste.ambient = 99;
+    expect(controller.getTaste()).toEqual({ ambient: 1 });
+  });
+});

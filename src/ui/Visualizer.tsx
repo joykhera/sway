@@ -249,7 +249,8 @@ export function FlowVisualizer({ active, lastVote, source, onUnavailable }: Flow
   const activeRef = useRef(active);
   const sourceRef = useRef(source);
   const failRef = useRef(onUnavailable);
-  voteRef.current = lastVote;
+  // PlayerScreen clears lastVote after a short flash; keep the last one so its bloom can finish.
+  if (lastVote) voteRef.current = lastVote;
   activeRef.current = active;
   sourceRef.current = source;
   failRef.current = onUnavailable;

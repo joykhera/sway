@@ -253,6 +253,140 @@ body {
   }
 }
 
+/* Taste constellation: the learner's picture of you, around the ring. */
+.constellation {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  z-index: 0;
+  pointer-events: none;
+  animation: flow-in 3s ease-out both;
+}
+
+/* ---- moments you liked (above the thumbs) ---- */
+
+.moments {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 18px;
+}
+
+.moments__dots {
+  display: flex;
+  gap: 10px;
+}
+
+.app button.moment {
+  position: relative;
+  appearance: none;
+  width: 12px;
+  height: 12px;
+  padding: 0;
+  border-radius: 50%;
+  border: none;
+  background: var(--moment-color);
+  box-shadow: 0 0 10px var(--moment-color);
+  opacity: 0.7;
+  cursor: pointer;
+  animation: moment-in 600ms cubic-bezier(0.22, 0.8, 0.3, 1) both;
+  transition: opacity 200ms ease, transform 200ms ease;
+}
+
+.app button.moment:hover,
+.app button.moment:focus-visible,
+.app button.moment--active {
+  opacity: 1;
+  transform: scale(1.35);
+}
+
+/* The moment's sound, in words, on hover. */
+.app button.moment::after {
+  content: attr(data-label);
+  position: absolute;
+  bottom: 22px;
+  left: 50%;
+  transform: translateX(-50%);
+  white-space: nowrap;
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  color: var(--fg);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 200ms ease;
+}
+
+.app button.moment:hover::after,
+.app button.moment:focus-visible::after {
+  opacity: 0.85;
+}
+
+.moments__caption {
+  margin: 0;
+  font-size: 10px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+@keyframes moment-in {
+  from {
+    opacity: 0;
+    transform: scale(2.4);
+  }
+}
+
+/* ---- session portrait (after End Session) ---- */
+
+.portrait {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 18px;
+  padding: 24px 16px;
+  background: rgba(5, 4, 4, 0.86);
+  backdrop-filter: blur(10px);
+  animation: flow-in 700ms ease-out both;
+}
+
+.portrait__image {
+  max-width: 100%;
+  max-height: calc(100dvh - 120px);
+  aspect-ratio: 1080 / 1350;
+  height: auto;
+  border-radius: 6px;
+  box-shadow: 0 30px 80px rgba(0, 0, 0, 0.6);
+}
+
+.portrait__actions {
+  display: flex;
+  gap: 24px;
+}
+
+.portrait__actions button {
+  appearance: none;
+  background: none;
+  border: 1px solid var(--hairline);
+  border-radius: 999px;
+  padding: 10px 20px;
+  font-size: 11px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--fg);
+  cursor: pointer;
+}
+
+.portrait__actions button:first-child {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
 /* ---- thumbs controls (bottom) ---- */
 
 .app__controls {
