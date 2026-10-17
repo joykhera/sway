@@ -586,7 +586,7 @@ export class SessionController implements MusicSessionController {
     if (!this.lookahead || !this.hasAudiblePlayback() || this.ramp) return false;
     const prepared = this.lookahead.take(vote, target);
     if (!prepared) return false;
-    const fadeMs = 250;
+    const fadeMs = 100;
     if (!this.deps.player.replacePcm?.(prepared.audio, prepared.chunks, fadeMs)) {
       prepared.dispose();
       return false;

@@ -68,7 +68,7 @@ describe('prepared feedback branches through the controller', () => {
     expect(r.profile?.state.votes).toBe(0);
     expect(r.events).toHaveLength(0);
     r.c.vote('down'); await r.flush();
-    expect(r.player.swaps).toEqual([{ audio: FORMAT, duration: 6000, fade: 250 }]);
+    expect(r.player.swaps).toEqual([{ audio: FORMAT, duration: 6000, fade: 100 }]);
     expect(r.wires[2]!.sent.at(-1)).toEqual({ type: 'resume' });
     expect(r.wires[0]!.closed).toBe(true); expect(r.wires[1]!.closed).toBe(true);
     expect(r.profile?.state.votes).toBe(1); expect(r.events).toHaveLength(1);
