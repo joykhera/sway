@@ -9,6 +9,8 @@ export const LEARNER_PARAMETERS = Object.freeze({
   // Feature intensities are 0..1; emitted prompt weights are 2 * intensity.
   likeBoost: 0.05,
   passiveDrift: 0.02,
+  /** Chance a no-vote evolution also rewords one active feature (see PROMPT_VARIANTS). */
+  phrasingDriftProbability: 0.35,
   minActiveIntensity: 0.1,
   maxIntensity: 1,
   promptScale: 2,

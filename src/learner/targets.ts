@@ -1,7 +1,8 @@
-import { WEIGHT_MIN, WEIGHT_MAX } from '../shared/protocol';
+import { WEIGHT_MIN, WEIGHT_MAX, type WeightedPrompt } from '../shared/protocol';
 import { INITIAL_INTENSITY, LEARNER_PARAMETERS as P } from './constants';
+import { hashText } from './rng';
 import type { FeatureBlend, Target } from './types';
-import { FEATURE_GROUPS, FEATURE_IDS, GROUP_IDS, PROMPT_TEXT } from './vocabulary';
+import { FEATURE_GROUPS, FEATURE_IDS, FEATURE_OF_TEXT, GROUP_IDS, PROMPT_TEXT, PROMPT_VARIANTS } from './vocabulary';
 import type { FeatureGroup, FeatureId } from './vocabulary';
 
 export function clamp(value: number, min: number, max: number): number {
@@ -55,13 +56,29 @@ export function projectFeatures(input: FeatureBlend, fallback: FeatureBlend = {}
   return result;
 }
 
-/** Canonicalize prompts from known features; never forward caller-provided text. */
-export function toTarget(features: FeatureBlend, fallback: FeatureBlend = {}): Target {
+export type Phrasing = {
+  /** Prompts whose vocabulary phrasings are kept for features that stay active. */
+  keep?: readonly WeightedPrompt[];
+  /** Picks a phrasing for features without one in `keep`; omitted = canonical phrasing. */
+  salt?: number;
+};
+
+/** Phrasing per active feature: kept if already in use, else seeded, else canonical. */
+export function choosePhrasing(id: FeatureId, { keep = [], salt }: Phrasing): string {
+  const kept = keep.find((p) => FEATURE_OF_TEXT.get(p.text) === id);
+  if (kept) return kept.text;
+  if (salt === undefined) return PROMPT_TEXT[id];
+  const variants = PROMPT_VARIANTS[id];
+  return variants[hashText(id, salt) % variants.length]!;
+}
+
+/** Canonicalize prompts from known features; only vocabulary phrasings are ever emitted. */
+export function toTarget(features: FeatureBlend, fallback: FeatureBlend = {}, phrasing: Phrasing = {}): Target {
   const projected = projectFeatures(features, fallback);
   return {
     features: projected,
     prompts: activeIds(projected).map((id) => ({
-      text: PROMPT_TEXT[id],
+      text: choosePhrasing(id, phrasing),
       weight: clamp(projected[id]! * P.promptScale, WEIGHT_MIN, WEIGHT_MAX),
     })),
   };

@@ -9,6 +9,7 @@ import {
   type LearnerState,
   type Target,
 } from './index';
+import { FEATURE_OF_TEXT, PROMPT_TEXT, PROMPT_VARIANTS } from './vocabulary';
 
 const groups: FeatureId[][] = [
   ['ambient', 'lofi', 'jazz', 'electronic', 'classical'],
@@ -367,5 +368,63 @@ describe('determinism, immutability, and rapid events', () => {
       expectValidTarget(currentTarget);
     }
     for (const id of ids) expect(state.scores[id]).toBeCloseTo(-0.3 * (audible[id] ?? 0), 12);
+  });
+});
+
+describe('prompt phrasings', () => {
+  const phrasingOf = (target: Target) =>
+    new Map(target.prompts.map((p) => [FEATURE_OF_TEXT.get(p.text), p.text]));
+
+  it('emits only vocabulary phrasings, each owned by exactly one feature', () => {
+    const all = Object.values(PROMPT_VARIANTS).flat();
+    expect(new Set(all).size).toBe(all.length);
+    let state = createLearner(5);
+    let currentTarget = initialTarget(state);
+    for (let i = 0; i < 200; i += 1) {
+      const result = processVote({ state, audible: currentTarget.features, currentTarget, vote: i % 3 ? 'down' : 'up' });
+      state = result.state;
+      currentTarget = i % 5 ? result.target : evolveNoVote({ state, target: result.target });
+      for (const p of currentTarget.prompts) {
+        const id = FEATURE_OF_TEXT.get(p.text);
+        expect(id).toBeDefined();
+        expect((currentTarget.features[id!] ?? 0) > 0).toBe(true);
+      }
+    }
+  });
+
+  it('keeps the wording of every feature that stays active across votes', () => {
+    let state = createLearner(21);
+    let currentTarget = initialTarget(state);
+    for (let i = 0; i < 50; i += 1) {
+      const result = processVote({ state, audible: currentTarget.features, currentTarget, vote: i % 2 ? 'up' : 'down' });
+      const before = phrasingOf(currentTarget);
+      for (const [id, text] of phrasingOf(result.target)) {
+        if (before.has(id)) expect(text).toBe(before.get(id));
+      }
+      state = result.state;
+      currentTarget = result.target;
+    }
+  });
+
+  it('varies starting wording across seeds', () => {
+    const texts = new Set(Array.from({ length: 40 }, (_, seed) => initialTarget(createLearner(seed)).prompts.map((p) => p.text)).flat());
+    const canonical = new Set(Object.values(PROMPT_TEXT));
+    expect([...texts].some((t) => !canonical.has(t))).toBe(true);
+  });
+
+  it('no-vote evolution sometimes rewords one feature without touching scores', () => {
+    const state = processVote({ state: createLearner(3), audible: {}, currentTarget: initialTarget(createLearner(3)), vote: 'down' }).state;
+    let target = initialTarget(state);
+    let rewordings = 0;
+    for (let i = 0; i < 100; i += 1) {
+      const next = evolveNoVote({ state, target });
+      const before = phrasingOf(target);
+      const changed = [...phrasingOf(next)].filter(([id, text]) => before.has(id) && before.get(id) !== text);
+      expect(changed.length).toBeLessThanOrEqual(1);
+      rewordings += changed.length;
+      target = next;
+    }
+    expect(rewordings).toBeGreaterThan(10);
+    expect(rewordings).toBeLessThan(70);
   });
 });
