@@ -73,6 +73,7 @@ export function buildRewriterMessages(args: { current: Bundle; diagnosis: string
       content:
         'You are the Rewriter on a self-improving music recommendation team. You edit the team\'s own artifacts: the advisor prompt (instructions for a small, fast LLM that proposes feature combinations from vote history), ' +
         'the playbook (lessons learned that are shown to the advisor), and bounded numeric params (how the deterministic chooser weighs advisor candidates and how often the advisor runs). ' +
+        'The params include team-structure knobs that decide how advisor candidates are mixed with the learner\'s own proposal: learnerScoreWeight (weight on the learner\'s preference estimate), llmCandidateBonus, noveltyBonus, repeatPenalty (penalize replaying recently played sounds), candidateCount, poolMaxAge (how long advisor candidates stay usable) and deferToLearnerProbability (chance per vote of ignoring the advisor). Their bounds are listed below and enforced in code. ' +
         'A change is kept only if it measurably raises the like-rate on held-out listeners, so propose distinct, testable hypotheses rather than cosmetic rewording. Learn from the attempt history: do not repeat rejected ideas unchanged.',
     },
     {

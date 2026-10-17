@@ -1,0 +1,5 @@
+- Introducing a 10% chance to defer to the learner’s own proposal prevents the advisor from dominating and lets the learner’s estimates surface when the advisor is uncertain.
+- A repeat penalty of 0.2 strongly discourages immediate re‑plays, addressing the observed 74‑repeat/39‑dislike pattern.
+- Boosting llmCandidateBonus to 0.12 makes advisor proposals more competitive in the chooser.
+- Lowering temperature to 0.25 sharpens output, reducing invalid combos.
+- A small novelty bonus (0.04) encourages occasional fresh directions without sacrificing stability.

@@ -1,13 +1,14 @@
 // pnpm selfimprove:loop: the self-improvement loop. Uses TRAIN personas for transcripts and VALIDATION personas for
 // keep/revert decisions. It never loads or scores the sealed TEST personas (see final.ts).
 // Default = run 1 design. `--design run2` = the pre-registered two-stage gate (PREREGISTRATION.md).
+// `--design run3` = the same two-stage gate on the run-3 split, new advisor model, wider params (PREREGISTRATION_RUN3.md).
 import { appendFileSync, mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import type { Bundle } from './advisor.ts';
 import { decide } from './gatekeeper.ts';
 import { diffStats, emptyStats, type Role, type RoleStats } from './llm.ts';
-import { splitPersonas, splitPersonasRun2, type Persona } from './personas.ts';
+import { splitPersonas, splitPersonasRun2, splitPersonasRun3, type Persona } from './personas.ts';
 import { formatTranscripts, review, toTranscriptEpisodes } from './reviewer.ts';
 import { rewrite, type HistoryEntry, type Rejected, type Variant } from './rewriter.ts';
 import { baselinePolicy, evaluate, evaluateEpisodes, type EpisodeConfig, DEFAULT_EPISODE } from './simulator.ts';
@@ -131,8 +132,11 @@ export async function runLoopRun2(args: {
   outDir: string;
   deadlineMinutes?: number;
   summaryExtra?: () => object;
+  design?: 'run2' | 'run3';
+  meta?: object; // recorded once at the start of the changelog (e.g. models, settings)
 }): Promise<Run2Result> {
   const { deps, outDir } = args;
+  const design = args.design ?? 'run2';
   const log = deps.log ?? (() => {});
   const stats = deps.stats ?? zeroStats;
   const now = deps.now ?? Date.now;
@@ -140,7 +144,7 @@ export async function runLoopRun2(args: {
   const deadlineAt = args.deadlineMinutes !== undefined && Number.isFinite(args.deadlineMinutes) ? tStart + args.deadlineMinutes * 60_000 : Infinity;
   mkdirSync(outDir, { recursive: true });
   const changelog = join(outDir, 'changelog.jsonl');
-  const record = (o: object) => appendFileSync(changelog, JSON.stringify({ ts: new Date().toISOString(), design: 'run2', ...o }) + '\n');
+  const record = (o: object) => appendFileSync(changelog, JSON.stringify({ ts: new Date().toISOString(), design, ...o }) + '\n');
 
   const memo = (run: (b: Bundle) => Promise<number[]>) => {
     const m = new Map<string, number[]>();
@@ -162,6 +166,7 @@ export async function runLoopRun2(args: {
   let cutoff: Run2Result['cutoff'] = null;
   writeBundle(join(outDir, 'gen0'), incumbent);
   const history: HistoryEntry[] = [];
+  if (args.meta) record({ type: 'start', gen0Hash: bundleHash(incumbent), ...args.meta });
 
   // True (and recorded once) if the deadline has passed, so the caller must not start `before`.
   const cutNow = (round: number, before: string) => {
@@ -175,7 +180,7 @@ export async function runLoopRun2(args: {
 
   const writeSummary = (error?: unknown) => {
     const summary = {
-      design: 'run2',
+      design,
       outDir,
       finalGen: gen,
       finalHash: bundleHash(incumbent),
@@ -305,7 +310,8 @@ export async function runLoopRun2(args: {
 async function main() {
   const argv = process.argv.slice(2);
   if (flag(argv, 'design') === 'run2') return mainRun2(argv);
-  if (flag(argv, 'design') !== undefined) throw new Error(`unknown --design ${flag(argv, 'design')} (expected run2, or omit for run 1)`);
+  if (flag(argv, 'design') === 'run3') return mainRun2(argv, 'run3');
+  if (flag(argv, 'design') !== undefined) throw new Error(`unknown --design ${flag(argv, 'design')} (expected run2, run3, or omit for run 1)`);
   const rounds = numFlag(argv, 'rounds', 'SELFIMPROVE_ROUNDS', 4);
   const nVariants = numFlag(argv, 'variants', 'SELFIMPROVE_VARIANTS', 3);
   const trainPersonas = numFlag(argv, 'train-personas', 'SELFIMPROVE_TRAIN_PERSONAS', 8);
@@ -363,24 +369,49 @@ async function main() {
   log(`next: npx tsx --env-file-if-exists=.env tools/selfimprove/final.ts --run ${outDir}`);
 }
 
-// Run 2 CLI. Set sizes and gate margins are fixed by PREREGISTRATION.md and are deliberately not flags.
-async function mainRun2(argv: string[]) {
-  const rounds = numFlag(argv, 'rounds', 'SELFIMPROVE_ROUNDS', 3);
+// Run 3 fixed design (PREREGISTRATION_RUN3.md).
+export const RUN3_ADVISOR_MODEL = 'nvidia/Nemotron-3.5-Lightning-30B-A3B';
+export const RUN3_MAX_ROUNDS = 2;
+export const RUN3_MAX_VARIANTS = 3;
+export const RUN3_PERSONA_SEED = 9001;
+
+// Only train, validation-A and validation-B are taken from each split. The sealed sets stay untouched.
+export function loopSplit(design: 'run2' | 'run3'): { train: Persona[]; valA: Persona[]; valB: Persona[] } {
+  if (design === 'run3') {
+    const { train, valA, valB } = splitPersonasRun3();
+    return { train, valA, valB };
+  }
+  const { train, valA, valB } = splitPersonasRun2();
+  return { train, valA, valB };
+}
+
+// Run 2/3 CLI. Set sizes and gate margins are fixed by the pre-registrations and are deliberately not flags.
+async function mainRun2(argv: string[], design: 'run2' | 'run3' = 'run2') {
+  const run3 = design === 'run3';
+  const rounds = numFlag(argv, 'rounds', 'SELFIMPROVE_ROUNDS', run3 ? RUN3_MAX_ROUNDS : 3);
   const nVariants = numFlag(argv, 'variants', 'SELFIMPROVE_VARIANTS', 3);
   const trainReps = numFlag(argv, 'train-reps', 'SELFIMPROVE_TRAIN_REPS', 1);
   const valReps = numFlag(argv, 'val-reps', 'SELFIMPROVE_VAL_REPS', 2);
-  const concurrency = numFlag(argv, 'concurrency', 'SELFIMPROVE_CONCURRENCY', 6);
-  const deadlineMinutes = numFlag(argv, 'deadline-minutes', 'SELFIMPROVE_DEADLINE_MINUTES', Infinity);
+  const concurrency = numFlag(argv, 'concurrency', 'SELFIMPROVE_CONCURRENCY', run3 ? 24 : 6);
+  const deadlineMinutes = numFlag(argv, 'deadline-minutes', 'SELFIMPROVE_DEADLINE_MINUTES', run3 ? 25 : Infinity);
   const noCache = argv.includes('--no-cache');
   const startDir = flag(argv, 'from') ?? ARTIFACTS_DIR;
   const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
-  const outDir = flag(argv, 'out') ?? join(RUNS_DIR, `run2-${stamp}`);
+  const outDir = flag(argv, 'out') ?? join(RUNS_DIR, `${design}-${stamp}`);
   const cfgEp: EpisodeConfig = DEFAULT_EPISODE;
+  const advisorModelArg = flag(argv, 'advisor-model') ?? (run3 ? RUN3_ADVISOR_MODEL : undefined);
+  if (run3) {
+    // Guard the pre-registered design against accidental deviations.
+    if (rounds > RUN3_MAX_ROUNDS) throw new Error(`run3 allows at most ${RUN3_MAX_ROUNDS} rounds`);
+    if (nVariants > RUN3_MAX_VARIANTS) throw new Error(`run3 allows at most ${RUN3_MAX_VARIANTS} variants`);
+    if (trainReps !== 1 || valReps !== 2) throw new Error('run3 fixes train reps 1 and validation reps 2');
+    if (!Number.isFinite(deadlineMinutes) || deadlineMinutes > 25) throw new Error('run3 requires a deadline of at most 25 minutes');
+  }
 
-  // Only train, validation-A and validation-B are taken from the run-2 split. The sealed run-2 set stays untouched.
-  const { train, valA, valB } = splitPersonasRun2();
+  const { train, valA, valB } = loopSplit(design);
 
-  const live = createLive({ noCache });
+  const live = createLive({ noCache, advisorModel: advisorModelArg });
+  if (run3 && live.advisorModel !== RUN3_ADVISOR_MODEL) throw new Error(`run3 advisor model is pre-registered as ${RUN3_ADVISOR_MODEL}, got ${live.advisorModel}`);
   const t0 = Date.now();
   const log = (m: string) => console.log(`[${((Date.now() - t0) / 1000).toFixed(0).padStart(4)}s] ${m}`);
   let k = 0;
@@ -397,18 +428,19 @@ async function mainRun2(argv: string[]) {
     log,
   };
 
-  log(`run2 dir ${outDir}; rounds=${rounds} variants=${nVariants} train=${train.length}x${trainReps} valA=${valA.length}x${valReps} valB=${valB.length}x${valReps} concurrency=${concurrency} gate A>=${RUN2_STAGE_A_MARGIN} B>=${RUN2_STAGE_B_MARGIN} deadline=${deadlineMinutes} min`);
+  log(`${design} dir ${outDir}; advisor=${live.advisorModel} rounds=${rounds} variants=${nVariants} train=${train.length}x${trainReps} valA=${valA.length}x${valReps} valB=${valB.length}x${valReps} concurrency=${concurrency} gate A>=${RUN2_STAGE_A_MARGIN} B>=${RUN2_STAGE_B_MARGIN} deadline=${deadlineMinutes} min`);
   const learnerValA = mean(await evaluate(baselinePolicy, valA, valReps, cfgEp));
   const learnerValB = mean(await evaluate(baselinePolicy, valB, valReps, cfgEp));
   log(`reference: deterministic learner valA ${pct(learnerValA)}, valB ${pct(learnerValB)}`);
-  const settings = { rounds, nVariants, trainPersonas: train.length, trainReps, valAPersonas: valA.length, valBPersonas: valB.length, valReps, concurrency, deadlineMinutes, personaSeed: 7001, startDir, fastModel: live.cfg.fastModel, strongModel: live.cfg.strongModel };
+  const settings = { rounds, nVariants, trainPersonas: train.length, trainReps, valAPersonas: valA.length, valBPersonas: valB.length, valReps, concurrency, deadlineMinutes, personaSeed: run3 ? RUN3_PERSONA_SEED : 7001, startDir, advisorModel: live.advisorModel, fastModel: live.cfg.fastModel, strongModel: live.cfg.strongModel };
   const result = await runLoopRun2({
-    gen0: readBundle(startDir), deps, rounds, outDir, deadlineMinutes,
+    gen0: readBundle(startDir), deps, rounds, outDir, deadlineMinutes, design,
+    meta: { advisorModel: live.advisorModel, reviewerModel: live.cfg.strongModel, rewriterModel: live.cfg.strongModel, settings, learnerValA, learnerValB },
     summaryExtra: () => ({ learnerValA, learnerValB, settings, llm: live.gateway.snapshot(), processWallSeconds: Math.round((Date.now() - t0) / 1000) }),
   });
   log(`done: final gen${result.finalGen} (${result.roundsCompleted} complete rounds${result.cutoff ? `, cut off before ${result.cutoff.before} of round ${result.cutoff.round}` : ''}); valA learner ${pct(learnerValA)}, gen0 ${result.gen0ValA === null ? 'n/a' : pct(result.gen0ValA)}, final ${result.finalValA === null ? 'n/a' : pct(result.finalValA)}`);
   for (const [role, s] of Object.entries(live.gateway.snapshot())) log(`llm ${role}: ${s.calls} calls (+${s.cacheHits} cache hits, ${s.errors} errors), ${s.promptTokens}+${s.completionTokens} tokens`);
-  log(`next (lead only, once): npx tsx --env-file-if-exists=.env tools/selfimprove/final.ts --test-set run2 --run ${outDir}`);
+  log(`next (lead only, once): npx tsx --env-file-if-exists=.env tools/selfimprove/final.ts --test-set ${design} --run ${outDir}${run3 ? ' --concurrency 24' : ''}`);
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {

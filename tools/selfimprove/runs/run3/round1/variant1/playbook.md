@@ -1,0 +1,4 @@
+- Add repeat penalty of 0.25 to discourage immediate repeats.
+- Increase llmCandidateBonus to 0.15 to trust advisor proposals more.
+- Add novelty bonus of 0.08 to reward new sounds.
+- Lower temperature to 0.25 for sharper, more valid outputs.

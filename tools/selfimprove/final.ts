@@ -1,11 +1,12 @@
 // pnpm selfimprove:final -- --run <runs/dir> [--test-set run1|run2]: scores ONCE on the sealed TEST personas.
 // run1 (default): results/final.{json,md,lock}. run2: results/run2/final.{json,md,lock} (separate lock).
+// run3: results/run3/final.{json,md,lock} (separate lock; 99% criterion from PREREGISTRATION_RUN3.md).
 // (a) deterministic learner, (b) advisor gen0, (c) advisor final generation. A lock file prevents silent re-scoring.
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import type { Bundle } from './advisor.ts';
-import { splitPersonas, splitPersonasRun2, type Persona } from './personas.ts';
+import { splitPersonas, splitPersonasRun2, splitPersonasRun3, type Persona } from './personas.ts';
 import { oracleScores, randomPolicy } from './refs.ts';
 import { baselinePolicy, evaluate, type Policy } from './simulator.ts';
 import { bootstrapCi, mean, pairedDiff } from './stats.ts';
@@ -77,7 +78,19 @@ export function primaryCriterion(c: { meanDiff: number; lo: number; hi: number }
   };
 }
 
-export function toMarkdown(r: Awaited<ReturnType<typeof scoreFinal>>, meta: { runDir: string; finalGen: number; forced: boolean; models: string; title?: string; criterion?: boolean }): string {
+// Run 3 criterion (PREREGISTRATION_RUN3.md): CLAIMED if the paired 99% CI lower bound of final minus gen0 is above 0;
+// SUGGESTIVE if only the 95% lower bound is; NEGATIVE otherwise. final == gen0 fails by construction.
+export type Run3Verdict = 'CLAIMED' | 'SUGGESTIVE' | 'NEGATIVE';
+export function run3Criterion(diffs: number[], sameBundle: boolean): { verdict: Run3Verdict; mean: number; ci95: { lo: number; hi: number }; ci99: { lo: number; hi: number }; byConstruction: boolean; line: string } {
+  const c95 = bootstrapCi(diffs);
+  const c99 = bootstrapCi(diffs, 1, 2000, 0.01);
+  const verdict: Run3Verdict = sameBundle ? 'NEGATIVE' : c99.lo > 0 ? 'CLAIMED' : c95.lo > 0 ? 'SUGGESTIVE' : 'NEGATIVE';
+  const head = `**Run 3 success criterion (pre-registered): final minus gen0, paired 99% CI lower bound > 0 (95% only = suggestive). Result: ${pts(c95.mean)} pts, 95% CI ${pts(c95.lo)} .. ${pts(c95.hi)}, 99% CI ${pts(c99.lo)} .. ${pts(c99.hi)} -> ${verdict}.**`;
+  const line = sameBundle ? `${head}\n\nNothing was adopted (final = gen0): the criterion fails by construction and run 3 is negative.` : head;
+  return { verdict, mean: c95.mean, ci95: { lo: c95.lo, hi: c95.hi }, ci99: { lo: c99.lo, hi: c99.hi }, byConstruction: sameBundle, line };
+}
+
+export function toMarkdown(r: Awaited<ReturnType<typeof scoreFinal>>, meta: { runDir: string; finalGen: number; forced: boolean; models: string; title?: string; criterion?: boolean; extra?: string[] }): string {
   const row = (name: string, s: { mean: number; lo: number; hi: number }) => `| ${name} | ${pct(s.mean)} | ${pct(s.lo)} - ${pct(s.hi)} |`;
   const cmp = (name: string, c: ReturnType<typeof compare>) =>
     `| ${name} | ${pts(c.meanDiff)} pts | ${pts(c.lo)} .. ${pts(c.hi)} | ${c.wins} / ${c.ties} / ${c.losses} |`;
@@ -102,6 +115,7 @@ export function toMarkdown(r: Awaited<ReturnType<typeof scoreFinal>>, meta: { ru
     cmp('(c) final vs (a) learner', r.comparisons.final_vs_learner),
     '',
     ...(meta.criterion ? [primaryCriterion(r.comparisons.final_vs_gen0).line, ''] : []),
+    ...(meta.extra ?? []),
   ].join('\n');
 }
 
@@ -116,10 +130,18 @@ function finalGenOf(runDir: string): number {
   return Math.max(...gens);
 }
 
-export type TestSet = 'run1' | 'run2';
+export type TestSet = 'run1' | 'run2' | 'run3';
 
 // Each sealed set has its own results directory and its own lock, so scoring one never touches the other.
 export function testSetConfig(set: TestSet): { personas: () => Persona[]; resultsDir: string; title: string; criterion: boolean } {
+  if (set === 'run3') {
+    return {
+      personas: () => splitPersonasRun3().test,
+      resultsDir: join(RESULTS_DIR, 'run3'),
+      title: '# Run 3 sealed test: before vs after self-improvement (new advisor model, wider surface; see PREREGISTRATION_RUN3.md)',
+      criterion: false, // run 3 uses the stricter 99% criterion (run3Criterion), not the run-2 95% line
+    };
+  }
   if (set === 'run2') {
     return {
       personas: () => splitPersonasRun2().test,
@@ -134,14 +156,22 @@ export function testSetConfig(set: TestSet): { personas: () => Persona[]; result
 async function main() {
   const argv = process.argv.slice(2);
   const testSet = (flag(argv, 'test-set') ?? 'run1') as TestSet;
-  if (testSet !== 'run1' && testSet !== 'run2') throw new Error(`unknown --test-set ${testSet} (run1 or run2)`);
+  if (testSet !== 'run1' && testSet !== 'run2' && testSet !== 'run3') throw new Error(`unknown --test-set ${testSet} (run1, run2 or run3)`);
   const set = testSetConfig(testSet);
   const runArg = flag(argv, 'run');
-  if (testSet === 'run2') {
-    if (!runArg) throw new Error('--test-set run2 requires --run <run-2 loop output dir>');
+  let runAdvisorModel: string | undefined;
+  if (testSet === 'run2' || testSet === 'run3') {
+    if (!runArg) throw new Error(`--test-set ${testSet} requires --run <${testSet} loop output dir>`);
     const summaryFile = join(runArg, 'summary.json');
-    const design = existsSync(summaryFile) ? (JSON.parse(readFileSync(summaryFile, 'utf8')) as { design?: string }).design : undefined;
-    if (design !== 'run2') throw new Error(`${runArg} is not a run-2 loop output (summary.json design=${design ?? 'missing'})`);
+    const summary = existsSync(summaryFile) ? (JSON.parse(readFileSync(summaryFile, 'utf8')) as { design?: string; settings?: { advisorModel?: string } }) : undefined;
+    const design = summary?.design;
+    if (design !== testSet) throw new Error(`${runArg} is not a ${testSet} loop output (summary.json design=${design ?? 'missing'})`);
+    runAdvisorModel = summary?.settings?.advisorModel;
+  }
+  // The sealed test uses the same advisor model the loop used (recorded in summary.json); an explicit flag must agree.
+  const advisorModelArg = flag(argv, 'advisor-model');
+  if (testSet === 'run3' && advisorModelArg && runAdvisorModel && advisorModelArg !== runAdvisorModel) {
+    throw new Error(`--advisor-model ${advisorModelArg} differs from the run's advisor model ${runAdvisorModel}`);
   }
   const runDir = runArg ?? latestRun();
   const reps = numFlag(argv, 'reps', 'SELFIMPROVE_TEST_REPS', 3);
@@ -150,7 +180,8 @@ async function main() {
   const finalGen = finalGenOf(runDir);
   const gen0: Bundle = readBundle(join(runDir, 'gen0'));
   const fin: Bundle = readBundle(join(runDir, `gen${finalGen}`));
-  const live = createLive({});
+  const live = createLive({ advisorModel: testSet === 'run3' ? (advisorModelArg ?? runAdvisorModel) : advisorModelArg });
+  if (testSet === 'run3' && !runAdvisorModel) throw new Error('run3 summary.json does not record settings.advisorModel');
   const { lock, previous } = acquireLock(set.resultsDir, { runDir, gen0Hash: bundleHash(gen0), finalHash: bundleHash(fin) }, force);
   const t0 = Date.now();
   const r = await scoreFinal({
@@ -159,10 +190,13 @@ async function main() {
     concurrency,
     policies: { learner: baselinePolicy, gen0: live.advisor(gen0, 'gen0'), final: live.advisor(fin, `gen${finalGen}`) },
   });
-  const meta = { runDir, finalGen, forced: lock.forced, models: `advisor ${live.cfg.fastModel}; reviewer/rewriter ${live.cfg.strongModel}` };
+  const meta = { runDir, finalGen, forced: lock.forced, advisorModel: live.advisorModel, models: `advisor ${live.advisorModel}; reviewer/rewriter ${live.cfg.strongModel}` };
   const criterion = set.criterion ? primaryCriterion(r.comparisons.final_vs_gen0) : undefined;
-  writeFileSync(join(set.resultsDir, 'final.json'), JSON.stringify({ testSet, ...meta, ...(criterion ? { primaryCriterion: criterion } : {}), lock, previousLock: previous, wallSeconds: Math.round((Date.now() - t0) / 1000), llm: live.gateway.snapshot(), ...r }, null, 2));
-  const md = toMarkdown(r, { ...meta, title: set.title, criterion: set.criterion });
+  const c3 = testSet === 'run3' ? run3Criterion(pairedDiff(r.raw.final, r.raw.gen0), bundleHash(gen0) === bundleHash(fin)) : undefined;
+  const vsLearner = (name: string, c: { meanDiff: number; lo: number; hi: number }) => `- ${name}: ${pts(c.meanDiff)} pts (95% CI ${pts(c.lo)} .. ${pts(c.hi)})`;
+  const extra = c3 ? [c3.line, '', 'Versus the plain learner (reported regardless of outcome):', vsLearner('gen0 vs learner', r.comparisons.gen0_vs_learner), vsLearner(`final (gen${finalGen}) vs learner`, r.comparisons.final_vs_learner), ''] : [];
+  writeFileSync(join(set.resultsDir, 'final.json'), JSON.stringify({ testSet, ...meta, ...(criterion ? { primaryCriterion: criterion } : {}), ...(c3 ? { run3Criterion: c3 } : {}), lock, previousLock: previous, wallSeconds: Math.round((Date.now() - t0) / 1000), llm: live.gateway.snapshot(), ...r }, null, 2));
+  const md = toMarkdown(r, { ...meta, title: set.title, criterion: set.criterion, extra });
   writeFileSync(join(set.resultsDir, 'final.md'), md);
   console.log(md);
 }

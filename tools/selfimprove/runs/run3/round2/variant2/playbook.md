@@ -1,0 +1,4 @@
+- Expanding the history window to 15 votes provides the advisor with a broader view of recent likes and dislikes.
+- Raising candidateCount to 4 yields more attempts per advisor call, increasing the likelihood of valid, novel suggestions.
+- A stronger novelty bonus (0.1) rewards combinations that sound clearly different from the current track, encouraging exploration.
+- Moderate repeat penalty (0.1) and llmCandidateBonus (0.08) balance exploitation of liked patterns with fresh ideas.

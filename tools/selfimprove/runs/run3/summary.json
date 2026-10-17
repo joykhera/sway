@@ -1,0 +1,219 @@
+{
+  "design": "run3",
+  "outDir": "tools/selfimprove/runs/run3",
+  "finalGen": 0,
+  "finalHash": "4f2927ad9609",
+  "roundsCompleted": 2,
+  "cutoff": null,
+  "gates": {
+    "stageA": {
+      "margin": 0.03,
+      "ciLoAbove": 0
+    },
+    "stageB": {
+      "margin": 0.02,
+      "ciLoAbove": 0
+    }
+  },
+  "gen0ValA": 0.31266666666666654,
+  "finalValA": 0.31266666666666654,
+  "finalValB": null,
+  "wallSeconds": 870,
+  "learnerValA": 0.28533333333333316,
+  "learnerValB": 0.3166666666666666,
+  "settings": {
+    "rounds": 2,
+    "nVariants": 3,
+    "trainPersonas": 8,
+    "trainReps": 1,
+    "valAPersonas": 30,
+    "valBPersonas": 30,
+    "valReps": 2,
+    "concurrency": 24,
+    "deadlineMinutes": 25,
+    "personaSeed": 9001,
+    "startDir": "/Users/4625labs/Workspace/Hackathons/crusoe-hackathon/sway-remote/tools/selfimprove/artifacts/",
+    "advisorModel": "nvidia/Nemotron-3.5-Lightning-30B-A3B",
+    "fastModel": "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B",
+    "strongModel": "nvidia/NVIDIA-Nemotron-3-Super-120B-A12B"
+  },
+  "llm": {
+    "advisor": {
+      "calls": 3788,
+      "cacheHits": 80,
+      "errors": 56,
+      "promptTokens": 2561778,
+      "completionTokens": 488475,
+      "latencyMs": 10470303
+    },
+    "reviewer": {
+      "calls": 1,
+      "cacheHits": 1,
+      "errors": 0,
+      "promptTokens": 5372,
+      "completionTokens": 1325,
+      "latencyMs": 48157
+    },
+    "rewriter": {
+      "calls": 2,
+      "cacheHits": 0,
+      "errors": 0,
+      "promptTokens": 3725,
+      "completionTokens": 5432,
+      "latencyMs": 147898
+    }
+  },
+  "processWallSeconds": 871,
+  "attempts": [
+    {
+      "round": 1,
+      "name": "repeat-penalty-boost",
+      "hash": "33adf1bbbe5c",
+      "rationale": "Add a repeat penalty to stop immediate re‑plays and boost advisor validity/novelty while lowering temperature to reduce invalid proposals.",
+      "params": {
+        "advisorStartVote": 3,
+        "advisorEveryNVotes": 3,
+        "historyWindow": 12,
+        "candidateCount": 3,
+        "llmCandidateBonus": 0.15,
+        "noveltyBonus": 0.08,
+        "temperature": 0.25,
+        "learnerScoreWeight": 1,
+        "repeatPenalty": 0.25,
+        "deferToLearnerProbability": 0,
+        "poolMaxAge": 30
+      },
+      "meanDiff": -0.017333333333333326,
+      "lo": -0.054,
+      "hi": 0.018666666666666682,
+      "accept": false,
+      "adopted": false,
+      "reason": "stage A (valA): gain below margin 0.03"
+    },
+    {
+      "round": 1,
+      "name": "explore-more",
+      "hash": "1920f4eb0d76",
+      "rationale": "Increase history window and candidate count to give the advisor richer context and more options, while adding a modest repeat penalty and higher novelty bonus to encourage exploration.",
+      "params": {
+        "advisorStartVote": 3,
+        "advisorEveryNVotes": 3,
+        "historyWindow": 20,
+        "candidateCount": 5,
+        "llmCandidateBonus": 0.1,
+        "noveltyBonus": 0.12,
+        "temperature": 0.3,
+        "learnerScoreWeight": 1,
+        "repeatPenalty": 0.15,
+        "deferToLearnerProbability": 0,
+        "poolMaxAge": 30
+      },
+      "meanDiff": -0.01133333333333333,
+      "lo": -0.04533333333333333,
+      "hi": 0.019333333333333345,
+      "accept": false,
+      "adopted": false,
+      "reason": "stage A (valA): gain below margin 0.03"
+    },
+    {
+      "round": 1,
+      "name": "defer-more",
+      "hash": "0a36d2c5712e",
+      "rationale": "Reduce advisor dominance by introducing a chance to defer to the learner’s own proposal, while still penalizing repeats to avoid boredom and maintaining modest advisor incentives.",
+      "params": {
+        "advisorStartVote": 3,
+        "advisorEveryNVotes": 3,
+        "historyWindow": 12,
+        "candidateCount": 3,
+        "llmCandidateBonus": 0.02,
+        "noveltyBonus": 0.04,
+        "temperature": 0.4,
+        "learnerScoreWeight": 1,
+        "repeatPenalty": 0.2,
+        "deferToLearnerProbability": 0.2,
+        "poolMaxAge": 30
+      },
+      "meanDiff": -0.005333333333333329,
+      "lo": -0.033333333333333326,
+      "hi": 0.024000000000000007,
+      "accept": false,
+      "adopted": false,
+      "reason": "stage A (valA): gain below margin 0.03"
+    },
+    {
+      "round": 2,
+      "name": "validity-focus",
+      "hash": "ca0784ee9e66",
+      "rationale": "Lower temperature and a stricter no-repeat rule should reduce invalid proposals, while a modest repeat penalty and small LLM bonus keep the advisor competitive.",
+      "params": {
+        "advisorStartVote": 3,
+        "advisorEveryNVotes": 3,
+        "historyWindow": 12,
+        "candidateCount": 3,
+        "llmCandidateBonus": 0.1,
+        "noveltyBonus": 0.05,
+        "temperature": 0.2,
+        "learnerScoreWeight": 1,
+        "repeatPenalty": 0.15,
+        "deferToLearnerProbability": 0,
+        "poolMaxAge": 30
+      },
+      "meanDiff": -0.0059999999999999975,
+      "lo": -0.033333333333333326,
+      "hi": 0.02066666666666667,
+      "accept": false,
+      "adopted": false,
+      "reason": "stage A (valA): gain below margin 0.03"
+    },
+    {
+      "round": 2,
+      "name": "explore-broad",
+      "hash": "b0471614d1e7",
+      "rationale": "Increasing the history window and candidate count gives the advisor richer context and more chances to hit valid, novel combos, while a higher novelty bonus steers exploration.",
+      "params": {
+        "advisorStartVote": 3,
+        "advisorEveryNVotes": 3,
+        "historyWindow": 15,
+        "candidateCount": 4,
+        "llmCandidateBonus": 0.08,
+        "noveltyBonus": 0.1,
+        "temperature": 0.3,
+        "learnerScoreWeight": 1,
+        "repeatPenalty": 0.1,
+        "deferToLearnerProbability": 0,
+        "poolMaxAge": 30
+      },
+      "meanDiff": 0.0013333333333333335,
+      "lo": -0.03466666666666667,
+      "hi": 0.037333333333333336,
+      "accept": false,
+      "adopted": false,
+      "reason": "stage A (valA): gain below margin 0.03"
+    },
+    {
+      "round": 2,
+      "name": "defer-with-penalty",
+      "hash": "6db3d9c4dfad",
+      "rationale": "Occasionally deferring to the learner’s own proposal reduces advisor bias, while a higher repeat penalty and stronger LLM bonus curb boredom and improve proposal quality.",
+      "params": {
+        "advisorStartVote": 3,
+        "advisorEveryNVotes": 3,
+        "historyWindow": 12,
+        "candidateCount": 3,
+        "llmCandidateBonus": 0.12,
+        "noveltyBonus": 0.04,
+        "temperature": 0.25,
+        "learnerScoreWeight": 1,
+        "repeatPenalty": 0.2,
+        "deferToLearnerProbability": 0.1,
+        "poolMaxAge": 30
+      },
+      "meanDiff": 0.0006666666666666724,
+      "lo": -0.030000000000000006,
+      "hi": 0.031333333333333345,
+      "accept": false,
+      "adopted": false,
+      "reason": "stage A (valA): gain below margin 0.03"
+    }
+  ]
+}

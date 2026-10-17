@@ -1,0 +1,4 @@
+- Lowering temperature to 0.2 sharpens the LLM’s output, reducing invalid or malformed feature sets.
+- Adding an explicit ‘never repeat the last voted combination’ rule cuts wasted calls and immediate boredom.
+- A modest repeat penalty (0.15) further discourages re‑serving recent sounds without overly penalizing exploration.
+- Small llmCandidateBonus (0.1) and noveltyBonus (0.05) keep advisor proposals competitive while preserving the learner’s baseline.

@@ -41,15 +41,22 @@ export const numFlag = (args: string[], name: string, env: string, dflt: number)
   return Number.isFinite(n) ? n : dflt;
 };
 
-export type Live = { cfg: CrusoeConfig; gateway: LlmGateway; advisor: (b: Bundle, name: string) => ReturnType<typeof createAdvisorPolicy> };
+export type Live = { cfg: CrusoeConfig; gateway: LlmGateway; advisorModel: string; advisor: (b: Bundle, name: string) => ReturnType<typeof createAdvisorPolicy> };
 
-export function createLive(opts: { noCache?: boolean; advisorMaxTokens?: number }): Live {
+// Advisor model: explicit option, else CRUSOE_MODEL_ADVISOR, else the fast model (the run-1/run-2 behaviour). Thinking stays off.
+export function resolveAdvisorModel(cfg: Pick<CrusoeConfig, 'fastModel'>, explicit?: string, env: NodeJS.ProcessEnv = process.env): string {
+  return explicit?.trim() || env.CRUSOE_MODEL_ADVISOR?.trim() || cfg.fastModel;
+}
+
+export function createLive(opts: { noCache?: boolean; advisorMaxTokens?: number; advisorModel?: string }): Live {
   const cfg = loadCrusoeConfig();
   const gateway = new LlmGateway(new CrusoeClient(cfg), opts.noCache ? null : DEFAULT_CACHE_DIR);
+  const advisorModel = resolveAdvisorModel(cfg, opts.advisorModel);
   return {
     cfg,
     gateway,
-    advisor: (bundle, name) => createAdvisorPolicy({ gateway, model: cfg.fastModel, bundle, name, maxTokens: opts.advisorMaxTokens ?? 2000 }),
+    advisorModel,
+    advisor: (bundle, name) => createAdvisorPolicy({ gateway, model: advisorModel, bundle, name, maxTokens: opts.advisorMaxTokens ?? 2000 }),
   };
 }
 

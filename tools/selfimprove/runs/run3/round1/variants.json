@@ -1,0 +1,71 @@
+{
+  "variants": [
+    {
+      "name": "repeat-penalty-boost",
+      "rationale": "Add a repeat penalty to stop immediate re‑plays and boost advisor validity/novelty while lowering temperature to reduce invalid proposals.",
+      "bundle": {
+        "advisorPrompt": "You help choose the next musical direction for an instrumental music stream. You are given the listener's vote history (thumbs up/down on feature combinations) and the allowed feature vocabulary. Propose exactly three candidate combinations, each using only allowed feature IDs, different from each other. Never propose the exact same feature list as the last voted combination, even if it was liked. Prefer changing one or two features from a liked combination. Occasionally propose a bolder combination.\n",
+        "playbook": "- Add repeat penalty of 0.25 to discourage immediate repeats.\n- Increase llmCandidateBonus to 0.15 to trust advisor proposals more.\n- Add novelty bonus of 0.08 to reward new sounds.\n- Lower temperature to 0.25 for sharper, more valid outputs.\n",
+        "params": {
+          "advisorStartVote": 3,
+          "advisorEveryNVotes": 3,
+          "historyWindow": 12,
+          "candidateCount": 3,
+          "llmCandidateBonus": 0.15,
+          "noveltyBonus": 0.08,
+          "temperature": 0.25,
+          "learnerScoreWeight": 1,
+          "repeatPenalty": 0.25,
+          "deferToLearnerProbability": 0,
+          "poolMaxAge": 30
+        }
+      },
+      "warnings": []
+    },
+    {
+      "name": "explore-more",
+      "rationale": "Increase history window and candidate count to give the advisor richer context and more options, while adding a modest repeat penalty and higher novelty bonus to encourage exploration.",
+      "bundle": {
+        "advisorPrompt": "You help choose the next musical direction for an instrumental music stream. You are given the listener's vote history (thumbs up/down on feature combinations) and the allowed feature vocabulary. Propose exactly three candidate combinations, each using only allowed feature IDs, different from each other. Aim to propose candidates that differ from each other in at least two features. Never propose the exact same feature list as the last voted combination, even if it was liked. Prefer changing one or two features from a liked combination. Occasionally propose a bolder combination.\n",
+        "playbook": "- Expand history window to 20 votes for richer context.\n- Increase candidate count to 5 to raise proposal diversity.\n- Set llmCandidateBonus to 0.10 to keep advisor influence balanced.\n- Add novelty bonus of 0.12 to reward clearly different sounds.\n- Apply a moderate repeat penalty of 0.15 to reduce immediate repeats.\n- Keep temperature at 0.30 for reasonably focused sampling.\n",
+        "params": {
+          "advisorStartVote": 3,
+          "advisorEveryNVotes": 3,
+          "historyWindow": 20,
+          "candidateCount": 5,
+          "llmCandidateBonus": 0.1,
+          "noveltyBonus": 0.12,
+          "temperature": 0.3,
+          "learnerScoreWeight": 1,
+          "repeatPenalty": 0.15,
+          "deferToLearnerProbability": 0,
+          "poolMaxAge": 30
+        }
+      },
+      "warnings": []
+    },
+    {
+      "name": "defer-more",
+      "rationale": "Reduce advisor dominance by introducing a chance to defer to the learner’s own proposal, while still penalizing repeats to avoid boredom and maintaining modest advisor incentives.",
+      "bundle": {
+        "advisorPrompt": "You help choose the next musical direction for an instrumental music stream. You are given the listener's vote history (thumbs up/down on feature combinations) and the allowed feature vocabulary. Propose exactly three candidate combinations, each using only allowed feature IDs, different from each other. Never propose the exact same feature list as the last voted combination, even if it was liked. Prefer changing one or two features from a liked combination. Occasionally propose a bolder combination.\n",
+        "playbook": "- Set deferToLearnerProbability to 0.20 so the learner’s own proposal is used 20% of the time.\n- Keep llmCandidateBonus low at 0.02 to rely more on learner scores when advisor is consulted.\n- Add novelty bonus of 0.04 to still encourage fresh ideas.\n- Apply repeat penalty of 0.20 to discourage immediate re‑plays.\n- Use default temperature 0.40 for balanced sampling.\n",
+        "params": {
+          "advisorStartVote": 3,
+          "advisorEveryNVotes": 3,
+          "historyWindow": 12,
+          "candidateCount": 3,
+          "llmCandidateBonus": 0.02,
+          "noveltyBonus": 0.04,
+          "temperature": 0.4,
+          "learnerScoreWeight": 1,
+          "repeatPenalty": 0.2,
+          "deferToLearnerProbability": 0.2,
+          "poolMaxAge": 30
+        }
+      },
+      "warnings": []
+    }
+  ],
+  "rejected": []
+}

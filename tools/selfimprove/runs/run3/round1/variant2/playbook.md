@@ -1,0 +1,6 @@
+- Expand history window to 20 votes for richer context.
+- Increase candidate count to 5 to raise proposal diversity.
+- Set llmCandidateBonus to 0.10 to keep advisor influence balanced.
+- Add novelty bonus of 0.12 to reward clearly different sounds.
+- Apply a moderate repeat penalty of 0.15 to reduce immediate repeats.
+- Keep temperature at 0.30 for reasonably focused sampling.

@@ -102,3 +102,11 @@ export function splitPersonasRun2(seed = 7001, sizes = { train: 12, valA: 40, va
   const take = (n: number) => all.slice(i, (i += n));
   return { train: take(sizes.train), valA: take(sizes.valA), valB: take(sizes.valB), test: take(sizes.test) };
 }
+
+export type PersonaSplitRun3 = PersonaSplitRun2;
+
+// Run 3 (see PREREGISTRATION_RUN3.md): fresh listeners from seed 9001, disjoint from runs 1 and 2.
+// valA gates candidates, valB replicates the single best stage-A winner, test is sealed (final.ts --test-set run3 only).
+export function splitPersonasRun3(seed = 9001, sizes = { train: 8, valA: 30, valB: 30, test: 40 }): PersonaSplitRun3 {
+  return splitPersonasRun2(seed, sizes);
+}

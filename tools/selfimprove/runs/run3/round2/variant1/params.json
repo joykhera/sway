@@ -1,0 +1,13 @@
+{
+  "advisorStartVote": 3,
+  "advisorEveryNVotes": 3,
+  "historyWindow": 12,
+  "candidateCount": 3,
+  "llmCandidateBonus": 0.1,
+  "noveltyBonus": 0.05,
+  "temperature": 0.2,
+  "learnerScoreWeight": 1,
+  "repeatPenalty": 0.15,
+  "deferToLearnerProbability": 0,
+  "poolMaxAge": 30
+}

@@ -1,0 +1,21 @@
+[   0s] run3 dir tools/selfimprove/runs/run3; advisor=nvidia/Nemotron-3.5-Lightning-30B-A3B rounds=2 variants=3 train=8x1 valA=30x2 valB=30x2 concurrency=24 gate A>=0.03 B>=0.02 deadline=25 min
+[   0s] reference: deterministic learner valA 28.5%, valB 31.7%
+[   0s] round 1: train run of gen0
+[  77s] round 1: diagnosis written (2419 chars); rewriting
+[ 310s] round 1: incumbent gen0 valA 31.3%
+[ 451s] round 1: stage A "repeat-penalty-boost" valA 29.5% gain -1.7 CI [-5.4, +1.9] -> fail (gain below margin 0.03)
+[ 576s] round 1: stage A "explore-more" valA 30.1% gain -1.1 CI [-4.5, +1.9] -> fail (gain below margin 0.03)
+[ 616s] round 1: stage A "defer-more" valA 30.7% gain -0.5 CI [-3.3, +2.4] -> fail (gain below margin 0.03)
+[ 616s] round 1: no variant passed stage A; kept gen0
+[ 616s] round 2: train run of gen0
+[ 616s] round 2: diagnosis written (2419 chars); rewriting
+[ 680s] round 2: incumbent gen0 valA 31.3%
+[ 737s] round 2: stage A "validity-focus" valA 30.7% gain -0.6 CI [-3.3, +2.1] -> fail (gain below margin 0.03)
+[ 817s] round 2: stage A "explore-broad" valA 31.4% gain +0.1 CI [-3.5, +3.7] -> fail (gain below margin 0.03)
+[ 871s] round 2: stage A "defer-with-penalty" valA 31.3% gain +0.1 CI [-3.0, +3.1] -> fail (gain below margin 0.03)
+[ 871s] round 2: no variant passed stage A; kept gen0
+[ 871s] done: final gen0 (2 complete rounds); valA learner 28.5%, gen0 31.3%, final 31.3%
+[ 871s] llm advisor: 3788 calls (+80 cache hits, 56 errors), 2561778+488475 tokens
+[ 871s] llm reviewer: 1 calls (+1 cache hits, 0 errors), 5372+1325 tokens
+[ 871s] llm rewriter: 2 calls (+0 cache hits, 0 errors), 3725+5432 tokens
+[ 871s] next (lead only, once): npx tsx --env-file-if-exists=.env tools/selfimprove/final.ts --test-set run3 --run tools/selfimprove/runs/run3 --concurrency 24

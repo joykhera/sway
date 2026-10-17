@@ -2,7 +2,7 @@
 
 **Question:** can an agent team improve itself from its own history, keep a change only if it measurably helps, and prove it on tasks it has never seen?
 
-**Honest headline:** neither run produced a measurable improvement. Run 1's loop adopted a variant that looked good on validation (+5.8 pts) and then showed no gain on the sealed test. Run 2, with a stricter pre-registered gate, adopted nothing in three rounds, so its final team is the unchanged generation 0. The held-out test and the gate did their job: they stopped us from claiming an improvement we did not have.
+**Honest headline:** none of three runs produced a measurable improvement. Run 1's loop adopted a variant that looked good on validation (+5.8 pts) and then showed no gain on the sealed test. Runs 2 and 3, each with a stricter pre-registered gate, adopted nothing, so their final team is the unchanged generation 0. The held-out tests and the gate did their job: they stopped us from claiming an improvement we did not have. Run 3 did surface one weak, non-significant hint: with a newer advisor model, generation 0 scored slightly above the plain learner (see below).
 
 ## The team
 - **Advisor** (`NVIDIA-Nemotron-3-Nano-30B-A3B`, thinking off): from the listener's vote history, proposes 3 candidate musical directions from a fixed vocabulary. A deterministic scorer picks the winner. The LLM never controls the music and never sees hidden taste.
@@ -54,11 +54,35 @@ Primary pre-registered criterion (final minus generation 0, CI lower bound above
 
 **What we conclude:** in this simulated setting, a Nemotron advisor and a self-rewriting loop did not improve on a simple learner, and the evaluation process correctly refused to keep changes that did not help. We report this as a negative result.
 
+## Run 3 (pre-registered, complete)
+Pre-registered in `tools/selfimprove/PREREGISTRATION_RUN3.md` before running, with the multiplicity of a third attempt stated and a **stricter bar**: the final-vs-generation-0 interval must clear zero at **99%** confidence. Two changes: a newer advisor model (`Nemotron-3.5-Lightning-30B-A3B`) and a wider set of editable team settings (candidate scoring and mixing with the learner). Sizes were fixed for a one-hour budget: validation sets of 30 listeners x 2 sessions, sealed test of 40 x 3.
+
+**Probe finding:** we first tried the 120B Super model as the advisor and it was unusable at this scale (median 10 to 14 s per call versus about 2 s, and over half of calls failing at 16 and 32 parallel).
+
+**Loop:** 2 rounds, 6 variants, **none passed the first gate** (gains -1.7 to +0.1 pts; bar was +3.0). Final team = generation 0. About 3,800 advisor calls, 14.5 minutes. The rewriter used the new settings in every variant, to no effect.
+
+**Sealed test, scored once:** 40 unseen listeners x 3 sessions (120 paired episodes).
+
+| Policy | Like rate | 95% CI |
+| --- | --- | --- |
+| Random (floor) | 29.0% | 26.7 to 31.3 |
+| Deterministic learner | 33.7% | 30.8 to 36.8 |
+| Nemotron team, generation 0 (before) | 35.2% | 32.6 to 37.9 |
+| Nemotron team, final (identical to generation 0) | 35.2% | 32.6 to 37.7 |
+| Oracle (ceiling) | 70.3% | 67.2 to 73.4 |
+
+Pre-registered criterion: final minus generation 0 = +0.0 pts (99% CI -0.3 to +0.2) -> **NEGATIVE**. The tiny difference between two copies of the same team comes from a handful of failed model calls (5 of about 1,000) that fall back to the learner.
+
+**Weak hint, not a finding:** generation 0 (new advisor model) versus the plain learner was **+1.4 pts (95% CI -0.8 to +3.6)**, 24 listeners better, 4 tied, 12 worse. In runs 1 and 2 the same comparison (different, older advisor model) was -0.7 and -2.2 pts. The interval includes zero, the model changed between runs, and this comparison was not the pre-registered question, so we do not claim the advisor helps.
+
+**Three-run summary:** the improvement loop found nothing that cleared its gate or held up on unseen listeners. The process worked as a guard against false wins.
+
 ## Limits
 - Listeners are simulated, not people. A positive result would be evidence about the loop on a proxy task, not about real listeners.
-- The two runs share one simulator and evaluate the original deterministic learner (`src/learner/index.ts`), not the adaptive learner (`src/learner/adaptive/`) that the app now ships. The baseline numbers reproduce identically on current `main`. Evaluating the shipped adaptive learner is future work.
+- The three runs share one simulator and evaluate the original deterministic learner (`src/learner/index.ts`), not the adaptive learner (`src/learner/adaptive/`) that the app now ships. The baseline numbers reproduce identically on current `main`. Evaluating the shipped adaptive learner is future work.
 - Small samples. We do not claim statistical significance beyond the stated intervals.
 
 ## Evidence
 - Run 1: `tools/selfimprove/results/final.{md,json}`, `tools/selfimprove/runs/2026-10-17T20-56-34/` (changelog, every variant, diagnoses, raw rewriter output).
 - Run 2: `tools/selfimprove/runs/run2/` (changelog, summary, every variant), `tools/selfimprove/results/run2/final.{md,json,lock}`.
+- Run 3: `tools/selfimprove/runs/run3/`, `tools/selfimprove/results/run3/final.{md,json,lock}`.

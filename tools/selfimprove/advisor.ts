@@ -3,6 +3,7 @@
 // learner's own target. The LLM never sees hidden listener taste and never picks the final target.
 import { INITIAL_INTENSITY } from '../../src/learner/constants.ts';
 import * as learner from '../../src/learner/index.ts';
+import { createRng } from '../../src/learner/rng.ts';
 import { activeIds, signature, toTarget } from '../../src/learner/targets.ts';
 import type { FeatureBlend, LearnerState, Target } from '../../src/learner/types.ts';
 import { FEATURE_GROUPS, FEATURE_IDS, GROUP_IDS, type FeatureGroup, type FeatureId } from '../../src/learner/vocabulary.ts';
@@ -79,10 +80,17 @@ export function chooseTarget(args: {
   current: Target;
   lastVote: Vote;
   params: TeamParams;
+  recent?: string[]; // signatures of recently played sounds (for repeatPenalty)
+  defer?: boolean; // deferToLearnerProbability fired for this vote: use the learner's own proposal
 }): Option {
   const { state, proposed, pool, current, lastVote, params } = args;
   const currentSig = signature(current.features);
   const options: Option[] = [{ target: proposed, src: 'learner' }];
+  if (args.defer) return options[0]!;
+  const recent = args.recent ?? [];
+  // Extra terms are only applied when their knob is off its neutral default, so defaults reproduce the old chooser bit for bit.
+  const weightOf = (u: number) => (params.learnerScoreWeight === 1 ? u : params.learnerScoreWeight * u);
+  const repeatOf = (sig: string) => (params.repeatPenalty === 0 || recent.length === 0 ? 0 : params.repeatPenalty * (recent.filter((r) => r === sig).length / recent.length));
   for (const t of pool) {
     // After a 👎 never replay what was just rejected.
     if (lastVote === 'down' && signature(t.features) === currentSig) continue;
@@ -91,10 +99,13 @@ export function chooseTarget(args: {
   let best = options[0]!;
   let bestScore = -Infinity;
   for (const o of options) {
-    const s =
-      learnerUtility(state, o.target.features) +
+    const sig = signature(o.target.features);
+    const rp = repeatOf(sig);
+    let s =
+      weightOf(learnerUtility(state, o.target.features)) +
       (o.src === 'llm' ? params.llmCandidateBonus : 0) +
-      (signature(o.target.features) !== currentSig ? params.noveltyBonus : 0);
+      (sig !== currentSig ? params.noveltyBonus : 0);
+    if (rp !== 0) s -= rp;
     if (s > bestScore + 1e-12) { best = o; bestScore = s; } // ties keep the earlier option (the learner)
   }
   return best;
@@ -149,6 +160,10 @@ export function createAdvisorPolicy(o: AdvisorOptions): Policy {
       let target = learner.initialTarget(state);
       let src: Step['src'] = 'learner';
       let pool: Target[] = [];
+      let poolAt = 0; // vote index at which the current pool was proposed
+      const played: string[] = []; // signatures of played sounds (repeatPenalty)
+      // Separate stream so the default (probability 0, never drawn) leaves every other random draw unchanged.
+      const deferRng = createRng((seed ^ 0x5bd1e995) >>> 0);
       const history: { ids: FeatureId[]; vote: Vote }[] = [];
       const steps: Step[] = [];
       return {
@@ -158,6 +173,7 @@ export function createAdvisorPolicy(o: AdvisorOptions): Policy {
           const step: Step = { t: history.length + 1, ids: activeIds(target.features), src, vote: v };
           steps.push(step);
           history.push({ ids: step.ids, vote: v });
+          played.push(signature(target.features));
           const r = learner.processVote({ state, audible: target.features, currentTarget: target, vote: v });
           state = r.state;
           const n = history.length;
@@ -180,8 +196,11 @@ export function createAdvisorPolicy(o: AdvisorOptions): Policy {
               step.err = String(e).slice(0, 120);
             }
             step.valid = pool.length;
+            poolAt = n;
           }
-          const choice = chooseTarget({ state, proposed: r.target, pool, current: target, lastVote: v, params: p });
+          if (pool.length > 0 && n - poolAt >= p.poolMaxAge) pool = []; // expired candidates
+          const defer = p.deferToLearnerProbability > 0 && deferRng.next() < p.deferToLearnerProbability;
+          const choice = chooseTarget({ state, proposed: r.target, pool, current: target, lastVote: v, params: p, recent: played.slice(-p.historyWindow), defer });
           target = choice.target;
           src = choice.src;
         },

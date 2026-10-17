@@ -1,0 +1,63 @@
+
+
+{
+  "variants": [
+    {
+      "name": "validity-focus",
+      "rationale": "Lower temperature and a stricter no-repeat rule should reduce invalid proposals, while a modest repeat penalty and small LLM bonus keep the advisor competitive.",
+      "advisor_prompt": "You help choose the next musical direction for an instrumental music stream.\nYou are given the listener's vote history (thumbs up/down on feature combinations) and the allowed feature vocabulary.\nPropose exactly three candidate combinations, each using only allowed feature IDs, different from each other.\nNever propose the exact same feature list as the last voted combination, even if it was liked.\nAvoid duplicate IDs within a combination.\nPrefer changing one or two features from a liked combination. Occasionally propose a bolder combination.\nReply with JSON only: {\"candidates\":[{\"features\":[\"id\", ...],\"why\":\"short reason\"}, ...]}",
+      "playbook": "- Lowering temperature to 0.2 sharpens the LLM’s output, reducing invalid or malformed feature sets.\n- Adding an explicit ‘never repeat the last voted combination’ rule cuts wasted calls and immediate boredom.\n- A modest repeat penalty (0.15) further discourages re‑serving recent sounds without overly penalizing exploration.\n- Small llmCandidateBonus (0.1) and noveltyBonus (0.05) keep advisor proposals competitive while preserving the learner’s baseline.",
+      "params": {
+        "advisorStartVote": 3,
+        "advisorEveryNVotes": 3,
+        "historyWindow": 12,
+        "candidateCount": 3,
+        "llmCandidateBonus": 0.1,
+        "noveltyBonus": 0.05,
+        "temperature": 0.2,
+        "learnerScoreWeight": 1,
+        "repeatPenalty": 0.15,
+        "deferToLearnerProbability": 0,
+        "poolMaxAge": 30
+      }
+    },
+    {
+      "name": "explore-broad",
+      "rationale": "Increasing the history window and candidate count gives the advisor richer context and more chances to hit valid, novel combos, while a higher novelty bonus steers exploration.",
+      "advisor_prompt": "You help choose the next musical direction for an instrumental music stream.\nYou are given the listener's vote history (thumbs up/down on feature combinations) and the allowed feature vocabulary.\nPropose exactly three candidate combinations, each using only allowed feature IDs, different from each other.\nNever propose the exact same feature list as the last voted combination, even if it was liked.\nAvoid duplicate IDs within a combination.\nPrefer changing one or two features from a liked combination. Occasionally propose a bolder combination.\nReply with JSON only: {\"candidates\":[{\"features\":[\"id\", ...],\"why\":\"short reason\"}, ...]}",
+      "playbook": "- Expanding the history window to 15 votes provides the advisor with a broader view of recent likes and dislikes.\n- Raising candidateCount to 4 yields more attempts per advisor call, increasing the likelihood of valid, novel suggestions.\n- A stronger novelty bonus (0.1) rewards combinations that sound clearly different from the current track, encouraging exploration.\n- Moderate repeat penalty (0.1) and llmCandidateBonus (0.08) balance exploitation of liked patterns with fresh ideas.",
+      "params": {
+        "advisorStartVote": 3,
+        "advisorEveryNVotes": 3,
+        "historyWindow": 15,
+        "candidateCount": 4,
+        "llmCandidateBonus": 0.08,
+        "noveltyBonus": 0.1,
+        "temperature": 0.3,
+        "learnerScoreWeight": 1,
+        "repeatPenalty": 0.1,
+        "deferToLearnerProbability": 0,
+        "poolMaxAge": 30
+      }
+    },
+    {
+      "name": "defer-with-penalty",
+      "rationale": "Occasionally deferring to the learner’s own proposal reduces advisor bias, while a higher repeat penalty and stronger LLM bonus curb boredom and improve proposal quality.",
+      "advisor_prompt": "You help choose the next musical direction for an instrumental music stream.\nYou are given the listener's vote history (thumbs up/down on feature combinations) and the allowed feature vocabulary.\nPropose exactly three candidate combinations, each using only allowed feature IDs, different from each other.\nNever propose the exact same feature list as the last voted combination, even if it was liked.\nAvoid duplicate IDs within a combination.\nIf uncertain about a good tweak, propose a bolder combo that changes three or more features.\nPrefer changing one or two features from a liked combination. Occasionally propose a bolder combination.\nReply with JSON only: {\"candidates\":[{\"features\":[\"id\", ...],\"why\":\"short reason\"}, ...]}",
+      "playbook": "- Introducing a 10% chance to defer to the learner’s own proposal prevents the advisor from dominating and lets the learner’s estimates surface when the advisor is uncertain.\n- A repeat penalty of 0.2 strongly discourages immediate re‑plays, addressing the observed 74‑repeat/39‑dislike pattern.\n- Boosting llmCandidateBonus to 0.12 makes advisor proposals more competitive in the chooser.\n- Lowering temperature to 0.25 sharpens output, reducing invalid combos.\n- A small novelty bonus (0.04) encourages occasional fresh directions without sacrificing stability.",
+      "params": {
+        "advisorStartVote": 3,
+        "advisorEveryNVotes": 3,
+        "historyWindow": 12,
+        "candidateCount": 3,
+        "llmCandidateBonus": 0.12,
+        "noveltyBonus": 0.04,
+        "temperature": 0.25,
+        "learnerScoreWeight": 1,
+        "repeatPenalty": 0.2,
+        "deferToLearnerProbability": 0.1,
+        "poolMaxAge": 30
+      }
+    }
+  ]
+}

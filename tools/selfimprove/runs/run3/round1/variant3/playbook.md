@@ -1,0 +1,5 @@
+- Set deferToLearnerProbability to 0.20 so the learner’s own proposal is used 20% of the time.
+- Keep llmCandidateBonus low at 0.02 to rely more on learner scores when advisor is consulted.
+- Add novelty bonus of 0.04 to still encourage fresh ideas.
+- Apply repeat penalty of 0.20 to discourage immediate re‑plays.
+- Use default temperature 0.40 for balanced sampling.
