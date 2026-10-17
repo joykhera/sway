@@ -7,6 +7,7 @@ import type {
 } from '../src/shared/protocol.ts';
 import type { StreamSlots } from './limits.ts';
 import { errorMessage, log } from './log.ts';
+import { PREFETCH_AUDIO_LIMIT_MS, PREFETCH_LIFETIME_MS, PREFETCH_PAUSED_TTL_MS, PREFETCH_SETUP_TIMEOUT_MS, validPrefetchMs } from './prefetch.ts';
 import type { MusicUpstream, UpstreamFactory, UpstreamFormat } from './upstream/types.ts';
 
 export type ClientSocket = {
@@ -14,7 +15,7 @@ export type ClientSocket = {
   send(data: string | Buffer, opts?: { binary?: boolean }): void;
 };
 
-export type SessionState = 'idle' | 'connecting' | 'playing' | 'reconnecting' | 'closed';
+export type SessionState = 'idle' | 'connecting' | 'playing' | 'paused' | 'reconnecting' | 'closed';
 
 export const STEER_INTERVAL_MS = 200;
 export const RECONNECT_BACKOFF_MS = [500, 1000, 2000];
@@ -35,6 +36,12 @@ export class Session {
   private attempts = 0;
   private awaitingReady = false;
   private hasSlot = false;
+  private prefetchMs: number | undefined;
+  private prefetchBytes = 0;
+  private prefetchFormat: UpstreamFormat | undefined;
+  private prefetchSetupTimer: ReturnType<typeof setTimeout> | undefined;
+  private prefetchPausedTimer: ReturnType<typeof setTimeout> | undefined;
+  private prefetchLifetimeTimer: ReturnType<typeof setTimeout> | undefined;
 
   constructor(
     private readonly socket: ClientSocket,
@@ -47,11 +54,13 @@ export class Session {
     if (this.state === 'closed') return;
     switch (msg.type) {
       case 'start':
-        return this.start(msg.prompts, msg.config ?? {});
+        return this.start(msg.prompts, msg.config ?? {}, msg.prefetchMs);
       case 'steer':
         return this.steer(msg.revision, msg.prompts, msg.config);
       case 'stop':
         return this.stop();
+      case 'resume':
+        return this.resume();
     }
   }
 
@@ -66,13 +75,21 @@ export class Session {
     log.info(this.id, 'disposed');
   }
 
-  private start(prompts: WeightedPrompt[], config: StreamConfig): void {
+  private start(prompts: WeightedPrompt[], config: StreamConfig, prefetchMs?: number): void {
     if (this.state !== 'idle') return this.sendError('bad_state', `cannot start while ${this.state}`, false);
+    if (prefetchMs !== undefined && !validPrefetchMs(prefetchMs)) {
+      return this.sendError('bad_message', 'prefetchMs must be an integer in [3000, 8000]', false);
+    }
     if (!this.slots.tryAcquire()) {
       log.warn(this.id, 'stream capacity reached', { inUse: this.slots.inUse });
       return this.sendError('capacity', 'Too many active streams, try again shortly', true);
     }
     this.hasSlot = true;
+    this.prefetchMs = prefetchMs;
+    if (prefetchMs !== undefined) {
+      this.prefetchSetupTimer = setTimeout(() => this.prefetchFailed('Prefetch did not receive audio before its setup deadline'), PREFETCH_SETUP_TIMEOUT_MS);
+      this.prefetchLifetimeTimer = setTimeout(() => this.prefetchFailed('Prefetch lifetime expired'), PREFETCH_LIFETIME_MS);
+    }
     this.target = { prompts, config };
     this.lastRevision = -1;
     this.state = 'connecting';
@@ -83,6 +100,7 @@ export class Session {
 
   private steer(revision: number, prompts: WeightedPrompt[], config: StreamConfig | undefined): void {
     if (this.state === 'idle') return this.sendError('bad_state', 'steer before start', false);
+    if (this.prefetchMs !== undefined) return this.sendError('bad_state', 'resume before steering a prefetched stream', false);
     if (revision <= this.lastRevision) {
       log.info(this.id, 'stale steer dropped', { revision, lastRevision: this.lastRevision });
       return;
@@ -101,6 +119,22 @@ export class Session {
     this.send({ type: 'status', state: 'stopped' });
   }
 
+  private resume(): void {
+    if (this.prefetchMs === undefined && this.state === 'playing') return; // Duplicate promotion.
+    if (this.prefetchMs === undefined || (this.state !== 'paused' && this.state !== 'playing')) {
+      return this.sendError('bad_state', `cannot resume while ${this.state}`, false);
+    }
+    const up = this.upstream;
+    if (!up?.resume) return this.prefetchFailed('Upstream cannot resume prefetch');
+    const wasPaused = this.state === 'paused';
+    // Clear speculative limits before resuming: synchronous audio callbacks are now ordinary audio.
+    this.clearPrefetch();
+    this.state = 'playing';
+    try { if (wasPaused) up.resume(); }
+    catch (error) { this.upstreamFailed(up, errorMessage(error)); return; }
+    if (this.upstream === up && this.state === 'playing') this.send({ type: 'status', state: 'playing' });
+  }
+
   private connect(): void {
     const up: MusicUpstream = this.createUpstream({
       onAudio: (chunk, format) => {
@@ -109,22 +143,41 @@ export class Session {
       onFiltered: (info) => {
         if (up !== this.upstream) return;
         log.warn(this.id, 'prompt filtered', info);
+        if (this.prefetchMs !== undefined) return this.prefetchFailed('Prefetch prompt was filtered', 'prompt_filtered');
         this.sendError('prompt_filtered', `Prompt was filtered${info.text ? `: ${info.text}` : ''}`, true);
       },
       onWarning: (message) => {
         if (up === this.upstream) log.warn(this.id, 'upstream message', { message });
       },
-      onClosed: (reason) => this.upstreamFailed(up, reason),
+      onClosed: (reason, retryable) => this.upstreamFailed(up, reason, retryable),
     });
     this.upstream = up;
+    if (this.prefetchMs !== undefined && (!up.pause || !up.resume)) {
+      return this.prefetchFailed('Upstream does not support bounded prefetch');
+    }
     this.awaitingReady = true;
     this.dirty = false;
     this.configDirty = false;
     this.lastSteerAt = -Infinity;
-    up.start(this.target.prompts, this.target.config).catch((err) => this.upstreamFailed(up, errorMessage(err)));
+    try {
+      up.start(this.target.prompts, this.target.config).catch((err) => this.upstreamFailed(up, errorMessage(err)));
+    } catch (err) { this.upstreamFailed(up, errorMessage(err)); }
   }
 
   private onAudio(chunk: Buffer, format: UpstreamFormat): void {
+    if (this.prefetchMs !== undefined) {
+      if (chunk.length === 0) return; // Empty provider frames do not satisfy the first-audio deadline.
+      if (format.channels !== 2 || !Number.isInteger(format.sampleRateHz) || format.sampleRateHz < 8000
+        || format.sampleRateHz > 192000 || (this.prefetchFormat && format.sampleRateHz !== this.prefetchFormat.sampleRateHz)) {
+        return this.prefetchFailed('Invalid or changing prefetch audio format');
+      }
+      this.prefetchFormat = { ...format };
+      const nextBytes = this.prefetchBytes + chunk.length;
+      if (nextBytes > format.sampleRateHz * 4 * PREFETCH_AUDIO_LIMIT_MS / 1000) {
+        return this.prefetchFailed('Prefetch exceeded its audio limit');
+      }
+      this.prefetchBytes = nextBytes;
+    }
     if (this.awaitingReady) {
       if (format.channels !== 2) {
         log.error(this.id, 'unsupported channel count', { ...format });
@@ -132,18 +185,45 @@ export class Session {
         return this.stop();
       }
       this.awaitingReady = false;
+      clearTimeout(this.prefetchSetupTimer);
+      this.prefetchSetupTimer = undefined;
       this.attempts = 0;
       this.state = 'playing';
-      this.send({ type: 'ready', audio: { format: 'pcm_s16le', sampleRateHz: format.sampleRateHz, channels: 2 } });
+      this.send({ type: 'ready', audio: { format: 'pcm_s16le', sampleRateHz: format.sampleRateHz, channels: 2 },
+        ...(this.upstream?.pause && this.upstream.resume ? { prefetch: true } : {}) });
       this.send({ type: 'status', state: 'playing' });
       log.info(this.id, 'ready', { ...format });
       if (this.dirty) this.scheduleFlush();
     }
     if (this.socket.readyState === WS_OPEN) this.socket.send(chunk, { binary: true });
+    if (this.prefetchMs !== undefined && this.state === 'playing'
+      && this.prefetchBytes >= format.sampleRateHz * 4 * this.prefetchMs / 1000) {
+      const up = this.upstream!;
+      this.state = 'paused';
+      this.prefetchPausedTimer = setTimeout(() => this.prefetchFailed('Paused prefetch expired'), PREFETCH_PAUSED_TTL_MS);
+      try { up.pause!(); }
+      catch (error) { this.prefetchFailed(`Could not pause prefetch: ${errorMessage(error)}`); return; }
+      if (this.upstream === up && this.state === 'paused') this.send({ type: 'status', state: 'paused' });
+    }
   }
 
-  private upstreamFailed(up: MusicUpstream, reason: string): void {
+  private prefetchFailed(message: string, code: ErrorCode = 'upstream_unavailable'): void {
+    if (this.prefetchMs === undefined) return;
+    this.teardown();
+    this.state = 'idle';
+    this.sendError(code, message, false);
+  }
+
+  private upstreamFailed(up: MusicUpstream, reason: string, retryable = true): void {
     if (up !== this.upstream) return;
+    if (this.prefetchMs !== undefined) return this.prefetchFailed('Prefetch upstream was lost');
+    if (!retryable) {
+      const connecting = this.state === 'connecting';
+      this.teardown();
+      this.state = 'idle';
+      return this.sendError(connecting ? 'upstream_unavailable' : 'upstream_lost',
+        connecting ? 'Could not start the music stream' : 'Lost the music stream', false);
+    }
     this.upstream = undefined;
     up.close();
     log.warn(this.id, 'upstream lost', { state: this.state, reason });
@@ -202,6 +282,7 @@ export class Session {
   }
 
   private teardown(): void {
+    this.clearPrefetch();
     clearTimeout(this.steerTimer);
     clearTimeout(this.retryTimer);
     this.steerTimer = undefined;
@@ -217,6 +298,16 @@ export class Session {
     this.dirty = false;
     this.configDirty = false;
     this.attempts = 0;
+  }
+
+  private clearPrefetch(): void {
+    clearTimeout(this.prefetchSetupTimer);
+    clearTimeout(this.prefetchPausedTimer);
+    clearTimeout(this.prefetchLifetimeTimer);
+    this.prefetchSetupTimer = this.prefetchPausedTimer = this.prefetchLifetimeTimer = undefined;
+    this.prefetchMs = undefined;
+    this.prefetchBytes = 0;
+    this.prefetchFormat = undefined;
   }
 
   private send(msg: ServerMessage): void {
