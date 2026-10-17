@@ -157,3 +157,19 @@ export function samePoem(a: Record<string, number>, b: Record<string, number>): 
   const ids = (blend: Record<string, number>) => poemWords(blend).map((l) => l.id).sort().join('|');
   return ids(a) === ids(b);
 }
+
+export type ArrivedPoem = { to: Record<string, number>; until: number };
+type PoemSteer = { progress: number; to: Record<string, number> };
+
+/** Hold only a confirmed arrival while the audible estimate catches up (at most 6 s). */
+export function advanceArrivedPoem(
+  audible: Record<string, number>, live: PoemSteer | null, previous: PoemSteer | null,
+  arrived: ArrivedPoem | null, now: number,
+): ArrivedPoem | null {
+  const latest = live ?? previous;
+  // An incomplete steer disappearing means cancellation, not arrival. A new
+  // pending steer also supersedes the old hold without claiming it was heard.
+  if (latest) arrived = latest.progress >= 1 ? { to: latest.to, until: now + 6 } : null;
+  if (arrived && (now > arrived.until || samePoem(audible, arrived.to))) return null;
+  return arrived;
+}

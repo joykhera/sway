@@ -2,7 +2,7 @@ import { useEffect, useRef } from 'react';
 import type { MusicSessionController, Vote } from './contracts.ts';
 import { BandTracker, type Bands } from './viz/audio-bands.ts';
 import { FEATURE_GROUPS, GROUP_IDS, normalizeTaste } from './viz/describe.ts';
-import { layoutRim, pickRimWord, RING_IN_RIM, samePoem, steeredPoem, type RimPlace, type TasteField } from './viz/verse.ts';
+import { advanceArrivedPoem, layoutRim, pickRimWord, RING_IN_RIM, steeredPoem, type ArrivedPoem, type RimPlace, type TasteField } from './viz/verse.ts';
 
 export type TasteVerseProps = {
   source: Pick<MusicSessionController, 'getTaste' | 'getAudibleFeatures' | 'getAnalyser' | 'getSteer'>;
@@ -33,12 +33,10 @@ const RIM_GROW = 15;
 /** How long a word takes to fly from the poem to the ring, and the stagger per letter. */
 const FLIGHT_S = 1.5;
 const LETTER_DELAY_S = 0.045;
-/** After a change lands, hold its poem at most this long (s) while the audible estimate catches up. */
-const ARRIVED_HOLD_S = 6;
 /** How far from the lettering (px) a tap still picks a word. */
 const PICK_BAND = 44;
 /** Elements whose taps are their own; the ring ignores them. */
-const OWN_CLICKS = 'button, a, input, select, textarea, label, [role="dialog"], .hud > *';
+const OWN_CLICKS = 'button, a, input, select, textarea, label, [role="dialog"], .hud > *, .music-request';
 /** Glyphs are measured once at this size and scaled. */
 const REF_PX = 100;
 const SERIF = '"Instrument Serif", Georgia, "Times New Roman", serif';
@@ -165,7 +163,7 @@ export function TasteVerse({ source, ringFraction, lastVote, field, anchor, onPi
     /** The change on its way, as of the last poll. */
     let steering: ReturnType<NonNullable<TasteVerseProps['source']['getSteer']>> = null;
     /** A change that has landed: its poem holds until what's audible reads the same. */
-    let arrived: { to: Record<string, number>; until: number } | null = null;
+    let arrived: ArrivedPoem | null = null;
     /** The ring as last drawn (CSS px), for picking words under the pointer. */
     let layout: { ring: { x: number; y: number; r: number }; places: RimPlace[] } | null = null;
     let hovered: string | null = null;
@@ -206,9 +204,7 @@ export function TasteVerse({ source, ringFraction, lastVote, field, anchor, onPi
       }
       primed = true;
       const live = src.getSteer?.() ?? null;
-      if (live && live.progress < 1) arrived = null;
-      else if (live || steering) arrived = { to: (live ?? steering)!.to, until: now + ARRIVED_HOLD_S };
-      if (arrived && (now > arrived.until || samePoem(audible, arrived.to))) arrived = null;
+      arrived = advanceArrivedPoem(audible, live, steering, arrived, now);
       steering = live;
       const { lines, ink } = steeredPoem(audible, live ?? (arrived ? { progress: 1, to: arrived.to } : null));
       const keep = new Set(lines.map((l) => l.id));
