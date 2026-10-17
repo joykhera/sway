@@ -146,7 +146,12 @@ export class SessionController implements MusicSessionController {
   private evidenceHistory: Sent[] = [];
   // Issue #9: the latest vote's explanation + an ETA for when it reaches the ears.
   private decision: VoteDecision | undefined;
-  private pendingSteer: { vote: Vote; at: number; etaMs: number; generationAtVote: number; prepared?: boolean; doneAt?: number } | undefined;
+  // `vote` is null for a tap or a recalled moment: they show progress in the music, not on a thumb.
+  // `from`/`to` are the audible and destination blends, so the screen can show what's coming.
+  private pendingSteer: {
+    vote: Vote | null; at: number; etaMs: number; generationAtVote: number; prepared?: boolean; doneAt?: number;
+    from?: FeatureBlend; to?: FeatureBlend;
+  } | undefined;
   // PCM blocks landed on the current socket — the real generation cadence behind steerProgress.
   private blocksLanded = 0;
   private nowPlayingSig: MusicSignature | undefined;
@@ -404,6 +409,8 @@ export class SessionController implements MusicSessionController {
       at: this.now(),
       etaMs: this.cfg.generationLatencyMs + buffered + this.cfg.voteRampMs * 0.5,
       generationAtVote: this.blocksLanded,
+      from: { ...audible },
+      to: { ...result.target.features },
     };
     if (evidenceWeight > 0) this.rejected = v === 'down' ? { at: this.now(), features: { ...audible } } : undefined;
     this.log('vote', { vote: v, audible, previous, evidenceWeight, bufferedMs: buffered, votes: result.state.votes });
@@ -506,19 +513,49 @@ export class SessionController implements MusicSessionController {
    * crossfade duration and needs no new provider block.
    */
   private steerProgress(): { p: number | null; v: Vote | null } {
+    const progress = this.currentSteerProgress();
+    // Taps and recalls (vote null) aren't shown on a thumb.
+    return progress === null || this.pendingSteer?.vote == null ? { p: null, v: null } : { p: progress, v: this.pendingSteer.vote };
+  }
+
+  private currentSteerProgress(): number | null {
     const s = this.pendingSteer;
-    if (!s || !this.ready) return { p: null, v: null };
+    if (!s || !this.ready) return null;
     const now = this.now();
     const landed = s.prepared || this.blocksLanded > s.generationAtVote;
     if (landed && now - s.at >= s.etaMs) {
       s.doneAt ??= now;
       if (now - s.doneAt > 600) {
         this.pendingSteer = undefined;
-        return { p: null, v: null };
+        return null;
       }
-      return { p: 1, v: s.vote };
+      return 1;
     }
-    return { p: Math.min(0.95, Math.max(0, (now - s.at) / s.etaMs)), v: s.vote };
+    return Math.min(0.95, Math.max(0, (now - s.at) / s.etaMs));
+  }
+
+  /**
+   * The change on its way, for the screen: how close it is to being heard (same
+   * clock as the thumbs' fill), what was audible when it began, and where it's
+   * going. Null when nothing is pending. `vote` is null for taps and recalls.
+   */
+  getSteer(): { progress: number; vote: Vote | null; from: FeatureBlend; to: FeatureBlend } | null {
+    const progress = this.currentSteerProgress();
+    const s = this.pendingSteer;
+    if (progress === null || !s?.to) return null;
+    return { progress, vote: s.vote, from: { ...(s.from ?? {}) }, to: { ...s.to } };
+  }
+
+  /** Taps and recalls get the same "on its way" progress as votes. */
+  private markSteer(target: Target, rampMs: number): void {
+    this.pendingSteer = {
+      vote: null,
+      at: this.now(),
+      etaMs: this.cfg.generationLatencyMs + this.deps.player.getBufferedDurationMs() + rampMs * 0.5,
+      generationAtVote: this.blocksLanded,
+      from: { ...this.getAudibleFeatures() },
+      to: { ...target.features },
+    };
   }
 
   // ---- connection ----
@@ -751,11 +788,9 @@ export class SessionController implements MusicSessionController {
     if (!this.canHear() || moment.prompts.length === 0) return;
     this.log('recall', { target: moment.features });
     // Keep learner metadata (e.g. the phrasing salt) so later votes continue from here.
-    this.retarget(
-      { ...this.target, features: { ...moment.features }, prompts: moment.prompts.map((p) => ({ ...p })) },
-      true,
-      this.cfg.voteRampMs,
-    );
+    const target = { ...this.target, features: { ...moment.features }, prompts: moment.prompts.map((p) => ({ ...p })) };
+    this.markSteer(target, this.cfg.voteRampMs);
+    this.retarget(target, true, this.cfg.voteRampMs);
   }
 
   /**
@@ -766,6 +801,7 @@ export class SessionController implements MusicSessionController {
     if (!this.canHear() || !this.deps.learner.nudge) return;
     const target = this.deps.learner.nudge({ state: this.learnerState, target: this.target, feature });
     this.log('nudge', { feature, target: target.features });
+    this.markSteer(target, this.cfg.rampMs);
     this.retarget(target);
   }
 
@@ -864,7 +900,10 @@ export class SessionController implements MusicSessionController {
     this.signature = deriveSignature(target);
     this.nowPlayingSig = this.signature;
     // Cached PCM is already available; this path has no provider/old-buffer wait.
-    this.pendingSteer = { vote, at: this.now(), etaMs: fadeMs, generationAtVote: this.blocksLanded, prepared: true };
+    this.pendingSteer = {
+      vote, at: this.now(), etaMs: fadeMs, generationAtVote: this.blocksLanded, prepared: true,
+      from: this.pendingSteer?.from, to: { ...target.features },
+    };
     this.setState({ status: 'playing' });
     this.branchSettlesAt = this.now() + fadeMs + 500;
     this.preparedKey = undefined;

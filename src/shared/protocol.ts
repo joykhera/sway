@@ -199,6 +199,8 @@ export interface MusicSessionController {
   recallMoment?(moment: Target): void;
   // Gradually steer toward one feature the listener picked (not a vote).
   nudge?(feature: string): void;
+  // The change on its way: 0..1 progress toward being heard, and the blends it goes from and to.
+  getSteer?(): { progress: number; vote: Vote | null; from: FeatureBlend; to: FeatureBlend } | null;
   start(): Promise<void>;
   vote(v: Vote): void; // synchronous, never locked out
   stop(): void;

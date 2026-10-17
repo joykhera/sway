@@ -2,10 +2,10 @@ import { useEffect, useRef } from 'react';
 import type { MusicSessionController, Vote } from './contracts.ts';
 import { BandTracker, type Bands } from './viz/audio-bands.ts';
 import { FEATURE_GROUPS, GROUP_IDS, normalizeTaste } from './viz/describe.ts';
-import { layoutRim, pickRimWord, poemWords, RING_IN_RIM, type RimPlace, type TasteField } from './viz/verse.ts';
+import { layoutRim, pickRimWord, RING_IN_RIM, samePoem, steeredPoem, type RimPlace, type TasteField } from './viz/verse.ts';
 
 export type TasteVerseProps = {
-  source: Pick<MusicSessionController, 'getTaste' | 'getAudibleFeatures' | 'getAnalyser'>;
+  source: Pick<MusicSessionController, 'getTaste' | 'getAudibleFeatures' | 'getAnalyser' | 'getSteer'>;
   /** Ring radius as a fraction of half the viewport height; the poem sits inside it. */
   ringFraction: number;
   /** Each new vote sends the words you were hearing out to the ring. */
@@ -33,6 +33,8 @@ const RIM_GROW = 15;
 /** How long a word takes to fly from the poem to the ring, and the stagger per letter. */
 const FLIGHT_S = 1.5;
 const LETTER_DELAY_S = 0.045;
+/** After a change lands, hold its poem at most this long (s) while the audible estimate catches up. */
+const ARRIVED_HOLD_S = 6;
 /** How far from the lettering (px) a tap still picks a word. */
 const PICK_BAND = 44;
 /** Elements whose taps are their own; the ring ignores them. */
@@ -69,6 +71,13 @@ type PoemWord = {
   size: number;
   /** After a vote the word is away in flight until this time (s). */
   awayUntil: number;
+  /**
+   * 0..1 how much of the word is inked, letter by letter. While a change is on
+   * its way, arriving words are ghosts that ink in with its real progress and
+   * leaving words give their ink back; 1 otherwise.
+   */
+  ink: number;
+  inkTarget: number;
 };
 
 type Glyph = { ch: string; x: number; y: number; rot: number; size: number };
@@ -153,6 +162,10 @@ export function TasteVerse({ source, ringFraction, lastVote, field, anchor, onPi
     let centre: { x: number; y: number; r: number } | null = null;
     let raf = 0;
     let lastFrame = 0;
+    /** The change on its way, as of the last poll. */
+    let steering: ReturnType<NonNullable<TasteVerseProps['source']['getSteer']>> = null;
+    /** A change that has landed: its poem holds until what's audible reads the same. */
+    let arrived: { to: Record<string, number>; until: number } | null = null;
     /** The ring as last drawn (CSS px), for picking words under the pointer. */
     let layout: { ring: { x: number; y: number; r: number }; places: RimPlace[] } | null = null;
     let hovered: string | null = null;
@@ -192,16 +205,28 @@ export function TasteVerse({ source, ringFraction, lastVote, field, anchor, onPi
         word.audible = total > 0 ? Math.max(0, audible[word.id] ?? 0) / total : 0;
       }
       primed = true;
-      const lines = poemWords(audible);
+      const live = src.getSteer?.() ?? null;
+      if (live && live.progress < 1) arrived = null;
+      else if (live || steering) arrived = { to: (live ?? steering)!.to, until: now + ARRIVED_HOLD_S };
+      if (arrived && (now > arrived.until || samePoem(audible, arrived.to))) arrived = null;
+      steering = live;
+      const { lines, ink } = steeredPoem(audible, live ?? (arrived ? { progress: 1, to: arrived.to } : null));
       const keep = new Set(lines.map((l) => l.id));
       for (const entry of poem.values()) if (!keep.has(entry.id)) entry.target = 0;
       for (const line of lines) {
         const entry = poem.get(line.id);
+        const inkTarget = ink.get(line.id) ?? 1;
         if (entry) {
           entry.targetShare = line.share;
           entry.target = 1;
+          entry.inkTarget = inkTarget;
         } else {
-          poem.set(line.id, { id: line.id, share: line.share, targetShare: line.share, presence: 0, target: 1, x: 0, y: NaN, size: 0, awayUntil: 0 });
+          // An arriving word is there at once, as a ghost; its ink is what's still to come.
+          const ghost = inkTarget < 1;
+          poem.set(line.id, {
+            id: line.id, share: line.share, targetShare: line.share, presence: ghost ? 1 : 0, target: 1,
+            x: 0, y: NaN, size: 0, awayUntil: 0, ink: ghost ? inkTarget : 1, inkTarget,
+          });
         }
       }
     };
@@ -240,6 +265,16 @@ export function TasteVerse({ source, ringFraction, lastVote, field, anchor, onPi
       const n = Math.sin(g.rot) * s;
       ctx.setTransform(c, n, -n, c, g.x * dpr, g.y * dpr);
       ctx.fillText(g.ch, 0, 0);
+    };
+
+    /** A glyph's outline, `width` css px thick whatever its size. */
+    const strokeGlyph = (g: Glyph, width: number) => {
+      const s = (g.size / REF_PX) * dpr;
+      const c = Math.cos(g.rot) * s;
+      const n = Math.sin(g.rot) * s;
+      ctx.setTransform(c, n, -n, c, g.x * dpr, g.y * dpr);
+      ctx.lineWidth = (width * REF_PX) / g.size;
+      ctx.strokeText(g.ch, 0, 0);
     };
 
     const setFont = (italic: boolean) => {
@@ -376,6 +411,7 @@ export function TasteVerse({ source, ringFraction, lastVote, field, anchor, onPi
         p.y = Number.isNaN(p.y) || reduced ? target : p.y + (target - p.y) * (1 - Math.exp(-dt / 0.35));
         const want = now < p.awayUntil ? 0 : p.target;
         p.presence += (want - p.presence) * (reduced ? 1 : 1 - Math.exp(-dt / (want > 0 ? 0.9 : 0.5)));
+        p.ink += (p.inkTarget - p.ink) * (reduced ? 1 : 1 - Math.exp(-dt / 0.3));
         const word = byId.get(p.id);
         const taste = word?.shownTaste ?? 0;
         let color = mix(ink, warm, clamp01(taste) * 0.75);
@@ -387,14 +423,27 @@ export function TasteVerse({ source, ringFraction, lastVote, field, anchor, onPi
         p.size = size;
         const glyphs = lineGlyphs(p.id, p.x, p.y, size, true, tracking);
         setFont(true);
-        ctx.fillStyle = rgb(color);
+        // Ink that is still arriving (or leaving) carries the colour of what set it moving.
+        const inking = p.ink < 0.995;
+        const tint = !steering || steering.vote === null ? mix(ink, warm, 0.45) : steering.vote === 'up' ? warm : cool;
         const n = glyphs.length;
         glyphs.forEach((g, j) => {
           // Letters arrive (and leave) one after another, rising out of the smoke.
           const a = reduced ? p.presence : clamp01(p.presence * (n + 3) - j);
           if (a <= 0.01) return;
-          ctx.globalAlpha = a * 0.94;
-          drawGlyph({ ...g, y: g.y + (1 - a) * 8 * motion });
+          const at = { ...g, y: g.y + (1 - a) * 8 * motion };
+          // Ink runs through the word letter by letter; the rest waits as a hairline.
+          const inked = inking ? clamp01(p.ink * n - j) : 1;
+          if (inked < 1) {
+            ctx.strokeStyle = rgb(mix(color, tint, 0.5));
+            ctx.globalAlpha = a * 0.42 * (1 - inked);
+            strokeGlyph(at, 0.9);
+          }
+          if (inked > 0.01) {
+            ctx.fillStyle = rgb(inking ? mix(color, tint, 0.55 * (1 - p.ink)) : color);
+            ctx.globalAlpha = a * 0.94 * inked;
+            drawGlyph(at);
+          }
         });
       });
 

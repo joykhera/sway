@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { createTasteField, layoutRim, MAX_FIELD_WORDS, packField, pickRimWord, poemWords } from './verse.ts';
+import { createTasteField, layoutRim, MAX_FIELD_WORDS, packField, pickRimWord, poemWords, steeredPoem } from './verse.ts';
 
 const GAP = Math.PI / 2;
 const opts = { gap: GAP, wordSpace: 10, groupSpace: 30 };
@@ -92,5 +92,31 @@ describe('pickRimWord', () => {
 
   it('leaves the opening at the bottom empty', () => {
     expect(pickRimWord(places, ring, ...at(Math.PI / 2), 30)).toBeNull();
+  });
+});
+
+describe('steeredPoem', () => {
+  const audible = { jazz: 0.45, piano: 0.4, calm: 0.3 };
+  const to = { electronic: 0.45, piano: 0.4, calm: 0.3 };
+
+  it('is the plain poem when nothing is on its way', () => {
+    expect(steeredPoem(audible, null)).toEqual({ lines: poemWords(audible), ink: new Map() });
+    // Arrived: the destination, fully inked, while the audible estimate catches up.
+    const arrived = steeredPoem(audible, { progress: 1, to });
+    expect(arrived.ink.size).toBe(0);
+    expect(arrived.lines.map((l) => l.id)).toEqual(poemWords(to).map((l) => l.id));
+  });
+
+  it('adds arriving words as ghosts inked to the progress, and lets leaving words fade', () => {
+    const { lines, ink } = steeredPoem(audible, { progress: 0.4, to });
+    expect(lines.map((l) => l.id)).toContain('electronic');
+    expect(ink.get('electronic')).toBeCloseTo(0.4);
+    expect(ink.get('jazz')).toBeCloseTo(1 - 0.7 * 0.4);
+    expect(ink.has('piano')).toBe(false); // staying words keep their ink
+  });
+
+  it('eases staying words toward their new share', () => {
+    const half = steeredPoem({ jazz: 0.5, piano: 0.5 }, { progress: 0.5, to: { jazz: 0.2, piano: 0.8 } });
+    expect(half.lines.find((l) => l.id === 'piano')!.share).toBeCloseTo(0.65);
   });
 });

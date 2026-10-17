@@ -545,3 +545,32 @@ describe('nudge', () => {
     expect(relay.last.steers).toHaveLength(0);
   });
 });
+
+describe('getSteer', () => {
+  it('reports a vote on its way, with where it comes from and goes to', async () => {
+    const { controller } = await boot();
+    expect(controller.getSteer()).toBeNull();
+    controller.vote('down');
+    const steer = controller.getSteer()!;
+    expect(steer.vote).toBe('down');
+    expect(steer.progress).toBeGreaterThanOrEqual(0);
+    expect(steer.progress).toBeLessThan(1);
+    expect(Object.keys(steer.from)).toEqual(['ambient']);
+    expect(Object.keys(steer.to)).toEqual(['jazz']);
+  });
+
+  it('reports taps too, without filling a thumb', async () => {
+    const relay = fakeRelay(true);
+    const { learner } = fakeLearner();
+    learner.nudge = ({ target, feature }) => ({ features: { ...target.features, [feature]: 1 }, prompts: [...target.prompts, { text: feature, weight: 1 }] });
+    const controller = new SessionController({ learner, player: new FakePlayer(), createTransport: relay.create, seed: 1, config: { generationLatencyMs: 0 } });
+    const levels: (number | null | undefined)[] = [];
+    controller.subscribeStats?.((l) => levels.push(l.steerProgress));
+    await controller.start();
+    await flush();
+    controller.nudge('jazz');
+    expect(controller.getSteer()).toMatchObject({ vote: null, to: { ambient: expect.any(Number), jazz: 1 } });
+    await vi.advanceTimersByTimeAsync(500);
+    expect(levels.filter((p) => typeof p === 'number')).toEqual([]);
+  });
+});
