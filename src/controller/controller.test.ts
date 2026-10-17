@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { FakePlayer, fakeLearner, fakeRelay } from '../../tests/e2e/harness.ts';
-import type { SessionState } from '../shared/protocol.ts';
+import type { SessionState, StreamLevels } from '../shared/protocol.ts';
 import { SessionController } from './index.ts';
 
 beforeEach(() => vi.useFakeTimers());
@@ -13,7 +13,7 @@ async function boot(opts: { auto?: boolean } = {}) {
   const relay = fakeRelay(opts.auto ?? true);
   const player = new FakePlayer();
   const { learner, calls } = fakeLearner();
-  const controller = new SessionController({ learner, player, createTransport: relay.create, seed: 1, config: { generationLatencyMs: 0 } });
+  const controller = new SessionController({ learner, player, createTransport: relay.create, seed: 1, config: { generationLatencyMs: 0, voteRampMs: 8000 } });
   const states: SessionState[] = [];
   controller.subscribe((s) => states.push(s));
   await controller.start();
@@ -344,5 +344,180 @@ describe('stop', () => {
     await flush();
     expect(relay.transports).toHaveLength(2);
     expect(relay.last.sent[0]).toEqual({ type: 'start', prompts: [{ text: 'jazz', weight: 1 }] });
+  });
+});
+
+describe('vote responsiveness (issue #9)', () => {
+  it('ramps a vote over voteRampMs (~3 steps at 2500 ms) while variations keep rampMs', async () => {
+    // default config: voteRampMs 2500, rampMs 8000, stepMs 1000
+    const relay = fakeRelay();
+    const player = new FakePlayer();
+    const { learner } = fakeLearner();
+    const c = new SessionController({ learner, player, createTransport: relay.create, seed: 1, config: { generationLatencyMs: 0, noVoteEvolveMs: 20000 } });
+    await c.start();
+    await vi.advanceTimersByTimeAsync(0);
+    const t = relay.last;
+    c.vote('down');
+    await vi.advanceTimersByTimeAsync(2500);
+    const voteSteers = t.steers.length;
+    expect(voteSteers).toBe(3); // t=0.4, 0.8, 1.0
+    expect(t.steers.at(-1)!.prompts).toEqual([{ text: 'jazz', weight: 1 }]);
+    // scheduled variation still uses the 8 s ramp
+    const evolveStart = t.steers.length;
+    await vi.advanceTimersByTimeAsync(20000); // evolve fires inside this window
+    await vi.advanceTimersByTimeAsync(8000);
+    expect(t.steers.length - evolveStart).toBe(8);
+    c.stop();
+  });
+
+  it('emits a decision from the learner\'s lastDecision on each vote', async () => {
+    const relay = fakeRelay();
+    const player = new FakePlayer();
+    const { learner } = fakeLearner();
+    const base = learner.processVote;
+    learner.processVote = (args) => {
+      const r = base(args);
+      return {
+        state: r.state,
+        target: {
+          ...r.target,
+          lastDecision: { kind: 'redirect', reason: 'moving away from ambient', phase: 'listening', step: 1, prediction: 0, uncertainty: 1 },
+        },
+      };
+    };
+    const c = new SessionController({ learner, player, createTransport: relay.create, seed: 1 });
+    const states: SessionState[] = [];
+    c.subscribe((s) => states.push(s));
+    await c.start();
+    await vi.advanceTimersByTimeAsync(0);
+    c.vote('down');
+    expect(states.at(-1)!.decision).toMatchObject({ vote: 'down', kind: 'redirect', reason: 'moving away from ambient' });
+    c.stop();
+  });
+
+  it('surfaces nowPlaying from the audible estimate, and steerProgress rises then clears', async () => {
+    const relay = fakeRelay();
+    const player = new FakePlayer();
+    const { learner } = fakeLearner();
+    const c = new SessionController({
+      learner, player, createTransport: relay.create, seed: 1,
+      config: { generationLatencyMs: 100, voteRampMs: 2000, stepMs: 500 },
+    });
+    const states: SessionState[] = [];
+    const levels: StreamLevels[] = [];
+    c.subscribe((s) => states.push(s));
+    c.subscribeStats((l) => levels.push(l));
+    await c.start();
+    await vi.advanceTimersByTimeAsync(0);
+    c.vote('down');
+    relay.last.audio(); // a fresh generated block lands right after the vote
+    // pending steer exists: progress > 0 for the voted side
+    await vi.advanceTimersByTimeAsync(300);
+    expect(levels.at(-1)!.steerVote).toBe('down');
+    expect(levels.at(-1)!.steerProgress).toBeGreaterThan(0);
+    expect(levels.at(-1)!.steerProgress).toBeLessThanOrEqual(0.97);
+    // eta = 100 latency + 0 buffer + 1000 half-ramp ≈ 1100 ms; let it land + clear
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(levels.at(-1)!.steerProgress).toBeNull();
+    // nowPlaying eventually names the voted target (jazz) once it's audible
+    const np = states.filter((s) => s.nowPlaying).at(-1)!.nowPlaying;
+    expect(np?.genre).toBe('jazz');
+    c.stop();
+  });
+
+  it('holds steerProgress under 1 past the ETA until a new generated block lands', async () => {
+    const relay = fakeRelay();
+    const player = new FakePlayer();
+    const { learner } = fakeLearner();
+    const c = new SessionController({
+      learner, player, createTransport: relay.create, seed: 1,
+      config: { generationLatencyMs: 100, voteRampMs: 2000, stepMs: 500, noVoteEvolveMs: 60000 },
+    });
+    const levels: StreamLevels[] = [];
+    c.subscribeStats((l) => levels.push(l));
+    await c.start();
+    await vi.advanceTimersByTimeAsync(0);
+    relay.last.audio(); // the pre-vote block already playing
+    c.vote('down');
+    // ETA = 100 latency + 0 buffer + 1000 half-ramp = 1100 ms; sail past it
+    // with no new generated block: the fill parks just under full.
+    await vi.advanceTimersByTimeAsync(2000);
+    expect(levels.at(-1)!.steerVote).toBe('down');
+    expect(levels.at(-1)!.steerProgress).toBeGreaterThanOrEqual(0.95);
+    expect(levels.at(-1)!.steerProgress).toBeLessThan(1);
+    // A fresh block lands — the next stats tick reports a full fill.
+    relay.last.audio();
+    await vi.advanceTimersByTimeAsync(150);
+    expect(levels.at(-1)!.steerProgress).toBe(1);
+    // ~600 ms hold, then it clears back to null.
+    await vi.advanceTimersByTimeAsync(700);
+    expect(levels.at(-1)!.steerProgress).toBeNull();
+    expect(levels.at(-1)!.steerVote).toBeNull();
+    c.stop();
+  });
+});
+
+describe('taste and moments', () => {
+  it('captures the heard prompts and steers back to them without a vote', async () => {
+    const { relay, controller, calls } = await boot();
+    const ambient = controller.captureMoment();
+    expect(ambient?.prompts).toEqual([{ text: 'ambient', weight: 1 }]);
+    controller.vote('down');
+    await vi.advanceTimersByTimeAsync(8000);
+    expect(relay.last.steers.at(-1)!.prompts).toEqual([{ text: 'jazz', weight: 1 }]);
+    controller.recallMoment(ambient!);
+    await vi.advanceTimersByTimeAsync(8000);
+    expect(relay.last.steers.at(-1)!.prompts).toEqual([{ text: 'ambient', weight: 1 }]);
+    expect(calls.vote).toHaveLength(1);
+  });
+
+  it('has no moment to capture before playback', () => {
+    const c = new SessionController({ learner: fakeLearner().learner, player: new FakePlayer(), createTransport: fakeRelay().create });
+    expect(c.captureMoment()).toBeNull();
+  });
+
+  it('has no moment once the session has stopped', async () => {
+    const { controller } = await boot();
+    controller.stop();
+    expect(controller.captureMoment()).toBeNull();
+  });
+
+  it('exposes a copy of the learned scores', async () => {
+    const { controller } = await boot();
+    controller.vote('up');
+    const taste = controller.getTaste();
+    expect(taste).toEqual({ ambient: 1 });
+    taste.ambient = 99;
+    expect(controller.getTaste()).toEqual({ ambient: 1 });
+  });
+
+  it('getAudibleFeatures estimates the heard blend without consuming it', async () => {
+    const { player, controller, calls } = await boot();
+    controller.vote('down');
+    await vi.advanceTimersByTimeAsync(4000);
+    player.bufferedMs = 3000;
+    // Same estimate the vote path would make: what was sent ~3 s ago.
+    expect(controller.getAudibleFeatures()).toEqual({ ambient: 0.75, jazz: 0.25 });
+    // Read-only: the next vote attributes the same blend — the cursor was not consumed.
+    controller.vote('up');
+    expect(calls.vote[1]!.audible).toEqual({ ambient: 0.75, jazz: 0.25 });
+  });
+
+  it('recallMoment is a steer, not a vote: no decision, no learner call', async () => {
+    const { controller, calls, states } = await boot();
+    const ambient = controller.captureMoment();
+    controller.recallMoment(ambient!);
+    expect(calls.vote).toHaveLength(0);
+    expect(states.at(-1)!.decision).toBeUndefined();
+    controller.stop();
+  });
+
+  it('exposes the player analyser tap, or null when the player has none', async () => {
+    const { controller, player } = await boot();
+    expect(controller.getAnalyser()).toBeNull();
+    const analyser = { fftSize: 2048 } as unknown as AnalyserNode;
+    player.analyser = analyser;
+    expect(controller.getAnalyser()).toBe(analyser);
+    controller.stop();
   });
 });

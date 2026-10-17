@@ -42,6 +42,8 @@ export type ErrorCode =
 export const MUSIC_WS_PATH = '/api/music';
 export const WEIGHT_MIN = 0.1;
 export const WEIGHT_MAX = 2.0;
+/** Max weighted prompts per client message — the relay guard rejects longer lists. */
+export const MAX_PROMPTS = 10;
 
 // ---- Learner contract (implemented by C in src/learner, consumed by D) ----
 
@@ -57,6 +59,15 @@ export type LearnerState = {
 export type Target = {
   features: FeatureBlend;
   prompts: WeightedPrompt[];
+  /** Set by the adaptive learner: how it answered the latest vote/evolve (issue #9 surfaces it). */
+  lastDecision?: {
+    kind: 'initial' | 'hold' | 'redirect' | 'variation' | 'probe';
+    reason: string;
+    phase: string;
+    step: number;
+    prediction: number;
+    uncertainty: number;
+  };
 };
 
 export interface Learner {
@@ -84,21 +95,88 @@ export interface PCMPlayer {
   configure(audio: AudioFormat): void;
   enqueuePcm(bytes: ArrayBuffer): void;
   getBufferedDurationMs(): number;
-  // Existing worklet readiness, optional for test/alternative players.
-  getStats?(): { state: string; priming: boolean; audioContextState?: string };
+  /** Latest diagnostics snapshot (live telemetry + readiness), optional for test/alternative players. */
+  getStats?(): PCMPlayerStats;
+  // Spectrum tap of the player's output, for the visualizer.
+  getAnalyser?(): AnalyserNode | null;
   close(): Promise<void>;
 }
+
+/** Diagnostics subset the controller maps onto StreamLevels; implementations may expose more fields. */
+export type PCMPlayerStats = {
+  /** Worklet/player lifecycle ('idle' | 'initializing' | 'ready' | 'closed'). */
+  state?: string;
+  /** Still filling the preroll buffer — output is silence. */
+  priming?: boolean;
+  /** AudioContext.state where applicable ('running' | 'suspended' | ...) — gates audible-time tracking. */
+  audioContextState?: string;
+  /** Decoded audio buffered but not yet rendered. */
+  bufferedMs?: number;
+  /** Render callbacks that ran out of audio since the last reset. */
+  underruns?: number;
+  /** RMS of recently rendered output, 0..1 — only worklet renderers measure this. */
+  energyRms?: number;
+  /** Spectral-brightness proxy in Hz — only worklet renderers measure this. */
+  brightnessHz?: number;
+  /** Dominant-partial pitch estimate in Hz, or null when silent/indeterminate. */
+  pitchHz?: number | null;
+  /** PCM blocks pushed since reset — the real generation cadence. */
+  chunksReceived?: number;
+};
 
 // ---- Controller contract (implemented by D in src/controller, consumed by UI) ----
 
 export type SessionStatus = 'idle' | 'connecting' | 'playing' | 'reconnecting' | 'stopped' | 'error';
 
+/** The blend the controller is steering toward, rendered as whisperable words. */
+export type MusicSignature = {
+  genre?: string;
+  instrument?: string;
+  mood?: string;
+  texture?: string;
+  /** Highest-weight prompt phrase the relay was last told to play. */
+  focus?: string;
+};
+
+/** Live rendered-signal telemetry, ~10 Hz. Written straight to canvas — never re-render React per tick. */
+export type StreamLevels = {
+  /** 0..1 RMS of rendered output. */
+  energy: number;
+  /** Spectral-brightness proxy in Hz. */
+  brightnessHz: number;
+  /** Dominant-partial pitch estimate in Hz, or null when silent/indeterminate. */
+  pitchHz: number | null;
+  /** Audio buffered but not yet rendered. */
+  bufferedMs: number;
+  underruns: number;
+  /** Generated audio blocks landed since the session started — bumps when a new part of the music exists. */
+  generation: number;
+  /** 0..1 progress of the latest vote's steer becoming audible; 1 only once it plays. Null when none pending. */
+  steerProgress?: number | null;
+  /** Which vote the pending steer belongs to. */
+  steerVote?: Vote | null;
+};
+
+/** How the learner responded to the latest vote (from `Target.lastDecision`). */
+export type VoteDecision = {
+  vote: Vote;
+  kind: 'initial' | 'hold' | 'redirect' | 'variation' | 'probe';
+  reason: string;
+  phase: string;
+  at: number;
+};
+
 export type SessionState = {
   status: SessionStatus;
   lastError?: string;
+  signature?: MusicSignature;
+  /** Estimated audible blend right now (not the pending target). */
+  nowPlaying?: MusicSignature;
+  decision?: VoteDecision;
   purpose?: ListeningPurpose;
   memory?: 'loading' | 'ready' | 'saving' | 'unavailable';
   savedVotes?: number;
+
 };
 
 export interface MusicSessionController {
@@ -106,8 +184,17 @@ export interface MusicSessionController {
   setPurpose?(purpose: ListeningPurpose): void;
   resetPreferences?(): Promise<void>;
   exportFeedback?(): Promise<string>;
+  // Visualizer inputs: the output spectrum and the blend estimated to be audible now.
+  getAnalyser?(): AnalyserNode | null;
+  getAudibleFeatures?(): FeatureBlend;
+  // Taste and moments: learner scores, and liked moments to return to (never votes).
+  getTaste?(): Record<string, number>;
+  captureMoment?(): Target | null;
+  recallMoment?(moment: Target): void;
   start(): Promise<void>;
   vote(v: Vote): void; // synchronous, never locked out
   stop(): void;
   subscribe(listener: (state: SessionState) => void): () => void;
+  /** Optional: ~10 Hz live levels while a session is active; synchronous snapshot on subscribe (zeros when idle). */
+  subscribeStats?(listener: (levels: StreamLevels) => void): () => void;
 }

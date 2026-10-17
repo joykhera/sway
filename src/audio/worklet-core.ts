@@ -12,10 +12,14 @@ import {
   RENDER_QUANTUM_FRAMES,
   REPRIME_MS,
   RING_CAPACITY_MS,
+  TELEMETRY_SILENCE_FLOOR,
+  TELEMETRY_SLOTS,
+  TELEMETRY_WINDOW_MS,
 } from './constants.ts';
 import { decodeS16le, framesFromBytes, PcmByteAssembler } from './decode.ts';
 import { Float32FrameRingBuffer } from './ring-buffer.ts';
 import { StreamingResampler } from './resample.ts';
+import type { WorkletOutbound } from './types.ts';
 
 /**
  * Streaming PCM engine. Interleaved stereo s16le bytes in; interleaved stereo
@@ -41,6 +45,26 @@ export class PcmWorkletCore {
   /** False until the first successful prime; picks preroll vs reprime. */
   private hasPrimed = false;
   private underruns = 0;
+  private chunksReceived = 0;
+
+  // --- Rendered-signal telemetry -------------------------------------------
+  // Rolling ~TELEMETRY_WINDOW_MS window over the emitted signal, kept as a
+  // fixed ring of per-render-call accumulators: every render() pushes one
+  // {frames, sumSq, crossings} slot, running totals are maintained, and whole
+  // slots expire once the window has slid past them. O(frames) per render,
+  // zero allocation after construction, O(1) per getStats() tick.
+  private readonly telemetryWindowFrames: number;
+  private readonly telemetrySumSq = new Float64Array(TELEMETRY_SLOTS);
+  private readonly telemetryCrossings = new Uint32Array(TELEMETRY_SLOTS);
+  private readonly telemetryFrames = new Uint32Array(TELEMETRY_SLOTS);
+  private telemetryHead = 0; // next slot to write
+  private telemetryTail = 0; // oldest occupied slot
+  private telemetryUsed = 0; // occupied slot count
+  private telemetrySumSqTotal = 0;
+  private telemetryCrossingsTotal = 0;
+  private telemetryFramesTotal = 0;
+  /** Sign (±1) of the last rendered left-channel sample, carried across renders. */
+  private telemetryPrevSign = 1;
 
   constructor(opts: {
     outputSampleRateHz?: number;
@@ -55,6 +79,9 @@ export class PcmWorkletCore {
     );
     this.prerollFrames = Math.ceil((this.outputRateHz * (opts.prerollMs ?? PREROLL_MS)) / 1000);
     this.reprimeFrames = Math.ceil((this.outputRateHz * (opts.reprimeMs ?? REPRIME_MS)) / 1000);
+    this.telemetryWindowFrames = Math.ceil(
+      (this.outputRateHz * TELEMETRY_WINDOW_MS) / 1000,
+    );
     // Until configure() says otherwise, assume the Lyria default rate.
     this.sourceRateHz = DEFAULT_SAMPLE_RATE_HZ;
     this.resampler = new StreamingResampler(this.sourceRateHz, this.outputRateHz);
@@ -80,6 +107,7 @@ export class PcmWorkletCore {
     }
     const decoded = decodeS16le(aligned, this.scratchDecoded);
     if (decoded === 0) return;
+    this.chunksReceived++;
     const estimate = this.resampler.pendingOutputFrames(decoded);
     if (this.scratchResampled.length < estimate * CHANNELS) {
       this.scratchResampled = new Float32Array(estimate * CHANNELS);
@@ -112,6 +140,7 @@ export class PcmWorkletCore {
       const threshold = this.hasPrimed ? this.reprimeFrames : this.prerollFrames;
       if (this.ring.availableFrames < threshold) {
         out.fill(0);
+        this.accumulateTelemetry(out, frames);
         return out;
       }
       this.priming = false;
@@ -123,20 +152,101 @@ export class PcmWorkletCore {
       this.underruns++;
       this.priming = true;
     }
+    this.accumulateTelemetry(out, frames);
     return out;
   }
 
-  getStats(): {
-    bufferedMs: number;
-    underruns: number;
-    droppedFrames: number;
-    priming: boolean;
-  } {
+  /**
+   * Fold one rendered buffer into the telemetry window. Measures the signal as
+   * actually emitted — including priming/underrun silence, which decays energy
+   * and nulls pitch exactly as the listener hears it. Allocation-free: only
+   * the preallocated slot ring is touched.
+   */
+  private accumulateTelemetry(out: Float32Array, frames: number): void {
+    if (frames <= 0) return;
+    let sumSq = 0;
+    let crossings = 0;
+    let prevSign = this.telemetryPrevSign;
+    for (let i = 0; i < frames; i++) {
+      const l = out[i * CHANNELS] ?? 0;
+      const r = out[i * CHANNELS + 1] ?? 0;
+      sumSq += l * l + r * r;
+      // Zero counts as non-negative: silence never crosses, and an exact-0
+      // sample mid-transition can't double-count a crossing.
+      const sign = l < 0 ? -1 : 1;
+      if (sign !== prevSign) {
+        crossings++;
+        prevSign = sign;
+      }
+    }
+    this.telemetryPrevSign = prevSign;
+
+    if (this.telemetryUsed === TELEMETRY_SLOTS) this.evictTelemetrySlot();
+    const head = this.telemetryHead;
+    this.telemetrySumSq[head] = sumSq;
+    this.telemetryCrossings[head] = crossings;
+    this.telemetryFrames[head] = frames;
+    this.telemetryHead = (head + 1) % TELEMETRY_SLOTS;
+    this.telemetryUsed++;
+    this.telemetrySumSqTotal += sumSq;
+    this.telemetryCrossingsTotal += crossings;
+    this.telemetryFramesTotal += frames;
+    // Expire whole slots while the remainder still covers the window (the
+    // newest slot is always kept, even if one render overflows it alone).
+    while (
+      this.telemetryUsed > 1 &&
+      this.telemetryFramesTotal - (this.telemetryFrames[this.telemetryTail] ?? 0) >=
+      this.telemetryWindowFrames
+    ) {
+      this.evictTelemetrySlot();
+    }
+  }
+
+  /** Subtract the oldest slot's accumulators from the running totals. */
+  private evictTelemetrySlot(): void {
+    const tail = this.telemetryTail;
+    this.telemetrySumSqTotal -= this.telemetrySumSq[tail] ?? 0;
+    this.telemetryCrossingsTotal -= this.telemetryCrossings[tail] ?? 0;
+    this.telemetryFramesTotal -= this.telemetryFrames[tail] ?? 0;
+    this.telemetryTail = (tail + 1) % TELEMETRY_SLOTS;
+    this.telemetryUsed--;
+  }
+
+  getStats(): Omit<WorkletOutbound, 'type'> {
+    // Telemetry is derived lazily (stats post ~every STATS_INTERVAL_MS);
+    // running totals make this O(1). Formulas over the window's N frames:
+    //   energyRms    = sqrt(sumSq / (N·CHANNELS))
+    //                  RMS of interleaved samples; decoded full-scale ≈ ±1, so
+    //                  full-scale DC/square reads 1.0, a full-scale sine ≈ 0.707.
+    //   zcrHz        = crossings·outputRateHz / N
+    //                  left-channel sign changes per second (≈2f for a sine).
+    //   brightnessHz = zcrHz / 4 = crossings·sr / (4N)
+    //                  ZCR per interleaved sample × sr/2 — the spectral-
+    //                  centroid proxy from PCMPlayerStats; a pure tone reads
+    //                  ≈ f/2, broadband content scales up. Rough estimate.
+    //   pitchHz      = zcrHz / 2 = crossings·sr / (2N)
+    //                  two sign changes per cycle → dominant-frequency
+    //                  estimate; null below the silence floor, where noise
+    //                  ZCR reads as garbage pitch.
+    const windowFrames = this.telemetryFramesTotal;
+    let energyRms = 0;
+    let brightnessHz = 0;
+    let pitchHz: number | null = null;
+    if (windowFrames > 0) {
+      energyRms = Math.sqrt(this.telemetrySumSqTotal / (windowFrames * CHANNELS));
+      const zcrHz = (this.telemetryCrossingsTotal * this.outputRateHz) / windowFrames;
+      brightnessHz = zcrHz / 4;
+      pitchHz = energyRms < TELEMETRY_SILENCE_FLOOR ? null : zcrHz / 2;
+    }
     return {
       bufferedMs: (this.ring.availableFrames / this.outputRateHz) * 1000,
       underruns: this.underruns,
       droppedFrames: this.ring.droppedFrames,
+      chunksReceived: this.chunksReceived,
       priming: this.priming,
+      energyRms,
+      brightnessHz,
+      pitchHz,
     };
   }
 
@@ -148,5 +258,13 @@ export class PcmWorkletCore {
     this.priming = true;
     this.hasPrimed = false;
     this.underruns = 0;
+    this.chunksReceived = 0;
+    this.telemetryHead = 0;
+    this.telemetryTail = 0;
+    this.telemetryUsed = 0;
+    this.telemetrySumSqTotal = 0;
+    this.telemetryCrossingsTotal = 0;
+    this.telemetryFramesTotal = 0;
+    this.telemetryPrevSign = 1;
   }
 }

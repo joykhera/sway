@@ -21,10 +21,19 @@ class FakeSource implements BufferedSourceLike {
   disconnects = 0;
   connections = 0;
   ended = false;
-  connect() { this.connections++; }
+  readonly connectedTo: unknown[] = [];
+  connect(destination?: unknown) { this.connections++; this.connectedTo.push(destination); }
   disconnect() { this.disconnects++; }
   start(when = 0) { this.startAt = when; }
   stop() { this.stops++; }
+}
+class FakeAnalyser {
+  fftSize = 0;
+  smoothingTimeConstant = 1;
+  readonly connections: unknown[] = [];
+  disconnects = 0;
+  connect(destination: unknown) { this.connections.push(destination); }
+  disconnect() { this.disconnects++; }
 }
 class FakeContext implements BufferedAudioContextLike {
   currentTime = 0;
@@ -32,6 +41,7 @@ class FakeContext implements BufferedAudioContextLike {
   destination = {} as AudioNode;
   onstatechange: ((event: Event) => void) | null = null;
   sources: FakeSource[] = [];
+  analysers: FakeAnalyser[] = [];
   buffers: FakeBuffer[] = [];
   resumes = 0;
   closes = 0;
@@ -46,6 +56,11 @@ class FakeContext implements BufferedAudioContextLike {
     const source = new FakeSource();
     this.sources.push(source);
     return source;
+  }
+  createAnalyser() {
+    const analyser = new FakeAnalyser();
+    this.analysers.push(analyser);
+    return analyser as unknown as AnalyserNode;
   }
   async resume() {
     this.resumes++;
@@ -304,5 +319,25 @@ describe('BufferedPCMPlayer', () => {
     expect(() => player.configure(format(NaN))).toThrow(RangeError);
     expect(() => player.configure(format(0))).toThrow(RangeError);
     expect(() => createBufferedPCMPlayer({ capacityMs: 100 })).toThrow(RangeError);
+  });
+});
+
+describe('output tap', () => {
+  it('routes scheduled sources through the analyser and exposes it via getAnalyser', async () => {
+    const { player, contexts } = rig();
+    player.configure(format());
+    await player.initializeFromUserGesture();
+    const ctx = contexts[0]!;
+    const analyser = ctx.analysers[0]!;
+    expect(analyser.fftSize).toBe(2048);
+    expect(analyser.smoothingTimeConstant).toBe(0.5);
+    expect(analyser.connections).toEqual([ctx.destination]);
+    expect(player.getAnalyser()).toBe(analyser);
+    player.enqueuePcm(pcm(144000)); // 3 s — enough to clear the 2750 ms preroll
+    expect(ctx.sources.length).toBeGreaterThan(0);
+    for (const source of ctx.sources) expect(source.connectedTo).toEqual([analyser]);
+    await player.close();
+    expect(analyser.disconnects).toBe(1);
+    expect(player.getAnalyser()).toBeNull();
   });
 });

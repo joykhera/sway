@@ -7,6 +7,7 @@ import {
 } from './constants.ts';
 import { decodeS16le, PcmByteAssembler } from './decode.ts';
 import type { AudioFormat, PCMPlayer, PCMPlayerState, PCMPlayerStats } from './types.ts';
+import { createOutputTap } from './analyser.ts';
 
 export interface BufferedAudioBufferLike {
   getChannelData(channel: number): Float32Array;
@@ -27,6 +28,8 @@ export interface BufferedAudioContextLike {
   onstatechange: ((event: Event) => void) | null;
   createBuffer(channels: number, frames: number, sampleRate: number): BufferedAudioBufferLike;
   createBufferSource(): BufferedSourceLike;
+  /** Optional so fakes can skip it; without it there is no visualizer tap. */
+  createAnalyser?(): AnalyserNode;
   resume(): Promise<void>;
   close(): Promise<void>;
 }
@@ -58,6 +61,8 @@ export class BufferedPCMPlayer implements PCMPlayer {
   private readonly capacity: number;
   private readonly lead: number;
   private ctx: BufferedAudioContextLike | null = null;
+  private output: AudioNode | null = null;
+  private analyser: AnalyserNode | null = null;
   private initPromise: Promise<void> | null = null;
   private state: PCMPlayerState = 'idle';
   private rate = 0;
@@ -69,6 +74,7 @@ export class BufferedPCMPlayer implements PCMPlayer {
   private scheduledUntil = 0;
   private startsAt = 0;
   private underruns = 0;
+  private chunksReceived = 0;
   private droppedFrames = 0;
 
   constructor(opts: BufferedPCMPlayerOptions = {}) {
@@ -95,11 +101,13 @@ export class BufferedPCMPlayer implements PCMPlayer {
     // Synchronous construction preserves browser user-gesture authorization.
     const ctx = this.makeContext();
     this.ctx = ctx;
+    ({ output: this.output, analyser: this.analyser } = createOutputTap(ctx));
     this.state = 'initializing';
     ctx.onstatechange = () => { if (this.ctx === ctx) this.pump(); };
     this.initPromise = this.finishInit(ctx).catch(async (error: unknown) => {
       if (this.ctx === ctx) {
         this.ctx = null;
+        this.analyser = this.output = null;
         this.initPromise = null;
         this.state = 'idle';
         ctx.onstatechange = null;
@@ -134,6 +142,7 @@ export class BufferedPCMPlayer implements PCMPlayer {
   }
 
   enqueuePcm(bytes: ArrayBuffer): void {
+    this.chunksReceived++;
     if (this.state === 'closed') return;
     this.refresh();
     const input = new Uint8Array(bytes);
@@ -237,7 +246,7 @@ export class BufferedPCMPlayer implements PCMPlayer {
       }
       const source = ctx.createBufferSource();
       source.buffer = buffer;
-      source.connect(ctx.destination);
+      source.connect(this.output ?? ctx.destination);
       const start = this.scheduledUntil;
       const end = start + block.frames / block.rate;
       this.sources.push({ source, start, end });
@@ -252,6 +261,11 @@ export class BufferedPCMPlayer implements PCMPlayer {
     return this.ctx ? this.bufferedSeconds() * 1000 : 0;
   }
 
+  /** Spectrum of what is playing, for the visualizer. Null before init and after close. */
+  getAnalyser(): AnalyserNode | null {
+    return this.analyser;
+  }
+
   getStats(): PCMPlayerStats {
     this.refresh();
     return {
@@ -259,6 +273,7 @@ export class BufferedPCMPlayer implements PCMPlayer {
       audioContextState: this.ctx?.state,
       bufferedMs: this.getBufferedDurationMs(),
       underruns: this.underruns,
+      chunksReceived: this.chunksReceived,
       droppedFrames: this.droppedFrames,
       priming: this.priming || (this.ctx !== null && this.ctx.currentTime < this.startsAt),
       outputSampleRateHz: this.ctx?.sampleRate ?? 0,
@@ -273,6 +288,8 @@ export class BufferedPCMPlayer implements PCMPlayer {
     this.ctx = null;
     this.initPromise = null;
     if (ctx) ctx.onstatechange = null;
+    this.analyser?.disconnect();
+    this.analyser = this.output = null;
     for (const { source } of this.sources) {
       source.onended = null;
       try { source.stop(); } catch { /* already ended */ }

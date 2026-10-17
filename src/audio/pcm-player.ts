@@ -14,6 +14,7 @@ import {
 import { CHANNELS, PENDING_CHUNK_LIMIT } from './constants.ts';
 import { workletUrl as bundledWorkletUrl } from './worklet-url.ts';
 import { createBufferedPCMPlayer } from './buffered-player.ts';
+import { createOutputTap } from './analyser.ts';
 
 /** Narrow slice of `AudioContext` the player actually uses. `AudioContext` satisfies this structurally. */
 export interface AudioContextLike {
@@ -22,6 +23,8 @@ export interface AudioContextLike {
   readonly state: string;
   readonly destination: AudioNode;
   readonly audioWorklet: { addModule(moduleURL: string): Promise<void> };
+  /** Optional so fakes can skip it; without it there is no visualizer tap. */
+  createAnalyser?(): AnalyserNode;
   /** Mirrors `AudioContext.onstatechange`; the player owns this slot while alive. */
   onstatechange: ((event: Event) => void) | null;
   resume(): Promise<void>;
@@ -62,6 +65,7 @@ export class WorkletPCMPlayer implements PCMPlayer {
 
   private ctx: AudioContextLike | null = null;
   private node: WorkletNodeLike | null = null;
+  private analyser: AnalyserNode | null = null;
   private initPromise: Promise<void> | null = null;
   private state: PCMPlayerState = 'idle';
   private configured = false;
@@ -136,7 +140,9 @@ export class WorkletPCMPlayer implements PCMPlayer {
       if (data.type === 'stats') this.workletStats = data;
     };
     node.port.start?.();
-    node.connect(ctx.destination);
+    const tap = createOutputTap(ctx);
+    this.analyser = tap.analyser;
+    node.connect(tap.output);
 
     // Port messages are ordered: the worklet must learn the source rate before
     // any held PCM reaches it.
@@ -186,6 +192,11 @@ export class WorkletPCMPlayer implements PCMPlayer {
     return this.workletStats?.bufferedMs ?? 0;
   }
 
+  /** Spectrum of what is playing, for the visualizer. Null before init and after close. */
+  getAnalyser(): AnalyserNode | null {
+    return this.analyser;
+  }
+
   /** Cached worklet stats merged with main-thread state and rates. */
   getStats(): PCMPlayerStats {
     const ws = this.workletStats;
@@ -195,10 +206,15 @@ export class WorkletPCMPlayer implements PCMPlayer {
       bufferedMs: ws?.bufferedMs ?? 0,
       underruns: ws?.underruns ?? 0,
       droppedFrames: ws?.droppedFrames ?? 0,
+      chunksReceived: ws?.chunksReceived ?? 0,
       // No stats yet means nothing has rendered: still effectively priming.
       priming: ws?.priming ?? true,
       outputSampleRateHz: this.ctx?.sampleRate ?? 0,
       sourceSampleRateHz: this.sourceSampleRateHz,
+      // Live telemetry defaults until the first stats message arrives.
+      energyRms: ws?.energyRms ?? 0,
+      brightnessHz: ws?.brightnessHz ?? 0,
+      pitchHz: ws?.pitchHz ?? null,
     };
   }
 
@@ -209,6 +225,8 @@ export class WorkletPCMPlayer implements PCMPlayer {
     const ctx = this.ctx;
     this.node = null;
     this.ctx = null;
+    this.analyser?.disconnect();
+    this.analyser = null;
     this.initPromise = null;
     this.pending = [];
     this.workletStats = null;
