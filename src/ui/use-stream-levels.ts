@@ -6,7 +6,7 @@ const ZERO: StreamLevels = { energy: 0, brightnessHz: 0, pitchHz: null, buffered
 /**
  * Subscribe to a controller's ~10 Hz rendered-signal telemetry.
  * Zeros when the controller exposes no stats feed. React re-renders per tick —
- * keep usage to tiny text leaves (TelemetryStrip), never the stage.
+ * keep usage to tiny text leaves (the "changing…" indicator), never the stage.
  */
 export function useStreamLevels(controller: MusicSessionController): StreamLevels {
   const cache = useRef<StreamLevels>(ZERO);

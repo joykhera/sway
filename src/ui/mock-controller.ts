@@ -17,6 +17,7 @@ import type {
   SessionUiState,
   StreamLevels,
   Vote,
+  VoteDecision,
 } from './contracts.ts';
 
 /** Platform timer handle: number in browsers, Timeout under Node typings. */
@@ -94,6 +95,10 @@ export class MockMusicSessionController implements MusicSessionController {
   private generatedMs = 0;
   private generation = 0;
   private lastSteerMs = 0;
+  /** Issue #9 mirror: the latest vote's explanation + its ETA to the ears. */
+  private decision: VoteDecision | undefined;
+  private pendingSteer: { vote: Vote; at: number; etaMs: number; doneAt?: number } | undefined;
+  private nowPlayingSig: MusicSignature | undefined;
   /** Last known generator preset (from `preset`, `cyclePreset`'s return, or `setPreset`). */
   private activePreset: string | undefined;
   /** Rolling ~TELEMETRY_WINDOW_MS aggregates over recently pumped PCM. */
@@ -193,6 +198,9 @@ export class MockMusicSessionController implements MusicSessionController {
     this.statsWindowMs = 0;
     this.statsPrevLeft = 0;
     this.generation = 0;
+    this.decision = undefined;
+    this.pendingSteer = undefined;
+    this.nowPlayingSig = this.signatureNow();
     this.latestStats = ZERO_LEVELS;
     this.setStatus('playing');
     this.pump(); // first burst immediately, then on the interval
@@ -203,6 +211,20 @@ export class MockMusicSessionController implements MusicSessionController {
   vote(v: Vote): void {
     if (this.state.status !== 'playing') return;
     this.lastSteerMs = this.now(); // reset the idle-evolve clock
+    const from = this.signatureNow();
+    const buffered = this.player?.getBufferedDurationMs?.() ?? 0;
+    this.decision = {
+      vote: v,
+      kind: v === 'down' ? 'redirect' : 'hold',
+      reason:
+        v === 'down'
+          ? `moving away from ${from?.focus ?? 'that blend'}, trying something else`
+          : `keeping ${from?.focus ?? 'this direction'}`,
+      phase: 'listening',
+      at: this.now(),
+    };
+    this.pendingSteer = { vote: v, at: this.now(), etaMs: this.steerDelayMs + buffered };
+    this.refreshSignature(); // re-emit so the decision reaches listeners now
     if (this.voteHandle !== null) {
       this.timers.clearTimeout(this.voteHandle); // debounce: latest vote wins
       this.voteHandle = null;
@@ -242,6 +264,9 @@ export class MockMusicSessionController implements MusicSessionController {
     this.statsWindowMs = 0;
     this.statsPrevLeft = 0;
     this.generation = 0;
+    this.decision = undefined;
+    this.pendingSteer = undefined;
+    this.nowPlayingSig = undefined;
     this.latestStats = ZERO_LEVELS;
     if (player) void player.close();
     this.setStatus('stopped');
@@ -257,7 +282,11 @@ export class MockMusicSessionController implements MusicSessionController {
   private setStatus(status: string, lastError?: string): void {
     const state: SessionUiState = lastError === undefined ? { status } : { status, lastError };
     const sig = this.signatureNow();
-    if (sig && ACTIVE.has(status)) state.signature = sig;
+    if (ACTIVE.has(status)) {
+      if (sig) state.signature = sig;
+      state.nowPlaying = this.nowPlayingSig;
+      state.decision = this.decision;
+    }
     this.state = state;
     this.emit();
   }
@@ -270,7 +299,10 @@ export class MockMusicSessionController implements MusicSessionController {
     if (sig === prev) return;
     if (sig && prev && sig.genre === prev.genre && sig.instrument === prev.instrument &&
       sig.mood === prev.mood && sig.texture === prev.texture && sig.focus === prev.focus) return;
-    this.state = sig === undefined ? { ...this.state, signature: undefined } : { ...this.state, signature: sig };
+    // The mock's generator swaps presets when the steer applies, so the audible
+    // blend and the target coincide — nowPlaying tracks the same words.
+    this.nowPlayingSig = sig ?? this.nowPlayingSig;
+    this.state = { ...this.state, signature: sig, nowPlaying: this.nowPlayingSig, decision: this.decision };
     this.emit();
   }
 
@@ -373,6 +405,22 @@ export class MockMusicSessionController implements MusicSessionController {
     };
     if (this.statsListeners.size === 0) return;
     for (const l of [...this.statsListeners]) l(this.latestStats);
+  }
+
+  /** 0..1 ETA to the vote landing in the ears � mirrors the real controller's estimate. */
+  private steerProgress(): { steerProgress: number | null; steerVote: Vote | null } {
+    const p = this.pendingSteer;
+    if (!p || this.state.status !== 'playing') return { steerProgress: null, steerVote: null };
+    const now = this.now();
+    if (now - p.at >= p.etaMs) {
+      p.doneAt ??= now;
+      if (now - p.doneAt > 600) {
+        this.pendingSteer = undefined;
+        return { steerProgress: null, steerVote: null };
+      }
+      return { steerProgress: 1, steerVote: p.vote };
+    }
+    return { steerProgress: Math.min(0.97, Math.max(0, (now - p.at) / p.etaMs)), steerVote: p.vote };
   }
 
   private async makeGenerator(): Promise<MockPcmGeneratorLike> {

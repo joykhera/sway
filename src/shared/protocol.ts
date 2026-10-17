@@ -59,6 +59,15 @@ export type LearnerState = {
 export type Target = {
   features: FeatureBlend;
   prompts: WeightedPrompt[];
+  /** Set by the adaptive learner: how it answered the latest vote/evolve (issue #9 surfaces it). */
+  lastDecision?: {
+    kind: 'initial' | 'hold' | 'redirect' | 'variation' | 'probe';
+    reason: string;
+    phase: string;
+    step: number;
+    prediction: number;
+    uncertainty: number;
+  };
 };
 
 export interface Learner {

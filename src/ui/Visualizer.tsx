@@ -1,4 +1,7 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useMemo, useRef } from 'react';
+import { Canvas, useFrame } from '@react-three/fiber';
+import { Environment, Lightformer, MeshDistortMaterial } from '@react-three/drei';
+import * as THREE from 'three';
 import type {
   MusicSessionController,
   MusicSignature,
@@ -7,43 +10,28 @@ import type {
 } from './contracts.ts';
 
 export type VisualizerProps = {
-  /** Session controller — stats (~10 Hz) and signature feed the organism. Optional: without it the canvas breathes on ambient drift alone. */
+  /** Session controller — stats (~10 Hz) and signature feed the organism. Optional: without it the blob breathes on ambient drift alone. */
   controller?: MusicSessionController;
-  /** Session view is live; idle rests the organism as a dim breathing outline (~30%). */
+  /** Session view is live; idle rests the blob dimmer and calmer. */
   active: boolean;
-  /** Directional pulse — a warm bloom on the up side, a cool ripple on the down side. */
+  /** The latest thumbs vote — a whole-body jelly wobble (never one-sided). */
   lastVote?: { v: Vote; at: number } | null;
 };
 
-const POINTS = 112;
-const TAU = Math.PI * 2;
-const MAX_PARTICLES = 36;
-/** Morph time constant — ~95% settled by 2 s, so steering is felt but never snaps. */
-const MORPH_TAU = 0.65;
-/** Fixed timestamp for the reduced-motion render — a static organism, still alive. */
-const FIXED_T = 12.7;
-/** Side of the ring each vote blooms on — matches the thumbs layout (up left, down right). */
-const UP_SIDE = Math.PI;
-const DOWN_SIDE = 0;
+/* ------------------------------------------------------------------ *
+ * The organism is a real displaced mesh now (three.js via R3F):
+ * an icosphere whose vertices are noise-displaced (MeshDistortMaterial)
+ * under a thin-film iridescent physical material, lit by a procedural
+ * Lightformer environment. Satellites: two small glossy orbs.
+ * ------------------------------------------------------------------ */
 
-const FALLBACK_INK = '#ece5d8';
-const FALLBACK_WARM = '#f0a860';
-const FALLBACK_COOL = '#7ec8e3';
-
-/** jsdom exposes <canvas> but no 2d context (calling it logs a "not implemented" error). */
-function get2dContext(canvas: HTMLCanvasElement): CanvasRenderingContext2D | null {
-  if (typeof navigator !== 'undefined' && /jsdom/i.test(navigator.userAgent)) return null;
-  try {
-    return canvas.getContext('2d');
-  } catch {
-    return null;
-  }
-}
+export const BLOB_POINTS = 8; // retained for tests; the mesh itself is a high-res icosphere
+const MAX_DPR = 1.75;
 
 const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v));
 const lerp = (a: number, b: number, t: number) => a + (b - a) * t;
 
-/** Deterministic 0..1 hash — the same signature always grows the same organism. */
+/** Deterministic 0..1 hash — the same signature always grows the same blob. */
 function hash01(s: string): number {
   let h = 2166136261;
   for (let i = 0; i < s.length; i++) {
@@ -54,458 +42,341 @@ function hash01(s: string): number {
 }
 
 /**
- * The morphable anatomy of the organism. `current` eases toward `target` every
- * frame with t = 1 - exp(-dt/τ); a signature change rewrites `target` only.
+ * Morphable anatomy. `current` eases toward `target` every frame; a signature
+ * change rewrites `target` only, so steering is felt but never snaps.
  */
-type OrganismParams = {
-  /** Degrees of bias on the pitch-driven warm↔cool hue axis. */
+export type BlobParams = {
+  /** Warm↔cool shift applied to the iridescence thickness (nm). */
   hueBias: number;
-  /** Dominant polar harmonic of the brightness wobble (3..8). */
-  wobbleFreq: number;
-  /** How strongly brightness drives the wobble. */
-  wobbleMix: number;
-  /** Hairline core width multiplier. */
-  ringWidth: number;
-  /** Orbital drift particle count. */
-  particles: number;
-  /** Breath tempo multiplier. */
-  breathRate: number;
+  /** Resting vertex-noise amount (amorphousness). */
+  distort: number;
+  /** Noise evolution speed (internal swirl tempo). */
+  speed: number;
+  /** Surface roughness — calm is softer, hype is glossier. */
+  roughness: number;
+  /** Drift amplitude multiplier. */
+  drift: number;
 };
 
-const BASE_PARAMS: OrganismParams = {
+export const BASE_PARAMS: BlobParams = {
   hueBias: 0,
-  wobbleFreq: 5,
-  wobbleMix: 0.7,
-  ringWidth: 1,
-  particles: 14,
-  breathRate: 1,
+  distort: 0.34,
+  speed: 1.6,
+  roughness: 0.22,
+  drift: 1,
 };
 
 /** Map a MusicSignature to a target anatomy — hash for spread, keywords for intent. */
-function paramsForSignature(sig: MusicSignature | undefined): OrganismParams {
+export function paramsForSignature(sig: MusicSignature | undefined): BlobParams {
   const text = [sig?.genre, sig?.instrument, sig?.mood, sig?.texture, sig?.focus]
     .filter(Boolean)
     .join(' ')
     .toLowerCase();
   if (!text) return { ...BASE_PARAMS };
   const h = (salt: string) => hash01(`${text}·${salt}`);
-  const p: OrganismParams = {
-    hueBias: (h('hue') - 0.5) * 56, // ±28°
-    wobbleFreq: 3 + h('freq') * 5,
-    wobbleMix: 0.4 + h('mix') * 0.6,
-    ringWidth: 0.85 + h('width') * 1.1,
-    particles: 8 + Math.round(h('dust') * (MAX_PARTICLES - 8)),
-    breathRate: 0.7 + h('breath') * 0.75,
+  const p: BlobParams = {
+    hueBias: (h('hue') - 0.5) * 120,
+    distort: 0.24 + h('dist') * 0.28,
+    speed: 1.1 + h('speed') * 1.4,
+    roughness: 0.16 + h('rough') * 0.2,
+    drift: 0.7 + h('drift') * 0.7,
   };
   if (/calm|ambient|soft|gentle|sparse|minimal|slow/.test(text)) {
-    p.wobbleFreq -= 1.5;
-    p.particles = Math.round(p.particles * 0.5);
-    p.breathRate *= 0.72;
-    p.ringWidth *= 1.3;
+    p.distort -= 0.08;
+    p.speed *= 0.7;
+    p.drift *= 0.7;
+    p.roughness += 0.08;
   }
-  if (/energetic|driving|aggressive|intense|dense|hype|fast/.test(text)) {
-    p.wobbleFreq += 1.5;
-    p.particles = Math.round(p.particles * 1.5);
-    p.breathRate *= 1.3;
+  if (/energetic|driving|aggressive|intense|dense|hype|fast|techno/.test(text)) {
+    p.distort += 0.1;
+    p.speed *= 1.35;
+    p.roughness -= 0.06;
   }
-  if (/warm|golden|amber|sun|jazz|soul|analog/.test(text)) p.hueBias -= 14;
-  if (/cool|cold|ice|blue|night|techno|electro|digital/.test(text)) p.hueBias += 14;
-  if (/granular|noisy|dusty|textured|lofi|lo-fi/.test(text)) {
-    p.wobbleMix = Math.min(1, p.wobbleMix + 0.25);
-    p.particles = Math.round(p.particles * 1.3);
-  }
-  p.hueBias = clamp(p.hueBias, -40, 40);
-  p.wobbleFreq = clamp(p.wobbleFreq, 3, 8);
-  p.wobbleMix = clamp(p.wobbleMix, 0.3, 1);
-  p.particles = clamp(p.particles, 0, MAX_PARTICLES);
-  p.breathRate = clamp(p.breathRate, 0.5, 1.7);
-  p.ringWidth = clamp(p.ringWidth, 0.7, 2.2);
+  if (/warm|golden|amber|sun|jazz|soul|analog/.test(text)) p.hueBias -= 90;
+  if (/cool|cold|ice|blue|night|techno|electro|digital/.test(text)) p.hueBias += 90;
+  p.hueBias = clamp(p.hueBias, -160, 160);
+  p.distort = clamp(p.distort, 0.12, 0.6);
+  p.speed = clamp(p.speed, 0.6, 3.4);
+  p.roughness = clamp(p.roughness, 0.08, 0.5);
+  p.drift = clamp(p.drift, 0.3, 1.6);
   return p;
 }
 
-/**
- * The living organism at the center of the stage: a closed polar curve (~112
- * points) whose radius combines a slow breath, an energy-driven swell, and a
- * per-point harmonic wobble modulated by spectral brightness. PitchHz slides
- * the hue along a warm-amber ↔ cool-blue axis (kept pastel so it never gets
- * garish). Votes send a directional ripple across the voted side. When the
- * controller's signature changes, the organism crossfades its anatomy over ~2 s.
- *
- * Stats are written straight to canvas via refs — React never re-renders per
- * tick. Reduced motion renders a single static frame; a hidden tab pauses the
- * loop; idle dims the breathing outline to ~30%.
- */
-export function Visualizer({ controller, active, lastVote = null }: VisualizerProps) {
-  const canvasRef = useRef<HTMLCanvasElement | null>(null);
-  const voteRef = useRef(lastVote);
-  const drawRef = useRef<() => void>(() => { });
+/** Everything the subscriptions collect — read by useFrame, never by render. */
+type DataPlane = {
+  levels: StreamLevels | null;
+  energy: number; // smoothed
+  brightnessNorm: number;
+  pitchHue: number; // smoothed hue shift (nm of film thickness)
+  genPrev: number;
+  ripple: number; // generation impulse
+  wobble: number; // vote impulse 0..1
+  wobbleWarm: number; // +1 up / -1 down, decays
+  params: { cur: BlobParams; tgt: BlobParams };
+  sigSeen: boolean;
+  active: boolean;
+  reduced: boolean;
+};
 
-  // Data-plane refs — mutated by subscriptions, read by the draw loop.
-  const levelsRef = useRef<StreamLevels | null>(null);
-  const hasStatsRef = useRef(false);
-  const stressRef = useRef(0); // brief turbulence spike on fresh underruns
-  const underrunsRef = useRef(0);
-  const paramsCur = useRef<OrganismParams>({ ...BASE_PARAMS });
-  const paramsTgt = useRef<OrganismParams>({ ...BASE_PARAMS });
-  const sigSeenRef = useRef(false);
+function useDataPlane(
+  controller: MusicSessionController | undefined,
+  active: boolean,
+  lastVote: { v: Vote; at: number } | null,
+  reduced: boolean,
+): React.MutableRefObject<DataPlane> {
+  const data = useRef<DataPlane>({
+    levels: null,
+    energy: 0,
+    brightnessNorm: 0,
+    pitchHue: 0,
+    genPrev: 0,
+    ripple: 0,
+    wobble: 0,
+    wobbleWarm: 0,
+    params: { cur: { ...BASE_PARAMS }, tgt: { ...BASE_PARAMS } },
+    sigSeen: false,
+    active,
+    reduced,
+  });
 
-  // Keep the vote visible to the running loop without restarting the effect.
   useEffect(() => {
-    voteRef.current = lastVote;
-    drawRef.current(); // repaint once so a static/reduced-motion ring still shows the pulse
+    data.current.active = active;
+  }, [active]);
+  useEffect(() => {
+    data.current.reduced = reduced;
+  }, [reduced]);
+
+  useEffect(() => {
+    if (!lastVote) return;
+    data.current.wobble = 1;
+    data.current.wobbleWarm = lastVote.v === 'up' ? 1 : -1;
   }, [lastVote]);
 
-  // Subscriptions live apart from the canvas effect so they register even when
-  // no 2d context exists (jsdom) — the refs simply feed nothing until paint.
   useEffect(() => {
     if (!controller) return;
-    sigSeenRef.current = false;
+    data.current.sigSeen = false;
     const offState = controller.subscribe?.((state) => {
       const next = paramsForSignature(state.signature);
-      if (!sigSeenRef.current) {
-        sigSeenRef.current = true;
-        paramsCur.current = next; // first emit snaps — no morph away from defaults
+      if (!data.current.sigSeen) {
+        data.current.sigSeen = true;
+        data.current.params.cur = next; // first emit snaps — no morph away from defaults
       }
-      paramsTgt.current = next;
-      drawRef.current(); // repaint once so a static ring still reflects the new anatomy
+      data.current.params.tgt = next;
     });
     const offStats = controller.subscribeStats?.((levels) => {
-      if (levels.underruns > underrunsRef.current) {
-        stressRef.current = Math.min(1, stressRef.current + 0.6);
+      const d = data.current;
+      if (levels.generation > d.genPrev && d.genPrev > 0) {
+        d.ripple = Math.min(1, d.ripple + 0.55); // a new block landed — outline shivers
       }
-      underrunsRef.current = levels.underruns;
-      levelsRef.current = levels;
-      hasStatsRef.current = true;
+      d.genPrev = Math.max(d.genPrev, levels.generation);
+      d.levels = levels;
+      d.energy = lerp(d.energy, clamp(levels.energy, 0, 1), 0.3);
+      d.brightnessNorm = lerp(d.brightnessNorm, clamp(levels.brightnessHz / 4000, 0, 1), 0.2);
+      const pitchT = levels.pitchHz && levels.pitchHz > 20
+        ? clamp(Math.log2(levels.pitchHz / 55) / 4, 0, 1)
+        : 0.5;
+      d.pitchHue = lerp(d.pitchHue, (pitchT - 0.5) * 260, 0.15);
     });
     return () => {
       offState?.();
       offStats?.();
-      hasStatsRef.current = false;
-      levelsRef.current = null;
+      data.current.levels = null;
+      data.current.genPrev = 0;
     };
   }, [controller]);
 
-  useEffect(() => {
-    const canvas = canvasRef.current;
-    if (!canvas) return;
-    const ctx = get2dContext(canvas);
-    if (!ctx) return;
+  return data;
+}
 
-    const css = getComputedStyle(document.documentElement);
-    const ink = css.getPropertyValue('--ring-ink').trim() || FALLBACK_INK;
-    const warm = css.getPropertyValue('--accent').trim() || FALLBACK_WARM;
-    const cool = css.getPropertyValue('--accent-cool').trim() || FALLBACK_COOL;
+/* ---------------------------- the blob ---------------------------- */
 
-    const reduced =
-      typeof window.matchMedia === 'function'
-        ? window.matchMedia('(prefers-reduced-motion: reduce)')
-        : null;
+function Blob({ data }: { data: React.MutableRefObject<DataPlane> }) {
+  const group = useRef<THREE.Group>(null);
+  const mat = useRef<any>(null);
+  const leftOrb = useRef<THREE.Mesh>(null);
+  const rightOrb = useRef<THREE.Mesh>(null);
+  const keyA = useRef<THREE.PointLight>(null);
+  const keyB = useRef<THREE.PointLight>(null);
 
-    // Fixed seeds for the orbital drift — only the count morphs.
-    const seeds = Array.from({ length: MAX_PARTICLES }, (_, i) => ({
-      orb: 0.72 + hash01(`orb${i}`) * 0.5, // orbit radius × baseR
-      speed: (hash01(`spd${i}`) - 0.5) * 0.22, // rad/s, either direction
-      phase: hash01(`ph${i}`) * TAU,
-      size: 0.7 + hash01(`sz${i}`) * 1.3,
-      tw: 0.7 + hash01(`tw${i}`) * 0.9, // twinkle rate
-    }));
+  useFrame((state, delta) => {
+    const d = data.current;
+    const dt = Math.min(delta, 0.05);
+    const t = state.clock.elapsedTime;
+    const calm = d.reduced ? 0.12 : 1;
 
-    // Smoothed live levels — stats tick at ~10 Hz, we ease at frame rate.
-    const live = { energy: 0, brightness: 0.45, pitchT: 0.35 };
-    let dpr = 1;
-    let lastT = 0;
-
-    const draw = () => {
-      // Read back the backing size (kept in sync by `resize`) — no layout work
-      // on the animation path.
-      const w = canvas.width / dpr;
-      const h = canvas.height / dpr;
-      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-      ctx.clearRect(0, 0, w, h);
-      if (w <= 0 || h <= 0) return;
-
-      const now = performance.now() / 1000;
-      const dt = clamp(now - lastT, 0, 0.1);
-      lastT = now;
-      const frozen = reduced?.matches ?? false;
-      const t = frozen ? FIXED_T : now;
-      const dim = active ? 1 : 0.3;
-
-      // ---- signature morph: ease current anatomy toward target ----
-      const cur = paramsCur.current;
-      const tgt = paramsTgt.current;
-      const kMorph = frozen ? 1 : 1 - Math.exp(-dt / MORPH_TAU);
-      cur.hueBias += (tgt.hueBias - cur.hueBias) * kMorph;
-      cur.wobbleFreq += (tgt.wobbleFreq - cur.wobbleFreq) * kMorph;
-      cur.wobbleMix += (tgt.wobbleMix - cur.wobbleMix) * kMorph;
-      cur.ringWidth += (tgt.ringWidth - cur.ringWidth) * kMorph;
-      cur.particles += (tgt.particles - cur.particles) * kMorph;
-      cur.breathRate += (tgt.breathRate - cur.breathRate) * kMorph;
-
-      // ---- live levels: real stats or a gentle ambient drift ----
-      const stats = hasStatsRef.current ? levelsRef.current : null;
-      let eT: number;
-      let bT: number;
-      let pT: number | null;
-      if (stats) {
-        eT = clamp(stats.energy * 1.5, 0, 1);
-        bT = clamp((stats.brightnessHz - 500) / 6500, 0, 1); // ~0.5–7 kHz → 0..1
-        pT =
-          stats.pitchHz && stats.pitchHz > 20
-            ? clamp(Math.log2(stats.pitchHz / 55) / 4, 0, 1) // 55–880 Hz → 0..1
-            : null;
-      } else {
-        // No stats feed — the organism still breathes on its own.
-        const amp = active ? 0.3 : 0.17;
-        eT = amp + 0.08 * Math.sin(t * 0.23 + 1.2) + 0.05 * Math.sin(t * 0.09);
-        bT = 0.45 + 0.18 * Math.sin(t * 0.11 + 4.0);
-        pT = 0.35 + 0.08 * Math.sin(t * 0.07 + 2.2);
-      }
-      const kFast = frozen ? 1 : 1 - Math.exp(-dt / 0.16);
-      const kSlow = frozen ? 1 : 1 - Math.exp(-dt / 0.45);
-      live.energy += (eT - live.energy) * kFast;
-      live.brightness += (bT - live.brightness) * kSlow;
-      if (pT !== null) live.pitchT += (pT - live.pitchT) * kSlow;
-      stressRef.current *= Math.exp(-dt / 0.8);
-      const stress = stressRef.current;
-
-      const cx = w / 2;
-      const cy = h / 2;
-      const base = Math.min(w, h) * 0.3;
-
-      // Pitch slides hue amber→blue; the signature nudges it. Kept pastel.
-      const hue = (((lerp(36, 208, live.pitchT) + cur.hueBias) % 360) + 360) % 360;
-      const hueInk = `hsl(${hue.toFixed(1)} 64% 66%)`;
-      const hueFill = (a: number, s = 58, l = 55) =>
-        `hsla(${hue.toFixed(1)}, ${s}%, ${l}%, ${clamp(a, 0, 1).toFixed(3)})`;
-
-      // ---- vote pulse: directional ripple on the voted side ----
-      const vote = voteRef.current;
-      let vp = 0;
-      let vAge = 0;
-      let vSide = UP_SIDE;
-      let vCol = warm;
-      if (vote) {
-        vAge = (Date.now() - vote.at) / 1000; // same clock the producer used
-        if (vAge >= 0 && vAge < 3) {
-          vp = Math.exp(-vAge * 2.3);
-          vSide = vote.v === 'up' ? UP_SIDE : DOWN_SIDE;
-          vCol = vote.v === 'up' ? warm : cool;
-        }
-      }
-      const angDiff = (a: number) =>
-        Math.atan2(Math.sin(a - vSide), Math.cos(a - vSide));
-      const sideWeight = (a: number) => {
-        const d = angDiff(a);
-        return Math.exp(-(d * d) / 0.5);
-      };
-
-      // ---- the body: a closed polar curve ----
-      const breath =
-        (active ? 0.034 : 0.022) * Math.sin(t * 0.42 * cur.breathRate + 1.7);
-      const swell =
-        live.energy * (0.085 + 0.03 * Math.sin(t * 0.9 * cur.breathRate));
-      const wobGain = cur.wobbleMix * (0.3 + 0.7 * live.brightness);
-      const f0 = Math.floor(cur.wobbleFreq);
-      const fFrac = cur.wobbleFreq - f0;
-      // Integer harmonics keep the curve closed; crossfade floor→ceil so the
-      // morph slides between harmonics instead of jumping.
-      const wobble = (a: number, f: number) =>
-        0.03 * Math.sin(f * a + t * 0.83 + 1.7) +
-        0.019 * Math.sin((f + 2) * a - t * 0.57 + 4.1) +
-        0.011 * Math.sin((f + 4) * a + t * 0.41 + 0.4);
-      const pts: Array<[number, number]> = new Array(POINTS + 1);
-      for (let i = 0; i <= POINTS; i++) {
-        const a = (i / POINTS) * TAU;
-        let r =
-          1 + breath + swell + wobGain * lerp(wobble(a, f0), wobble(a, f0 + 1), fFrac);
-        if (vp > 0.003) {
-          r += vp * sideWeight(a) * (0.085 + 0.05 * Math.sin(9 * a - vAge * 10));
-        }
-        if (stress > 0.01) r += stress * 0.012 * Math.sin(23 * a + t * 7.3);
-        const rr = base * r;
-        pts[i] = [cx + Math.cos(a) * rr, cy + Math.sin(a) * rr];
-      }
-      const path = new Path2D();
-      for (let i = 0; i < pts.length; i++) {
-        const p = pts[i];
-        if (!p) continue;
-        if (i === 0) path.moveTo(p[0], p[1]);
-        else path.lineTo(p[0], p[1]);
-      }
-      path.closePath();
-
-      // ---- inner aura: a soft energy-lit glow, part of the same body ----
-      const auraR = base * (1.18 + 0.22 * live.energy);
-      const aura = ctx.createRadialGradient(cx, cy, 0, cx, cy, auraR);
-      aura.addColorStop(
-        0,
-        hueFill(0.11 * dim * (0.3 + 0.7 * live.energy), 58, 52),
-      );
-      aura.addColorStop(0.55, hueFill(0.045 * dim, 52, 42));
-      aura.addColorStop(1, hueFill(0));
-      ctx.fillStyle = aura;
-      ctx.beginPath();
-      ctx.arc(cx, cy, auraR, 0, TAU);
-      ctx.fill();
-
-      // ---- orbital drift: faint motes bound to the body, never a soup ----
-      const nFull = Math.floor(cur.particles);
-      const n = Math.min(MAX_PARTICLES, Math.ceil(cur.particles));
-      for (let i = 0; i < n; i++) {
-        const s = seeds[i];
-        if (!s) continue;
-        const ang = s.phase + t * s.speed;
-        const rr = base * s.orb * (1 + breath * 0.6 + swell * 0.5);
-        const twinkle = 0.5 + 0.5 * Math.sin(t * s.tw + s.phase * 3);
-        const born = i < nFull ? 1 : cur.particles - nFull; // fade the morphing extra in
-        ctx.globalAlpha =
-          dim * (0.05 + 0.3 * live.energy) * (0.35 + 0.65 * twinkle) * born;
-        ctx.fillStyle = i % 3 === 0 ? ink : hueFill(0.9, 64, 70);
-        ctx.beginPath();
-        ctx.arc(cx + Math.cos(ang) * rr, cy + Math.sin(ang) * rr, s.size, 0, TAU);
-        ctx.fill();
-      }
-
-      // ---- faint baseline orbit ----
-      ctx.globalAlpha = 0.07 * dim;
-      ctx.strokeStyle = ink;
-      ctx.lineWidth = 1;
-      ctx.beginPath();
-      ctx.arc(cx, cy, base * 1.32, 0, TAU);
-      ctx.stroke();
-
-      // ---- layered glow: wide halo → mid glow → ink body → hairline core ----
-      ctx.lineJoin = 'round';
-      ctx.lineCap = 'round';
-      ctx.globalAlpha = (0.05 + 0.04 * live.energy) * dim;
-      ctx.strokeStyle = hueInk;
-      ctx.lineWidth = Math.max(8, base * 0.14);
-      ctx.stroke(path);
-      ctx.globalAlpha = (0.11 + 0.1 * live.energy) * dim;
-      ctx.lineWidth = Math.max(3, base * 0.045);
-      ctx.stroke(path);
-      ctx.globalAlpha = 0.3 * dim;
-      ctx.strokeStyle = ink;
-      ctx.lineWidth = Math.max(1.8, base * 0.016) * cur.ringWidth;
-      ctx.stroke(path);
-      ctx.globalAlpha = 0.85 * dim;
-      ctx.lineWidth = 1.3 * cur.ringWidth;
-      ctx.stroke(path);
-
-      // ---- vote: bloom on the voted sector + a ripple swelling outward ----
-      const span = 1.05; // radians of ring lit by the vote
-      if (vp > 0.01) {
-        const sector = new Path2D();
-        let pen = false;
-        for (let i = 0; i <= POINTS; i++) {
-          const a = (i / POINTS) * TAU;
-          const p = pts[i];
-          if (!p) continue;
-          if (Math.abs(angDiff(a)) <= span) {
-            if (pen) sector.lineTo(p[0], p[1]);
-            else {
-              sector.moveTo(p[0], p[1]);
-              pen = true;
-            }
-          } else {
-            pen = false;
-          }
-        }
-        ctx.globalAlpha = Math.min(0.75, vp * 0.8);
-        ctx.strokeStyle = vCol;
-        ctx.lineWidth = Math.max(2.5, base * 0.028);
-        ctx.stroke(sector);
-        // Expanding arc — the ripple leaving the body.
-        ctx.globalAlpha = vp * 0.45;
-        ctx.lineWidth = Math.max(1.2, base * 0.008);
-        ctx.beginPath();
-        ctx.arc(cx, cy, base * (1 + vAge * 0.6), vSide - span * 0.9, vSide + span * 0.9);
-        ctx.stroke();
-        // Nucleus flash.
-        ctx.beginPath();
-        ctx.arc(cx, cy, 2 + vp * 3, 0, TAU);
-        ctx.globalAlpha = Math.min(0.9, 0.2 * dim + vp * 0.7);
-        ctx.fillStyle = vCol;
-        ctx.fill();
-      } else {
-        // Quiet nucleus that swells with energy.
-        ctx.beginPath();
-        ctx.arc(cx, cy, 1.6 + live.energy * 2.4, 0, TAU);
-        ctx.globalAlpha = Math.min(0.85, 0.2 * dim + live.energy * 0.3);
-        ctx.fillStyle = ink;
-        ctx.fill();
-      }
-      ctx.globalAlpha = 1;
-    };
-    drawRef.current = draw;
-
-    const resize = () => {
-      dpr = Math.min(window.devicePixelRatio || 1, 2.5);
-      const rect = canvas.getBoundingClientRect();
-      canvas.width = Math.max(1, Math.round(rect.width * dpr));
-      canvas.height = Math.max(1, Math.round(rect.height * dpr));
-      draw();
-    };
-
-    const canAnimate = typeof requestAnimationFrame === 'function';
-    let raf = 0;
-    let running = false;
-    const loop = () => {
-      draw();
-      raf = requestAnimationFrame(loop);
-    };
-    const sync = () => {
-      // The organism breathes whenever the tab is visible and motion is
-      // allowed — idle only dims it. Hidden tabs and reduced motion pause.
-      const want =
-        canAnimate && !(reduced?.matches ?? false) &&
-        document.visibilityState === 'visible';
-      if (want && !running) {
-        running = true;
-        lastT = performance.now() / 1000;
-        raf = requestAnimationFrame(loop);
-      } else if (!want && running) {
-        running = false;
-        cancelAnimationFrame(raf);
-      }
-      if (!want) draw();
-    };
-
-    let observer: ResizeObserver | null = null;
-    if (typeof ResizeObserver === 'function') {
-      observer = new ResizeObserver(resize);
-      observer.observe(canvas);
-    } else {
-      window.addEventListener('resize', resize);
+    // ease params toward target (~2 s settle)
+    const k = 1 - Math.exp(-dt / 0.65);
+    const cur = d.params.cur;
+    const tgt = d.params.tgt;
+    for (const key of Object.keys(cur) as (keyof BlobParams)[]) {
+      (cur as Record<keyof BlobParams, number>)[key] = lerp(cur[key], tgt[key], k);
     }
-    document.addEventListener('visibilitychange', sync);
-    if (reduced && typeof reduced.addEventListener === 'function') {
-      reduced.addEventListener('change', sync);
+    d.ripple = Math.max(0, d.ripple - dt * 1.6);
+    d.wobble = Math.max(0, d.wobble - dt * 0.9);
+    d.wobbleWarm = lerp(d.wobbleWarm, 0, 1 - Math.exp(-dt / 0.8));
+
+    const g = group.current;
+    const m = mat.current;
+    if (!g || !m) return;
+
+    const energy = d.energy * (d.active ? 1 : 0.45);
+    const wobble = d.wobble * d.wobble; // sharper attack, soft release
+    const swell = 1 + energy * 0.16 + wobble * (d.wobbleWarm > 0 ? 0.1 : -0.07) + d.ripple * 0.05;
+
+    // amorphousness: resting distort + energy + vote jelly + generation ripple
+    m.distort = clamp(cur.distort * (d.active ? 1 : 0.7) + energy * 0.16 + wobble * 0.2 + d.ripple * 0.12, 0.08, 0.75);
+    m.speed = cur.speed * calm * (0.7 + d.brightnessNorm * 0.9); // brightness stirs the swirl
+    m.roughness = clamp(cur.roughness - energy * 0.06, 0.06, 0.5);
+
+    // pitch + signature steer the thin-film hue; votes nudge it warm/cool
+    const thickness = clamp(380 + cur.hueBias + d.pitchHue + d.wobbleWarm * d.wobble * 140, 120, 900);
+    m.iridescenceThicknessRange = [Math.max(60, thickness - 260), Math.min(1400, thickness + 260)];
+
+    // swell + slow tumble + lissajous drift (kept clear of corner panels)
+    const drift = cur.drift * calm;
+    g.scale.setScalar(lerp(g.scale.x || 1, swell, 1 - Math.exp(-dt / 0.25)));
+    g.rotation.y += dt * 0.08 * calm * (0.6 + d.brightnessNorm);
+    g.rotation.x = Math.sin(t * 0.19) * 0.12 * calm;
+    g.rotation.z = Math.cos(t * 0.13) * 0.09 * calm;
+    g.position.x = Math.sin(t * 0.3) * 0.28 * drift + Math.sin(t * 0.043) * 0.1 * drift;
+    g.position.y = Math.cos(t * 0.21) * 0.18 * drift + Math.sin(t * 0.029 + 1.3) * 0.08 * drift;
+
+    // interior light churn — the two keys orbit so bands swim through the glass
+    if (keyA.current && keyB.current) {
+      const r = 2.6 + energy * 0.8;
+      keyA.current.position.set(Math.cos(t * 0.34 * calm) * r, Math.sin(t * 0.27) * 1.2, Math.sin(t * 0.34) * r);
+      keyB.current.position.set(Math.cos(-t * 0.23 * calm + 2.4) * r, Math.cos(t * 0.31) * 1.1, Math.sin(-t * 0.23 + 2.4) * r);
+      const glow = (d.active ? 2.4 : 1.1) * (0.75 + energy * 0.5 + wobble * 0.6);
+      keyA.current.intensity = glow;
+      keyB.current.intensity = glow * 0.8;
+      keyA.current.color.setHSL((((240 + cur.hueBias + d.pitchHue) % 360) + 360) % 360 / 360, 0.75, 0.6);
+      keyB.current.color.setHSL((((300 + cur.hueBias * 0.6 + d.pitchHue * 0.7) % 360) + 360) % 360 / 360, 0.8, 0.55);
     }
 
-    resize();
-    sync();
-
-    return () => {
-      running = false;
-      if (raf) cancelAnimationFrame(raf);
-      if (observer) observer.disconnect();
-      else window.removeEventListener('resize', resize);
-      document.removeEventListener('visibilitychange', sync);
-      if (reduced && typeof reduced.removeEventListener === 'function') {
-        reduced.removeEventListener('change', sync);
-      }
-      drawRef.current = () => { };
-    };
-  }, [active]);
+    // satellites: lazy counter-orbits
+    const a1 = t * 0.21 * calm + 2.1;
+    const a2 = -t * 0.17 * calm - 0.6;
+    if (leftOrb.current) {
+      leftOrb.current.position.set(-2.15 + Math.sin(a1) * 0.16, Math.cos(a1 * 0.8) * 0.22, Math.sin(a1 * 0.6) * 0.4);
+      leftOrb.current.scale.setScalar(0.14 + energy * 0.03 + wobble * 0.02);
+    }
+    if (rightOrb.current) {
+      rightOrb.current.position.set(2.05 + Math.sin(a2) * 0.18, Math.cos(a2 * 0.7 + 1) * 0.24, Math.cos(a2 * 0.5) * 0.35);
+      rightOrb.current.scale.setScalar(0.1 + energy * 0.02 + wobble * 0.015);
+    }
+  });
 
   return (
-    <canvas
-      ref={canvasRef}
-      className="visualizer"
-      style={{ width: '100%', height: '100%' }}
-      aria-hidden="true"
-    />
+    <>
+      {/* orbiting interior lights — the iridescent bands that swim inside */}
+      <pointLight ref={keyA} intensity={2} distance={9} decay={1.6} />
+      <pointLight ref={keyB} intensity={1.6} distance={9} decay={1.6} />
+      <ambientLight intensity={0.12} />
+
+      <group ref={group}>
+        <mesh>
+          <icosahedronGeometry args={[1.05, 96]} />
+          <MeshDistortMaterial
+            ref={mat}
+            color="#14101f"
+            metalness={0.5}
+            roughness={0.22}
+            clearcoat={1}
+            clearcoatRoughness={0.18}
+            iridescence={1}
+            iridescenceIOR={1.34}
+            envMapIntensity={1.6}
+            distort={0.34}
+            speed={1.6}
+          />
+        </mesh>
+      </group>
+
+      <mesh ref={leftOrb} scale={0.14} position={[-2.15, 0, 0]}>
+        <sphereGeometry args={[1, 48, 48]} />
+        <meshPhysicalMaterial
+          color="#1a1226"
+          metalness={0.35}
+          roughness={0.12}
+          clearcoat={1}
+          iridescence={0.9}
+          iridescenceIOR={1.32}
+          envMapIntensity={1.4}
+        />
+      </mesh>
+      <mesh ref={rightOrb} scale={0.1} position={[2.05, 0, 0]}>
+        <sphereGeometry args={[1, 48, 48]} />
+        <meshPhysicalMaterial
+          color="#1a1226"
+          metalness={0.35}
+          roughness={0.12}
+          clearcoat={1}
+          iridescence={0.9}
+          iridescenceIOR={1.32}
+          envMapIntensity={1.4}
+        />
+      </mesh>
+    </>
+  );
+}
+
+/* ------------------------------ stage ------------------------------ */
+
+function useReducedMotion(): boolean {
+  const ref = useRef(
+    typeof matchMedia === 'function' && matchMedia('(prefers-reduced-motion: reduce)').matches,
+  );
+  useEffect(() => {
+    if (typeof matchMedia !== 'function') return;
+    const mq = matchMedia('(prefers-reduced-motion: reduce)');
+    const on = () => (ref.current = mq.matches);
+    mq.addEventListener?.('change', on);
+    return () => mq.removeEventListener?.('change', on);
+  }, []);
+  return ref.current;
+}
+
+/** WebGL isn't guaranteed (jsdom, disabled GPU) — probe once, fall back to a calm void. */
+function webglAvailable(): boolean {
+  if (typeof navigator !== 'undefined' && /jsdom/i.test(navigator.userAgent)) return false;
+  try {
+    const c = document.createElement('canvas');
+    return Boolean(c.getContext('webgl2') || c.getContext('webgl'));
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * The organism: a floating liquid-glass blob rendered in real 3D — a
+ * noise-displaced icosphere in a thin-film iridescent physical material,
+ * two glossy satellite orbs, procedural reflections. Energy swells it,
+ * brightness stirs the internal swirl, pitch slides the film hue,
+ * generation ripples the outline, votes wobble the whole body.
+ */
+export function Visualizer({ controller, active, lastVote = null }: VisualizerProps) {
+  const reduced = useReducedMotion();
+  const data = useDataPlane(controller, active, lastVote, reduced);
+  const ok = useMemo(webglAvailable, []);
+  if (!ok) {
+    return <div className="visualizer" aria-hidden="true" />;
+  }
+  return (
+    <div className="visualizer" aria-hidden="true">
+      <Canvas
+        dpr={[1, MAX_DPR]}
+        gl={{ antialias: true, alpha: true, powerPreference: 'high-performance' }}
+        camera={{ position: [0, 0, 5.4], fov: 42 }}
+      >
+        <Blob data={data} />
+        {/* procedural env map — no external HDR fetch; colored streaks = film bands */}
+        <Environment resolution={256}>
+          <Lightformer intensity={1.6} position={[0, 2.4, 2]} scale={[7, 1.1, 1]} color="#b987ff" />
+          <Lightformer intensity={1.2} position={[-3, -1, -1]} rotation-y={Math.PI / 2.4} scale={[5, 0.8, 1]} color="#54d0ff" />
+          <Lightformer intensity={1.4} position={[3, 1.4, -2]} rotation-y={-Math.PI / 3} scale={[6, 0.9, 1]} color="#ff5fa8" />
+          <Lightformer intensity={0.7} position={[0, -3, 1]} scale={[8, 1.4, 1]} color="#2834ff" />
+        </Environment>
+      </Canvas>
+    </div>
   );
 }

@@ -247,7 +247,7 @@ describe('PlayerScreen — active session view', () => {
     expect(f.vote.mock.calls[1]?.[0]).toBe('down');
   });
 
-  it('whispers the musical signature when the controller emits one', async () => {
+  it('shows the musical identity in the now-playing panel when the controller emits one', async () => {
     const f = makeFake({
       status: 'playing',
       signature: {
@@ -258,54 +258,46 @@ describe('PlayerScreen — active session view', () => {
         focus: 'warm ambient pads',
       },
     });
-    render(<PlayerScreen controller={f.controller} />);
+    const { container } = render(<PlayerScreen controller={f.controller} />);
     await act(async () => { });
-    const whisper = screen.getByText(/lofi/);
-    expect(whisper.className).toBe('signature-whisper');
-    expect(whisper.textContent).toBe(
-      'lofi · piano · calm · sparse — "warm ambient pads"',
-    );
-    expect(screen.getByText(/warm ambient pads/)).toBeTruthy();
+    expect(container.querySelector('.now')).toBeTruthy();
+    expect(container.querySelector('.now__field[data-field="genre"] .now__value')?.textContent).toBe('lofi');
+    expect(container.querySelector('.now__field[data-field="instrument"] .now__value')?.textContent).toBe('piano');
+    expect(container.querySelector('.now__field[data-field="mood"] .now__value')?.textContent).toBe('calm');
+    expect(container.querySelector('.now__field[data-field="texture"] .now__value')?.textContent).toBe('sparse');
+    expect(container.querySelector('.now__focus')?.textContent).toContain('warm ambient pads');
   });
 
-  it('whispers partial signatures — absent fields drop out', async () => {
+  it('partial signatures drop absent fields', async () => {
     const f = makeFake({
       status: 'playing',
       signature: { mood: 'calm', focus: 'soft keys' },
     });
     const { container } = render(<PlayerScreen controller={f.controller} />);
     await act(async () => { });
-    expect(container.querySelector('.signature-whisper')?.textContent).toBe(
-      'calm — "soft keys"',
-    );
+    expect(container.querySelectorAll('.now__field')).toHaveLength(1);
+    expect(container.querySelector('.now__field[data-field="mood"] .now__value')?.textContent).toBe('calm');
+    expect(container.querySelector('.now__focus')?.textContent).toContain('soft keys');
   });
 
-  it('renders no whisper line while the signature is absent', async () => {
+  it('renders no now-playing block while the signature is absent', async () => {
     const f = makeFake({ status: 'playing' });
     const { container } = render(<PlayerScreen controller={f.controller} />);
     await act(async () => { });
-    expect(container.querySelector('.signature-whisper')).toBeNull();
+    expect(container.querySelector('.now__block')).toBeNull();
   });
 
-  it('renders no whisper line for an empty signature object', async () => {
-    const f = makeFake({ status: 'playing', signature: {} });
-    const { container } = render(<PlayerScreen controller={f.controller} />);
-    await act(async () => { });
-    expect(container.querySelector('.signature-whisper')).toBeNull();
-  });
-
-  it('updates the whisper on a signature-only emission, status untouched', async () => {
+  it('updates the panel on a signature-only emission, status untouched', async () => {
     const f = makeFake({ status: 'playing' });
     const { container } = render(<PlayerScreen controller={f.controller} />);
     await act(async () => { });
-    expect(container.querySelector('.signature-whisper')).toBeNull();
+    expect(container.querySelector('.now__block')).toBeNull();
     await act(async () => {
       f.emit({ status: 'playing', signature: { genre: 'ambient', texture: 'drone' } });
     });
-    expect(container.querySelector('.signature-whisper')?.textContent).toBe(
-      'ambient · drone',
-    );
-    expect(screen.getByText('playing')).toBeTruthy(); // chip label unchanged
+    expect(container.querySelector('.now__field[data-field="genre"] .now__value')?.textContent).toBe('ambient');
+    expect(container.querySelector('.now__field[data-field="texture"] .now__value')?.textContent).toBe('drone');
+    expect(screen.getByText('playing')).toBeTruthy(); // status label unchanged
   });
 
   it('"end session" calls stop()', async () => {

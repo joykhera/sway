@@ -7,7 +7,7 @@ import type {
   StreamLevels,
   Vote,
 } from './contracts.ts';
-import { Visualizer } from './Visualizer.tsx';
+import { BASE_PARAMS, Visualizer, paramsForSignature } from './Visualizer.tsx';
 
 afterEach(cleanup);
 
@@ -16,7 +16,8 @@ const LEVELS: StreamLevels = {
   brightnessHz: 2400,
   pitchHz: 220,
   bufferedMs: 900,
-  underruns: 0, generation: 0,
+  underruns: 0,
+  generation: 0,
 };
 
 const PLAYING: SessionUiState = {
@@ -24,15 +25,7 @@ const PLAYING: SessionUiState = {
   signature: { genre: 'ambient', mood: 'calm', instrument: 'felt piano' },
 };
 
-type Fake = {
-  controller: MusicSessionController;
-  stateListeners: Set<(s: SessionUiState) => void>;
-  statsListeners: Set<(l: StreamLevels) => void>;
-  emitState: (s: SessionUiState) => void;
-  emitStats: (l: StreamLevels) => void;
-};
-
-function makeFake(withStats = true): Fake {
+function makeFake(withStats = true) {
   const stateListeners = new Set<(s: SessionUiState) => void>();
   const statsListeners = new Set<(l: StreamLevels) => void>();
   const controller: MusicSessionController = {
@@ -41,43 +34,35 @@ function makeFake(withStats = true): Fake {
     stop: vi.fn(),
     subscribe(listener) {
       stateListeners.add(listener);
-      listener(PLAYING); // immediate emit, per contract
-      return () => {
-        stateListeners.delete(listener);
-      };
+      listener(PLAYING);
+      return () => stateListeners.delete(listener);
     },
   };
   if (withStats) {
     controller.subscribeStats = (listener) => {
       statsListeners.add(listener);
-      listener(LEVELS); // latest snapshot on subscribe, per contract
-      return () => {
-        statsListeners.delete(listener);
-      };
+      listener(LEVELS);
+      return () => statsListeners.delete(listener);
     };
   }
   return {
     controller,
     stateListeners,
     statsListeners,
-    emitState: (s) => {
-      for (const l of [...stateListeners]) l(s);
-    },
-    emitStats: (levels) => {
-      for (const l of [...statsListeners]) l(levels);
-    },
+    emitState: (s: SessionUiState) => { for (const l of [...stateListeners]) l(s); },
+    emitStats: (l: StreamLevels) => { for (const fn of [...statsListeners]) fn(l); },
   };
 }
 
-const getCanvas = (container: HTMLElement) =>
-  container.querySelector('canvas.visualizer');
+// jsdom has no WebGL — the component renders its calm-fallback container.
+const getStage = (container: HTMLElement) => container.querySelector('.visualizer');
 
 describe('Visualizer', () => {
-  it('renders a stage-filling canvas', () => {
+  it('renders a stage-filling container', () => {
     const { container } = render(<Visualizer active={true} />);
-    const canvas = getCanvas(container);
-    expect(canvas).toBeTruthy();
-    expect(canvas?.getAttribute('aria-hidden')).toBe('true');
+    const el = getStage(container);
+    expect(el).toBeTruthy();
+    expect(el?.getAttribute('aria-hidden')).toBe('true');
   });
 
   it('registers state and stats subscriptions on mount', () => {
@@ -89,15 +74,10 @@ describe('Visualizer', () => {
 
   it('unsubscribes from both feeds on unmount', () => {
     const f = makeFake();
-    const { unmount } = render(
-      <Visualizer active={true} controller={f.controller} />,
-    );
-    expect(f.stateListeners.size).toBe(1);
-    expect(f.statsListeners.size).toBe(1);
+    const { unmount } = render(<Visualizer active={true} controller={f.controller} />);
     unmount();
     expect(f.stateListeners.size).toBe(0);
     expect(f.statsListeners.size).toBe(0);
-    // late emissions must not reach the unmounted tree
     act(() => {
       f.emitStats(LEVELS);
       f.emitState({ status: 'stopped' });
@@ -106,58 +86,60 @@ describe('Visualizer', () => {
 
   it('works when the controller lacks subscribeStats', () => {
     const f = makeFake(false);
-    const { container, unmount } = render(
-      <Visualizer active={true} controller={f.controller} />,
-    );
-    expect(getCanvas(container)).toBeTruthy();
-    expect(f.stateListeners.size).toBe(1);
-    act(() => {
-      f.emitState({ status: 'playing', signature: { genre: 'techno' } });
-    });
+    const { container, unmount } = render(<Visualizer active={true} controller={f.controller} />);
+    expect(getStage(container)).toBeTruthy();
+    act(() => f.emitState({ status: 'playing', signature: { genre: 'techno' } }));
     unmount();
     expect(f.stateListeners.size).toBe(0);
   });
 
-  it('renders without a controller (ambient drift only)', () => {
-    const { container } = render(<Visualizer active={false} />);
-    expect(getCanvas(container)).toBeTruthy();
-  });
-
-  it('absorbs stats ticks, signature morphs, and underrun spikes without crashing', () => {
+  it('absorbs stats ticks, signature morphs, and votes without crashing', () => {
     const f = makeFake();
-    render(<Visualizer active={true} controller={f.controller} />);
+    const { rerender } = render(<Visualizer active={true} controller={f.controller} />);
     act(() => {
-      f.emitStats({ ...LEVELS, energy: 0.9, pitchHz: 440 });
-      f.emitState({
-        status: 'playing',
-        signature: { genre: 'techno', mood: 'driving', texture: 'granular' },
-      });
-      f.emitStats({ ...LEVELS, underruns: 3, pitchHz: null });
-      f.emitStats({ ...LEVELS, energy: 0 });
+      f.emitStats({ ...LEVELS, energy: 0.9, pitchHz: 440, generation: 3 });
+      f.emitState({ status: 'playing', signature: { genre: 'techno', mood: 'driving' } });
     });
-    expect(f.statsListeners.size).toBe(1);
+    rerender(<Visualizer active={true} controller={f.controller} lastVote={{ v: 'up', at: Date.now() }} />);
+    rerender(<Visualizer active={true} controller={f.controller} lastVote={{ v: 'down', at: Date.now() + 1 }} />);
+    rerender(<Visualizer active={true} controller={f.controller} lastVote={null} />);
+    expect(getStage(document.querySelector('.app') as HTMLElement ?? document.body)).toBeTruthy();
+  });
+});
+
+describe('paramsForSignature', () => {
+  it('falls back to the base anatomy without a signature', () => {
+    expect(paramsForSignature(undefined)).toEqual(BASE_PARAMS);
+    expect(paramsForSignature({})).toEqual(BASE_PARAMS);
   });
 
-  it('accepts vote pulses and active flips without crashing', () => {
-    const f = makeFake();
-    const { container, rerender } = render(
-      <Visualizer active={false} controller={f.controller} />,
-    );
-    rerender(
-      <Visualizer
-        active={false}
-        controller={f.controller}
-        lastVote={{ v: 'up', at: Date.now() }}
-      />,
-    );
-    rerender(
-      <Visualizer
-        active={true}
-        controller={f.controller}
-        lastVote={{ v: 'down', at: Date.now() }}
-      />,
-    );
-    rerender(<Visualizer active={true} controller={f.controller} lastVote={null} />);
-    expect(getCanvas(container)).toBeTruthy();
+  it('is deterministic per signature text', () => {
+    const a = paramsForSignature({ genre: 'ambient', mood: 'calm' });
+    const b = paramsForSignature({ mood: 'calm', genre: 'ambient' });
+    expect(a).toEqual(b);
+  });
+
+  it('calm signatures drift slower and sit softer than hype ones', () => {
+    const calm = paramsForSignature({ mood: 'calm ambient soft' });
+    const hype = paramsForSignature({ mood: 'energetic driving hype' });
+    expect(calm.speed).toBeLessThan(hype.speed);
+    expect(calm.distort).toBeLessThan(hype.distort);
+    expect(calm.drift).toBeLessThan(hype.drift);
+  });
+
+  it('warm signatures bias the film hue opposite cool ones', () => {
+    const warm = paramsForSignature({ mood: 'warm golden' });
+    const cool = paramsForSignature({ mood: 'cold blue night' });
+    expect(warm.hueBias).toBeLessThan(0);
+    expect(cool.hueBias).toBeGreaterThan(0);
+  });
+
+  it('clamps every knob to its safe range', () => {
+    const p = paramsForSignature({ genre: 'x', focus: 'energetic hype fast intense warm cool granular' });
+    expect(p.distort).toBeGreaterThanOrEqual(0.12);
+    expect(p.distort).toBeLessThanOrEqual(0.6);
+    expect(p.speed).toBeGreaterThanOrEqual(0.6);
+    expect(p.speed).toBeLessThanOrEqual(3.4);
+    expect(Math.abs(p.hueBias)).toBeLessThanOrEqual(160);
   });
 });

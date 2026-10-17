@@ -12,6 +12,7 @@ import type {
   StreamLevels,
   Target,
   Vote,
+  VoteDecision,
   WeightedPrompt,
 } from '../shared/protocol.ts';
 import { FEATURE_GROUPS, GROUP_IDS, type FeatureGroup } from '../learner/vocabulary.ts';
@@ -73,6 +74,12 @@ export function deriveSignature(target: Target): MusicSignature | undefined {
   return Object.values(signature).some((v) => v !== undefined) ? signature : undefined;
 }
 
+/** Words for the blend currently in the ears — the audible estimate, not the pending target. */
+function signatureForSent(sent: Sent | undefined): MusicSignature | undefined {
+  if (!sent) return undefined;
+  return deriveSignature({ features: sent.features, prompts: sent.prompts ?? [] });
+}
+
 export type ControllerDeps = {
   learner: Learner;
   player: PCMPlayer;
@@ -84,8 +91,15 @@ export type ControllerDeps = {
   log?: (event: string, data?: Record<string, unknown>) => void;
 };
 
-type Ramp = { fromFeatures: FeatureBlend; fromPrompts: WeightedPrompt[]; target: Target; step: number };
-type Sent = { at: number; features: FeatureBlend };
+type Ramp = { fromFeatures: FeatureBlend; fromPrompts: WeightedPrompt[]; target: Target; step: number; durationMs: number };
+type Sent = { at: number; features: FeatureBlend; prompts?: WeightedPrompt[] };
+
+function sameSignature(a: MusicSignature | undefined, b: MusicSignature | undefined): boolean {
+  if (a === b) return true;
+  if (!a || !b) return false;
+  return a.genre === b.genre && a.instrument === b.instrument && a.mood === b.mood
+    && a.texture === b.texture && a.focus === b.focus;
+}
 
 function blendDistance(a: FeatureBlend, b: FeatureBlend): number {
   const total = (blend: FeatureBlend) => Object.values(blend).reduce((sum, value) => sum + (Number.isFinite(value) && value > 0 ? value : 0), 0);
@@ -123,6 +137,10 @@ export class SessionController implements MusicSessionController {
   private audibleCursor = -Infinity;
   private heard: Sent | undefined;
   private evidenceHistory: Sent[] = [];
+  // Issue #9: the latest vote's explanation + an ETA for when it reaches the ears.
+  private decision: VoteDecision | undefined;
+  private pendingSteer: { vote: Vote; at: number; etaMs: number; doneAt?: number } | undefined;
+  private nowPlayingSig: MusicSignature | undefined;
   private noveltyStep = 0;
 
   private transport: MusicTransport | undefined;
@@ -141,6 +159,10 @@ export class SessionController implements MusicSessionController {
 
   constructor(private readonly deps: ControllerDeps) {
     this.cfg = { ...DEFAULT_CONTROLLER_CONFIG, ...deps.config };
+    // Rigs that only pin rampMs inherit it for votes too — voteRampMs must be asked for by name.
+    if (deps.config?.rampMs !== undefined && deps.config?.voteRampMs === undefined) {
+      this.cfg.voteRampMs = deps.config.rampMs;
+    }
     this.now = deps.now ?? Date.now;
     this.log = deps.log ?? (() => { });
     this.seed = deps.seed ?? Math.floor(Math.random() * 0x7fffffff);
@@ -149,7 +171,7 @@ export class SessionController implements MusicSessionController {
     this.target = deps.learner.initialTarget(this.learnerState);
     this.sentFeatures = this.target.features;
     this.sentPrompts = this.target.prompts;
-    this.resetHearing(this.sentFeatures);
+    this.resetHearing(this.sentFeatures, this.sentPrompts);
     this.signature = deriveSignature(this.target);
   }
 
@@ -161,7 +183,7 @@ export class SessionController implements MusicSessionController {
     this.sentFeatures = this.target.features;
     this.sentPrompts = this.target.prompts;
     this.noveltyStep = 0;
-    this.resetHearing(this.sentFeatures);
+    this.resetHearing(this.sentFeatures, this.sentPrompts);
     this.signature = deriveSignature(this.target);
   }
 
@@ -194,8 +216,18 @@ export class SessionController implements MusicSessionController {
       evidenceWeight,
     });
     this.learnerState = result.state;
-    this.log('vote', { vote: v, audible, evidenceWeight, bufferedMs: this.deps.player.getBufferedDurationMs(), votes: result.state.votes });
-    this.retarget(result.target);
+    const d = result.target.lastDecision;
+    this.decision = d
+      ? { vote: v, kind: d.kind, reason: d.reason, phase: d.phase, at: this.now() }
+      : { vote: v, kind: 'hold', reason: 'Keeping what is playing.', phase: 'listening', at: this.now() };
+    const buffered = this.deps.player.getBufferedDurationMs();
+    this.pendingSteer = {
+      vote: v,
+      at: this.now(),
+      etaMs: this.cfg.generationLatencyMs + buffered + this.cfg.voteRampMs * 0.5,
+    };
+    this.log('vote', { vote: v, audible, evidenceWeight, bufferedMs: buffered, votes: result.state.votes });
+    this.retarget(result.target, true, this.cfg.voteRampMs);
   }
 
   stop(): void {
@@ -237,14 +269,26 @@ export class SessionController implements MusicSessionController {
   }
 
   private emitStats(): void {
+    // Keep `heard` — and the `nowPlaying` words derived from it — advancing on the
+    // stats cadence: issue #9's "what you're actually hearing" line.
+    if (this.canHear()) {
+      this.estimateAudible();
+      const np = signatureForSent(this.heard);
+      if (!sameSignature(np, this.nowPlayingSig)) {
+        this.nowPlayingSig = np;
+        this.setState({ ...this.state });
+      }
+    }
     const snapshot = this.statsSnapshot();
     for (const l of this.statsListeners) l(snapshot);
   }
 
   private statsSnapshot(): StreamLevels {
-    if (!ACTIVE_STATUSES.has(this.state.status)) return ZERO_LEVELS;
+    const steer = this.steerProgress();
+    if (!ACTIVE_STATUSES.has(this.state.status)) return { ...ZERO_LEVELS, steerProgress: steer.p, steerVote: steer.v };
     const stats: PCMPlayerStats | undefined = this.deps.player.getStats?.();
-    if (!stats) return ZERO_LEVELS; // a torn-down player reports silence, not an exception
+    // a torn-down player reports silence, not an exception — but the steer still ticks
+    if (!stats) return { ...ZERO_LEVELS, steerProgress: steer.p, steerVote: steer.v };
     return {
       energy: stats.energyRms ?? 0,
       brightnessHz: stats.brightnessHz ?? 0,
@@ -252,7 +296,31 @@ export class SessionController implements MusicSessionController {
       bufferedMs: stats.bufferedMs ?? this.deps.player.getBufferedDurationMs(),
       underruns: stats.underruns ?? 0,
       generation: stats.chunksReceived ?? 0,
+      steerProgress: steer.p,
+      steerVote: steer.v,
     };
+  }
+
+  /**
+   * 0..1 — how close the latest vote's steer is to reaching the ears. Rises
+   * linearly against (generation latency + buffer at vote time + half the vote
+   * ramp), capped at 0.97; reports a full 1 only once the post-vote blend is
+   * actually estimated audible. Lingers ~600 ms, then clears to null.
+   */
+  private steerProgress(): { p: number | null; v: Vote | null } {
+    const s = this.pendingSteer;
+    if (!s || !this.ready) return { p: null, v: null };
+    const now = this.now();
+    const heardPostVote = this.heard !== undefined && this.heard.at >= s.at;
+    if (heardPostVote && now - s.at >= s.etaMs * 0.6) {
+      s.doneAt ??= now;
+      if (now - s.doneAt > 600) {
+        this.pendingSteer = undefined;
+        return { p: null, v: null };
+      }
+      return { p: 1, v: s.vote };
+    }
+    return { p: Math.min(0.97, Math.max(0, (now - s.at) / s.etaMs)), v: s.vote };
   }
 
   // ---- connection ----
@@ -261,7 +329,7 @@ export class SessionController implements MusicSessionController {
     // Start from the latest target: after a (re)connect there is no audio continuity to protect.
     this.sentFeatures = this.target.features;
     this.sentPrompts = this.target.prompts;
-    this.resetHearing(this.sentFeatures);
+    this.resetHearing(this.sentFeatures, this.sentPrompts);
     this.ready = false;
     this.awaitingReady = false;
     const transport = this.deps.createTransport();
@@ -292,7 +360,7 @@ export class SessionController implements MusicSessionController {
         this.attempts = 0;
         this.setState({ status: 'playing' });
         const started = this.started;
-        if (resetHearing) this.resetHearing(started?.features ?? this.sentFeatures);
+        if (resetHearing) this.resetHearing(started?.features ?? this.sentFeatures, started?.prompts ?? this.sentPrompts);
         this.started = undefined; // `ready` can repeat after an upstream reconnect; only the first one matters
         if (started && started.prompts !== this.sentPrompts) {
           // Voted while connecting: the relay started on an older target, so ramp to the latest.
@@ -356,6 +424,7 @@ export class SessionController implements MusicSessionController {
     this.ready = false;
     this.awaitingReady = false;
     this.started = undefined;
+    this.pendingSteer = undefined;
     this.ramp = undefined;
     clearTimeout(this.rampTimer);
     clearTimeout(this.evolveTimer);
@@ -367,7 +436,7 @@ export class SessionController implements MusicSessionController {
 
   // ---- steering ----
 
-  private retarget(target: Target, resetEvolve = true): void {
+  private retarget(target: Target, resetEvolve = true, rampMs = this.cfg.rampMs): void {
     const directionChanged = !sameTarget(this.target, target);
     this.target = target;
     this.signature = deriveSignature(target);
@@ -397,7 +466,7 @@ export class SessionController implements MusicSessionController {
       if (resetEvolve && (directionChanged || this.evolveTimer === undefined)) this.scheduleEvolve();
       return;
     }
-    this.ramp = { fromFeatures: this.sentFeatures, fromPrompts: this.sentPrompts, target, step: 0 };
+    this.ramp = { fromFeatures: this.sentFeatures, fromPrompts: this.sentPrompts, target, step: 0, durationMs: rampMs };
     this.tick();
     if (resetEvolve) this.scheduleEvolve();
   }
@@ -406,11 +475,11 @@ export class SessionController implements MusicSessionController {
     const ramp = this.ramp;
     if (!ramp || !this.ready || this.awaitingReady) return;
     ramp.step++;
-    const t = Math.min(1, (ramp.step * this.cfg.stepMs) / this.cfg.rampMs);
+    const t = Math.min(1, (ramp.step * this.cfg.stepMs) / ramp.durationMs);
     this.sentFeatures = t >= 1 ? ramp.target.features : lerpBlend(ramp.fromFeatures, ramp.target.features, t);
     this.sentPrompts = lerpPrompts(ramp.fromPrompts, ramp.target.prompts, t);
     const at = this.now();
-    this.history.push({ at, features: this.sentFeatures });
+    this.history.push({ at, features: this.sentFeatures, prompts: this.sentPrompts });
     this.history = this.history.filter((h, i) => i === 0 || at - h.at <= this.cfg.historyRetentionMs);
     this.transport?.send({ type: 'steer', revision: ++this.revision, prompts: this.sentPrompts });
     if (t < 1) this.rampTimer = setTimeout(() => this.tick(), this.cfg.stepMs);
@@ -428,8 +497,8 @@ export class SessionController implements MusicSessionController {
     return pick?.features ?? this.sentFeatures;
   }
 
-  private resetHearing(features: FeatureBlend): void {
-    this.history = [{ at: this.now(), features }];
+  private resetHearing(features: FeatureBlend, prompts?: WeightedPrompt[]): void {
+    this.history = [{ at: this.now(), features, prompts }];
     this.heard = this.history[0];
     this.audibleCursor = -Infinity;
     this.evidenceHistory = [];
@@ -483,13 +552,20 @@ export class SessionController implements MusicSessionController {
   }
 
   private setState(next: SessionState): void {
-    if (ACTIVE_STATUSES.has(next.status) && this.signature !== undefined) {
-      next = { ...next, signature: this.signature };
+    if (ACTIVE_STATUSES.has(next.status)) {
+      next = {
+        ...next,
+        signature: this.signature ?? next.signature,
+        nowPlaying: this.nowPlayingSig ?? next.nowPlaying,
+        decision: this.decision ?? next.decision,
+      };
     }
     if (
       next.status === this.state.status &&
       next.lastError === this.state.lastError &&
-      next.signature === this.state.signature
+      next.signature === this.state.signature &&
+      next.nowPlaying === this.state.nowPlaying &&
+      next.decision === this.state.decision
     )
       return;
     this.state = next;

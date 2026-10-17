@@ -22,7 +22,7 @@ function rig(options: { auto?: boolean; purpose?: ListeningPurpose; config?: Par
   const evolve = vi.spyOn(learner, 'evolveNoVote');
   const log = vi.fn();
   const controller = new SessionController({ learner, player, createTransport: relay.create, seed: 7,
-    purpose: options.purpose, config: { generationLatencyMs: 0, ...options.config }, log });
+    purpose: options.purpose, config: { generationLatencyMs: 0, voteRampMs: 8000, ...options.config }, log });
   const start = async () => { await controller.start(); await vi.advanceTimersByTimeAsync(0); };
   return { relay, player, learner, create, vote, evolve, log, controller, start };
 }
@@ -106,7 +106,7 @@ describe('audible feedback evidence', () => {
       const target: Target = { features: { [id]: 1 }, prompts: [{ text: id, weight: 1 }] };
       return { state: { ...state, votes: state.votes + 1 }, target };
     };
-    const r = rig({ learner, config: { rampMs: 1, stepMs: 1 } });
+    const r = rig({ learner, config: { rampMs: 1, stepMs: 1, voteRampMs: 1 } });
     await r.start();
     r.controller.vote('down');
     await vi.advanceTimersByTimeAsync(1);

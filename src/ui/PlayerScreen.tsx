@@ -1,13 +1,14 @@
 import { useCallback, useEffect, useState } from 'react';
 import type { ComponentType } from 'react';
-import type { ListeningPurpose, MusicSessionController, MusicSignature, Vote } from './contracts.ts';
+import type { ListeningPurpose, MusicSessionController, Vote } from './contracts.ts';
 import { useSessionState } from './use-session-state.ts';
-import { StatusChip } from './StatusChip.tsx';
-import { TelemetryStrip } from './TelemetryStrip.tsx';
+import { MetricsPanel } from './MetricsPanel.tsx';
+import { NowPlayingPanel } from './NowPlayingPanel.tsx';
 import { ThumbsControls } from './ThumbsControls.tsx';
 import { Visualizer } from './Visualizer.tsx';
 import type { VisualizerProps } from './Visualizer.tsx';
 import './ui.css';
+import './hud.css';
 
 export type PlayerScreenProps = {
   controller: MusicSessionController;
@@ -32,33 +33,11 @@ const StageVisualizer: ComponentType<
 > = Visualizer;
 
 /**
- * Render the stream's musical identity as one whispered line —
- * `lofi · piano · calm · sparse — "warm ambient pads"`. Blank fields drop out;
- * a lone focus still whispers. Null when there is nothing to say, so the UI
- * stays silent rather than wearing an empty label.
- */
-function signatureLine(signature: MusicSignature | undefined): string | null {
-  if (!signature) return null;
-  const parts = [
-    signature.genre,
-    signature.instrument,
-    signature.mood,
-    signature.texture,
-  ]
-    .map((field) => field?.trim())
-    .filter((field): field is string => Boolean(field));
-  const focus = signature.focus?.trim();
-  const head = parts.join(' · ');
-  const line = focus ? (head ? `${head} — "${focus}"` : `"${focus}"`) : head;
-  return line.length > 0 ? line : null;
-}
-
-/**
  * The whole visible app: a centered pre-start view, or the live session view —
- * the audio organism filling the viewport with the chrome floating over it as
- * liquid glass (status pill · signature whisper · thumb lenses · end session).
- * Purpose is optional pre-session setup; start, like, and dislike are the only
- * controls.
+ * the audio organism filling the viewport with the chrome floating over it:
+ * hud corner panels (what's playing · measured signal) above, thumb lenses and
+ * end session below. Purpose is optional pre-session setup; start, like, and
+ * dislike are the only controls.
  */
 export function PlayerScreen({ controller }: PlayerScreenProps) {
   const state = useSessionState(controller);
@@ -69,8 +48,6 @@ export function PlayerScreen({ controller }: PlayerScreenProps) {
   // (start() accepts 'error'), with lastError shown for context.
   const active =
     state.status !== 'idle' && state.status !== 'stopped' && state.status !== 'error';
-
-  const whisper = active ? signatureLine(state.signature) : null;
 
   // Brief visual pulse on the voted side; auto-clears.
   useEffect(() => {
@@ -165,13 +142,13 @@ export function PlayerScreen({ controller }: PlayerScreenProps) {
       <div className="app__stage">
         <StageVisualizer controller={controller} active={active} lastVote={lastVote} />
       </div>
-      <header className="app__top">
-        <StatusChip status={state.status} lastError={state.lastError} />
-      </header>
-      {whisper ? <p className="signature-whisper">{whisper}</p> : null}
+      <div className="app__scrim" aria-hidden="true" />
+      <div className="hud">
+        <NowPlayingPanel state={state} controller={controller} />
+        <MetricsPanel controller={controller} />
+      </div>
       <footer className="app__controls">
-        <TelemetryStrip controller={controller} />
-        <ThumbsControls onVote={handleVote} lastVote={lastVote} />
+        <ThumbsControls onVote={handleVote} lastVote={lastVote} controller={controller} />
         <button
           type="button"
           className="end-session"
