@@ -93,3 +93,20 @@ The localhost preview uses `MUSIC_MODE=mock` through the production server. The 
 - Actual Chrome checks with a mock provider exercised both the production Tailscale HTTP player and localhost AudioWorklet. Each prepared six seconds for both branches, selected Dislike and then Like without leaving playing, resumed the selected upstream, discarded the sibling/old stream and prepared another pair. Stop closed all three streams; saved vote counts increased only for the two actual clicks. Browser warning/error logs were empty.
 - The machine-local private host passes bounded-mode and uncapped-mode regressions, including 20 simulated minutes, exact Origin/Host checks and cleanup. A separate failure-isolation proof confirms a failed candidate does not stop active playback or retry automatically.
 - This update made no Google calls. Cached-switch code paths and mock PCM continuity are verified; musical seams, real-provider pause/resume latency, quota availability and perceived improvement remain unmeasured.
+
+## Main integration and live cache verification — 2026-10-17
+
+The cache changes previously landed on a feature branch rather than `main`. This integration brings them onto main's current UI without the separate text-interpretation feature. It includes main through `95520ac`: the style ring and stronger first-tap nudge remain, and the removed HUD panels and session portrait stay removed. Audio analysis and session moment capture remain compatible with cached handoffs.
+
+A ready, exactly matching branch replaces playback with a 100 ms crossfade. The progress indicator now starts before the synchronous vote callback, so a fast cached completion is not mistaken for the previous transition's tail. Completion uses cached PCM already scheduled for playback instead of waiting for a new provider chunk. An unavailable or mismatched branch retains main's normal 2.5-second steering ramp; this does not include provider and playback-buffer latency. Nudge and recall invalidate outdated predictions.
+
+The bounded live Chrome test used the normal HTTP buffered player, real Google streams, seed 42, and automated clicks on the actual Dislike button. It observed two exact cache hits and three complete preparation cycles (both Like and Dislike), each retaining six seconds of PCM. Preparation took 6.92–7.12 seconds after each preparation request; the first pair was ready 12.17 seconds after Start. These are observations from one run, not timing guarantees.
+
+| Live switch | Click to native scheduling call | Remaining audio-clock lead | Scheduled crossfade |
+| --- | ---: | ---: | ---: |
+| Dislike 1 | 15.0 ms | 14.7 ms | 100 ms |
+| Dislike 2 | 4.7 ms | 20.0 ms | 100 ms |
+
+The corresponding approximate audio-graph start delays are 29.7 and 24.7 ms. This is scheduling evidence, not a measurement at the speaker or a guarantee of perceptually seamless music. A separate early-click session had no ready branch and correctly used ordinary steering. Both sessions totaled 34.86 seconds; all eight provider sessions were disposed, with no reconnect or error. The receipt does not continuously sample underruns after both swaps, and musical continuity still requires listening evaluation.
+
+The live run preceded the final merge of main's UI removal and nudge changes. The final merge passes **490 tests across 46 files**, TypeScript and production build; the lower count reflects main deleting obsolete HUD/portrait tests. A fresh mock browser run checks the final merged UI and cache path. No additional paid retry was used for that merge. Credentials, browser receipts and machine-local preview runtime remain outside Git.
