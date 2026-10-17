@@ -16,10 +16,10 @@
 | 2 | Downvote | Noticeable change within 5–15 s, no hard cut. **Record the measured seconds**, and report honestly if missed | **Pass.** About 8-9 s to a clearly noticeable change, smooth with no hard cut. Pavan, 2026-10-17, subjective stopwatch timing, range not three separate readings |
 | 3 | Upvote | Liked qualities emphasize gradually, no restart | **Pass.** Style gradually leans into what was playing, no restart. Pavan, 2026-10-17 |
 | 4 | Rapid votes | 👎 three times during a ramp: no stall, no ignored click, final direction matches the last vote | **Pass.** Three quick 👎: buttons responsive, only the first vote carried `evidenceWeight` 1 (dedupe working). Pavan, 2026-10-17 |
-| 5 | Passive listening | 10+ min: slow variation, no score updates (check debug log shows no `vote` events) | |
-| 6 | Reconnect | After an upstream drop (or the ~10 min cap) audio resumes within ~10 s without refresh and without double-playing; status shows `reconnecting` then `playing` | |
-| 7 | Refresh | Scores reset, new random start | |
-| 8 | Security | Key absent from bundled JS, network panel and error text; beyond `MAX_STREAMS` the relay refuses (relay binds 127.0.0.1) | |
+| 5 | Passive listening | 10+ min: slow variation, no score updates (check debug log shows no `vote` events) | **Pass.** 10+ min passive listen with slow variation, as reported by Pavan, 2026-10-17 (no measurements taken) |
+| 6 | Reconnect | After an upstream drop (or the ~10 min cap) audio resumes within ~10 s without refresh and without double-playing; status shows `reconnecting` then `playing` | **Pass.** Recovery after the upstream drop / 10-min cap worked, as reported by Pavan, 2026-10-17 (no timing recorded) |
+| 7 | Refresh | Scores reset, new random start | **Pass.** Reported by Pavan, 2026-10-17 |
+| 8 | Security | Key absent from bundled JS, network panel and error text; beyond `MAX_STREAMS` the relay refuses (relay binds 127.0.0.1) | **Pass.** Reported by Pavan, and independently checked by D on a production build of the branch source: neither `GEMINI_API_KEY` nor `CRUSOE_API_KEY` (value or name) appears anywhere in the bundled output. Not checked: relay stream cap under load |
 
 Note: Lyria hard-caps sessions at 10:00 (confirmed, see `docs/lyria-smoke-report.md`; expect about 5 s of silence at each cap). The relay reconnects upstream itself (`reconnecting`, then a fresh `ready`); the controller keeps its ramp state and the player must reconfigure without double-playing.
 

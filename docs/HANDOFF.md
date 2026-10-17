@@ -45,7 +45,7 @@
 **D status update (later 2026-10-17):**
 - D's controller, transport and wiring are on `main` (PRs #1, #4). Latency fix (2.5 s audible-estimate lag) and the start/stop race guard are on `main` too.
 - C extended the controller in PR #8 (evidence weighting so repeated clicks on a similar blend count once, learning and novelty gated on audible output, relay-side reconnect handling, optional listening purpose) and the app now ships `adaptiveLearner` (`src/learner/adaptive/`). D reviewed it: no blocker found; D did not read the adaptive model internals.
-- **Manual acceptance (live Lyria, Pavan):** tests 1-4 pass. Cold start 5-6 s; downvote change noticeable at about 8-9 s, smooth (target 5-15 s); upvote leans gradually; rapid votes fine. Tests 5-8 (passive 10 min, reconnect at the cap, refresh, security) are not yet recorded. See `docs/acceptance.md`.
+- **Manual acceptance (live Lyria, Pavan):** tests 1-8 pass. Cold start 5-6 s; downvote change noticeable at about 8-9 s, smooth (target 5-15 s); upvote leans gradually; rapid votes fine. Tests 5-8 (passive 10 min, reconnect at the cap, refresh, security) also pass, as reported by Pavan without measurements; D separately confirmed no API key (value or name) appears in a production bundle. All eight manual acceptance tests pass. See `docs/acceptance.md`.
 - Hackathon track (self-improving Nemotron team, `tools/selfimprove/`, not yet on `main`): two pre-registered runs, both negative on improvement (run 1 sealed test: gen1 33.1% vs gen0 33.6%, no gain; run 2: no variant passed the gate). Note both runs evaluate the pre-PR-#8 deterministic learner, not the shipped adaptive one.
 
 **D status (2026-10-17):**
