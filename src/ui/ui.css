@@ -360,6 +360,63 @@ body {
   color: var(--accent-warm);
 }
 
+.purpose-choice {
+  min-width: 0;
+  max-width: 100%;
+  margin: 32px 0 0;
+  padding: 0;
+  border: 0;
+}
+
+.purpose-choice legend {
+  margin: 0 auto 10px;
+  padding: 0;
+  color: var(--muted);
+  font-size: 10px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+}
+
+.purpose-choice__options {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 6px;
+}
+
+.purpose-choice button {
+  min-height: 40px;
+  appearance: none;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  background: transparent;
+  padding: 9px 12px;
+  color: var(--muted);
+  font-size: 11px;
+  cursor: pointer;
+  transition: color 180ms ease, border-color 180ms ease, background 180ms ease;
+}
+
+.purpose-choice button[aria-pressed='true'] {
+  border-color: var(--hairline);
+  background: rgba(240, 168, 96, 0.06);
+  color: var(--accent);
+}
+
+.purpose-choice__hint {
+  margin: 12px 0 0;
+  max-width: 34ch;
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.6;
+}
+
+@media (hover: hover) {
+  .purpose-choice button:hover {
+    color: var(--fg);
+  }
+}
+
 .wordmark {
   margin: 0;
   font-family: var(--font-serif);
