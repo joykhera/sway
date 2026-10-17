@@ -31,17 +31,21 @@ For whoever picks up A (relay/backend) next. Start here, then `docs/HANDOFF.md` 
 - **Latency:** a few seconds of steer latency is OK for the MVP.
 - **Models:** open-source preferred for any AI additions (see below).
 
-## Open items, by priority
+## PR #8 (merged 2026-10-17, `e445694`): what changed
 
-1. **The music sounds bad (user feedback).** Proposed fixes, none built yet, and the team must agree because they touch C, D and a product decision:
-   - **Curated starting "stations"** instead of a random 4-feature start.
-   - **One dominant style prompt:** the genre phrasing gets ~50–60% of the weight, and the others add colour. Today 4 prompts are near-equal, which gives mush.
-   - **👍 = lock in:** revert to the prompts behind what was audible at the click (~3–5 s earlier), pause the 45 s drift for ~2 min, and use a clearly audible boost. Today it's +0.05 intensity, about 2% of the mix.
-   - Fewer steers while idle, so Lyria can settle into a groove.
-2. **Security, before anyone deploys.** PR #3 added Render deploy files with `HOST=0.0.0.0`. The relay has **no auth**, so a public deploy is an open proxy on someone's Gemini key. Add an access gate (shared key or basic auth at upgrade) in `server/app.ts`, or agree not to deploy.
-3. **D's `generationLatencyMs` is 0.** It should be ~3000, because Lyria holds ~3.2 s of lead. Otherwise votes are credited to prompts that weren't audible yet.
-4. **Two copies of the learner types:** `protocol.ts` (`FeatureId = string`) and `learner/types.ts` (a strict union). Align them eventually.
-5. **No browser audio check yet.** Nobody has confirmed audio in real Chrome (headless can't hear). If the UI shows PLAYING but it's silent, suspect B's player.
+C's **adaptive learner** is now the default at `/`. It ranks 375 four-prompt recipes with a ridge model over the 18 features. There's an optional **Focus / Relax / Energy / Explore** hint before Start, and a 👍 **holds the heard blend**. Clicks within 6 s on a similar blend count once, and learning stops while audio is suspended or priming. The PR also adds an HTTP-fallback PCM player for non-secure origins. The baseline learner remains for comparison. See `docs/adaptive-integration.md`. There are 321 tests, and the build passes.
+
+## Open items, by priority (revised after PR #8)
+
+1. **The music sounds bad (user feedback).** PR #8 covers part of this:
+   - **Done in part, "stations":** the purpose hint is only a weak prior (0.16). It is not a curated starting point, and Explore is the default.
+   - **Done in part, "👍 = lock in":** a 👍 now holds the heard blend. But variations still fire **every 45 s even after a 👍**, by design. The old plan paused drift for ~2 min, so the team needs to decide.
+   - **Not done, and now the main lever, "one dominant prompt":** every recipe is 4 prompts at 0.45/0.40/0.30/0.25, so genre is only ~32% of the mix. Google's examples and the Magenta RT user study favour 2–3 prompts with one clear lead. Change the weights in `src/learner/adaptive/recipes.ts` (C's file) to something like 0.6/0.25/0.15, or drop texture.
+   - **New, A's lane:** the relay doesn't forward Lyria's `guidance`, `bpm` or `scale`. Try higher guidance and a fixed BPM and key for each purpose, set only at start (changing them later needs a context reset, which cuts the audio). Then compare by ear.
+2. **Security is now more pressing.** PR #8 says a teammate ran a **Tailscale HTTP preview** against a real key, using caps kept outside Git. The relay in the repo still has **no auth and no Origin check**, so any `HOST=0.0.0.0` run is an open proxy. Add a shared-key gate at upgrade plus an Origin allowlist in `server/app.ts` before anyone shares a URL again.
+3. ~~`generationLatencyMs` is 0~~: **resolved.** It is 2500 on `main`.
+4. **Learner types: there are now three copies:** `protocol.ts`, `learner/types.ts` and `learner/adaptive/types.ts`. The adapter checks the shape at runtime. Align them eventually.
+5. **No one has listened in real Chrome yet.** PR #8's live runs (~66 s and 16 s) checked the controls and transport, not the sound. The next step is a human listening A/B: baseline vs adaptive, and current weights vs a dominant genre.
 
 ## v1.1 ideas researched (open-source, not started)
 
