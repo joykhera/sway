@@ -308,13 +308,30 @@ export class SessionController implements MusicSessionController {
 
   // Best guess of what the listener hears: the newest blend we sent early enough to have cleared the buffer.
   private estimateAudible(): FeatureBlend {
-    const cutoff = this.now() - this.deps.player.getBufferedDurationMs() - this.cfg.generationLatencyMs;
     // A growing queue cannot make already heard music become unheard again.
-    if (this.hasAudiblePlayback()) this.audibleCursor = Math.max(this.audibleCursor, cutoff);
+    if (this.hasAudiblePlayback()) this.audibleCursor = Math.max(this.audibleCursor, this.audibleCutoff());
+    this.heard = this.pickHeard(this.audibleCursor);
+    return this.heard?.features ?? this.sentFeatures;
+  }
+
+  private audibleCutoff(): number {
+    return this.now() - this.deps.player.getBufferedDurationMs() - this.cfg.generationLatencyMs;
+  }
+
+  private pickHeard(cursor: number): Sent | undefined {
     let pick = this.heard ?? this.history[0];
-    for (const h of this.history) if (h.at <= this.audibleCursor && (!pick || h.at >= pick.at)) pick = h;
-    this.heard = pick;
-    return pick?.features ?? this.sentFeatures;
+    for (const h of this.history) if (h.at <= cursor && (!pick || h.at >= pick.at)) pick = h;
+    return pick;
+  }
+
+  /** Read-only twin of estimateAudible for the visualizer: never moves the vote-attribution cursor. */
+  getAudibleFeatures(): FeatureBlend {
+    const cursor = this.hasAudiblePlayback() ? Math.max(this.audibleCursor, this.audibleCutoff()) : this.audibleCursor;
+    return this.pickHeard(cursor)?.features ?? this.sentFeatures;
+  }
+
+  getAnalyser(): AnalyserNode | null {
+    return this.deps.player.getAnalyser?.() ?? null;
   }
 
   private resetHearing(features: FeatureBlend): void {

@@ -84,6 +84,8 @@ export interface PCMPlayer {
   getBufferedDurationMs(): number;
   // Existing worklet readiness, optional for test/alternative players.
   getStats?(): { state: string; priming: boolean; audioContextState?: string };
+  // Spectrum tap of the player's output, for the visualizer.
+  getAnalyser?(): AnalyserNode | null;
   close(): Promise<void>;
 }
 
@@ -96,6 +98,9 @@ export type SessionState = { status: SessionStatus; lastError?: string };
 export interface MusicSessionController {
   // Optional pre-session setup; changing purpose starts a fresh preference session.
   setPurpose?(purpose: ListeningPurpose): void;
+  // Visualizer inputs: the output spectrum and the blend estimated to be audible now.
+  getAnalyser?(): AnalyserNode | null;
+  getAudibleFeatures?(): FeatureBlend;
   start(): Promise<void>;
   vote(v: Vote): void; // synchronous, never locked out
   stop(): void;

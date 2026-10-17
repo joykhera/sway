@@ -172,6 +172,11 @@ export class MockMusicSessionController implements MusicSessionController {
     // Deliberately no emit — votes never change status.
   }
 
+  /** The mock tone's spectrum, so the visualizer reacts in `?mock` too. */
+  getAnalyser(): AnalyserNode | null {
+    return this.player?.getAnalyser?.() ?? null;
+  }
+
   stop(): void {
     const status = this.state.status;
     if (status === 'idle' || status === 'stopped') return; // no-op

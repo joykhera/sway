@@ -231,6 +231,28 @@ body {
   aspect-ratio: 1 / 1;
 }
 
+/* Full-bleed generative piece behind the chrome; grain and vignette stay on top. */
+.visualizer--flow {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  aspect-ratio: auto;
+  z-index: 0;
+  pointer-events: none;
+  animation: flow-in 2.4s ease-out both;
+}
+
+@keyframes flow-in {
+  from {
+    opacity: 0;
+  }
+
+  to {
+    opacity: 1;
+  }
+}
+
 /* ---- thumbs controls (bottom) ---- */
 
 .app__controls {

@@ -21,6 +21,10 @@ export type KnownStatus =
 export interface MusicSessionController {
   /** Optional pre-session setup. Changing purpose starts a fresh preference session. */
   setPurpose?(purpose: ListeningPurpose): void;
+  /** Optional visualizer input: spectrum of what is playing. */
+  getAnalyser?(): AnalyserNode | null;
+  /** Optional visualizer input: feature weights estimated to be audible now (e.g. `{ jazz: 0.45, calm: 0.3 }`). */
+  getAudibleFeatures?(): Record<string, number>;
   /** Call synchronously inside the user's Start gesture (autoplay policy). Idempotent while a session is active. */
   start(): Promise<void>;
   /** Synchronous local update; never blocks, never locks the buttons. Ignored when no session is active. */

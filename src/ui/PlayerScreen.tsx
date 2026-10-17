@@ -3,7 +3,8 @@ import type { ListeningPurpose, MusicSessionController, Vote } from './contracts
 import { useSessionState } from './use-session-state.ts';
 import { StatusChip } from './StatusChip.tsx';
 import { ThumbsControls } from './ThumbsControls.tsx';
-import { Visualizer } from './Visualizer.tsx';
+import { FlowVisualizer, Visualizer } from './Visualizer.tsx';
+import { supportsFlowRenderer } from './viz/flow-renderer.ts';
 import './ui.css';
 
 export type PlayerScreenProps = {
@@ -11,6 +12,14 @@ export type PlayerScreenProps = {
 };
 
 const VOTE_FLASH_MS = 700;
+
+/** The full-screen piece needs WebGL2 and motion; `?ring` keeps the original ring for comparison. */
+function wantsFlow(): boolean {
+  if (typeof window === 'undefined') return false;
+  if (new URLSearchParams(window.location.search).has('ring')) return false;
+  if (window.matchMedia?.('(prefers-reduced-motion: reduce)').matches) return false;
+  return supportsFlowRenderer();
+}
 const PURPOSES: { value: ListeningPurpose; label: string }[] = [
   { value: 'focus', label: 'Focus' },
   { value: 'relax', label: 'Relax' },
@@ -27,6 +36,7 @@ export function PlayerScreen({ controller }: PlayerScreenProps) {
   const state = useSessionState(controller);
   const [lastVote, setLastVote] = useState<{ v: Vote; at: number } | null>(null);
   const [purpose, setPurpose] = useState<ListeningPurpose>('explore');
+  const [flow, setFlow] = useState(wantsFlow);
 
   // 'error' is terminal-but-recoverable: the pre-start view offers the way back
   // (start() accepts 'error'), with lastError shown for context.
@@ -119,11 +129,14 @@ export function PlayerScreen({ controller }: PlayerScreenProps) {
 
   return (
     <main className="app app--live">
+      {flow ? (
+        <FlowVisualizer active={active} lastVote={lastVote} source={controller} onUnavailable={() => setFlow(false)} />
+      ) : null}
       <header className="app__top">
         <StatusChip status={state.status} lastError={state.lastError} />
       </header>
       <div className="app__stage">
-        <Visualizer active={active} lastVote={lastVote} />
+        {flow ? null : <Visualizer active={active} lastVote={lastVote} />}
       </div>
       <footer className="app__controls">
         <ThumbsControls onVote={handleVote} lastVote={lastVote} />

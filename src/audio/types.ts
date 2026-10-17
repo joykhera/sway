@@ -22,6 +22,8 @@ export interface PCMPlayer {
   enqueuePcm(bytes: ArrayBuffer): void;
   /** Milliseconds of decoded audio buffered but not yet rendered. 0 before init. */
   getBufferedDurationMs(): number;
+  /** Optional spectrum tap of what is playing, for the visualizer. Null before init. */
+  getAnalyser?(): AnalyserNode | null;
   /** Release all audio resources. Idempotent. Further `enqueuePcm` calls are ignored. */
   close(): Promise<void>;
 }
