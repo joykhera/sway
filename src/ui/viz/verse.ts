@@ -115,3 +115,45 @@ export function pickRimWord(places: readonly RimPlace[], ring: { x: number; y: n
   const reach = Math.max(prev ? apart(prev.angle, places[best]!.angle) : 0, next ? apart(next.angle, places[best]!.angle) : 0) / 2;
   return places.length === 1 || apart(pointer, places[best]!.angle) <= reach ? places[best]!.id : null;
 }
+
+/**
+ * The poem while a change is on its way, so the wait reads as the next verse
+ * being written. Words in both blends ease toward their new share; arriving
+ * words join as ghosts whose ink is the change's progress; leaving words give
+ * back most of their ink. Once it has arrived (progress 1) the poem is the
+ * destination, fully inked, so it doesn't flicker while the audible estimate
+ * catches up. With nothing pending it's just `poemWords(audible)`.
+ */
+export function steeredPoem(
+  audible: Record<string, number>,
+  steer: { progress: number; to: Record<string, number> } | null,
+): { lines: { id: string; share: number }[]; ink: Map<string, number> } {
+  const lines = poemWords(audible);
+  const ink = new Map<string, number>();
+  if (!steer) return { lines, ink };
+  if (!(steer.progress < 1)) return { lines: poemWords(steer.to), ink };
+  const p = Math.max(0, steer.progress);
+  const coming = poemWords(steer.to);
+  const comingShare = new Map(coming.map((l) => [l.id, l.share]));
+  const out = lines.map((l) => {
+    const next = comingShare.get(l.id);
+    if (next === undefined) {
+      ink.set(l.id, 1 - 0.7 * p);
+      return l;
+    }
+    return { id: l.id, share: l.share + (next - l.share) * p };
+  });
+  const here = new Set(lines.map((l) => l.id));
+  for (const c of coming) {
+    if (here.has(c.id)) continue;
+    out.push({ id: c.id, share: c.share * (0.5 + 0.5 * p) });
+    ink.set(c.id, p);
+  }
+  return { lines: out, ink };
+}
+
+/** Whether two blends read as the same poem. */
+export function samePoem(a: Record<string, number>, b: Record<string, number>): boolean {
+  const ids = (blend: Record<string, number>) => poemWords(blend).map((l) => l.id).sort().join('|');
+  return ids(a) === ids(b);
+}

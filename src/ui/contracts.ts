@@ -90,6 +90,8 @@ export interface MusicSessionController extends Omit<SharedController, 'subscrib
   recallMoment?(moment: MomentTarget): boolean | void;
   /** Optional: gradually steer toward one feature (e.g. a tapped style word). Not a vote. */
   nudge?(feature: string): void;
+  /** Optional: the change on its way — 0..1 progress toward being heard, and the blends it goes from and to. Null when none. */
+  getSteer?(): { progress: number; vote: Vote | null; from: Record<string, number>; to: Record<string, number> } | null;
   /** Call synchronously inside the user's Start gesture (autoplay policy). Idempotent while a session is active. */
   start(): Promise<void>;
   /** Synchronous local update; never blocks, never locks the buttons. Ignored when no session is active. */

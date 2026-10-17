@@ -170,6 +170,7 @@ describe('request changes and vote progress', () => {
     if (action === 'apply') { intent = electronic; await r.controller.interpretText('electronic'); }
     else r.controller.clearIntent();
     expect(stats.at(-1)).toMatchObject({ steerCanceled: true, steerProgress: null, steerVote: null });
+    expect(r.controller.getSteer()).toMatchObject({ vote: null, progress: 0 });
     await vi.advanceTimersByTimeAsync(1200);
     expect(stats.at(-1)?.steerProgress).toBeNull();
     r.controller.vote('up');
