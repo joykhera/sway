@@ -25,13 +25,16 @@ UI (B)  ──vote()/start()/stop()──▶  SessionController (D, src/controll
 `App.tsx` already uses `createBrowserController()`. Its wiring is:
 
 ```ts
-import { adaptiveLearner } from './learner/adaptive/adapter.ts';
+import { adaptiveLearner, isAdaptiveState } from './learner/adaptive/adapter.ts';
+import { createBrowserPreferencesStore } from './preferences/index.ts';
 import { SessionController } from './controller/index.ts';
 import { WebSocketTransport, defaultMusicUrl } from './transport/index.ts';
 
 const controller = new SessionController({
   learner: adaptiveLearner,       // full adaptive model behind the shared Learner contract
   player,                        // B's PCMPlayer
+  preferences: createBrowserPreferencesStore(),
+  restoreState: (value, purpose) => isAdaptiveState(value) && value.purpose === purpose ? value : undefined,
   createTransport: () => new WebSocketTransport(defaultMusicUrl(location)),
   log: import.meta.env.DEV ? console.debug : undefined,
 });
@@ -40,7 +43,7 @@ const controller = new SessionController({
 
 ## Controller behaviour (what D guarantees)
 
-- **Votes are never queued or locked out.** Each active-session vote runs `learner.processVote`. A changed target replaces the ramp and sends its first step immediately; an unchanged target preserves the current ramp or held direction. Likes hold the estimated heard blend; Dislikes select another direction using learned preference and uncertainty.
+- **Feedback stays available.** Each active-session vote runs `learner.processVote`. A changed target replaces the ramp and sends its first step immediately; an unchanged target preserves the current ramp or held direction. Likes hold the estimated heard blend; Dislikes select another direction using learned preference and uncertainty.
 - **Ramp:** 8 steps, one per second (`rampMs` / `stepMs` in `src/controller/config.ts`). Step *k* is a linear blend of the last-sent prompts and the new target, by prompt text; blends below the 0.1 minimum weight are dropped, never sent as 0. Lyria normalizes weights, so only ratios matter.
 - **What was audible at click time:** the newest blend we sent at least `buffered ms (+ generationLatencyMs)` ago. The estimated heard timeline cannot move backward when the buffer grows. This remains an estimate, logged on every vote (`log('vote', …)`).
 - **Evidence:** feedback before playback, during reconnect, priming or audio suspension has zero learning weight. Judgments of a similar heard blend within six seconds count as at most one weighted observation. Every click still acts on the requested direction.
@@ -48,8 +51,10 @@ const controller = new SessionController({
 - **Vote while connecting:** the action updates the pending direction immediately with zero learning weight. Before the socket opens, `start` carries the new target. After `start` is sent, the controller ramps to it on `ready`.
 - **Reconnect:** on socket close or a retryable relay error, a new socket is opened with backoff (1, 2, 4, 8, 8 s), and `start` carries the **latest target** (no continuity to protect). Learner scores survive. After the schedule is exhausted the status becomes `error`. Relay-side upstream reconnects (`status:'reconnecting'` then a repeated `ready`) pause steering and resume toward the latest direction once playback is ready again.
 - **`prompt_filtered`:** the stream keeps playing; the controller moves to another combination via `evolveNoVote` (no score change).
-- **Purpose:** optional Focus, Relax, Energy or Explore supplies a weak starting hint. Stop/Start with the same purpose retains preferences; changing purpose while stopped starts a fresh model.
-- **Refresh** resets everything (session memory only).
+- **Directional Likes:** a Like after a recent, meaningfully different rejected heard blend also learns from the difference. It uses the existing evidence budget, keeps the liked music immediately, and biases future selections toward the approved change. This compares the full musical combination; it does not identify tempo as the cause.
+- **Repeated Dislikes:** three distinct, effective rejected heard blends since the last effective Like activate a wider search that changes genre and instrument. Rapid clicks still steer but do not inflate this rejection streak.
+- **Purpose:** optional Focus, Relax, Energy, Explore or Crazy supplies a weak starting hint. Crazy adds experimental electronic/percussive phrasing. Each purpose has its own learned model; switching purposes restores that model.
+- **Local memory:** IndexedDB saves raw feedback and models across reloads on the same browser/origin. Start waits for bounded restoration; feedback during that brief load is replayed with zero evidence and remains bound to its original profile/session. Export JSON and reset all saved profiles are available before Start. Storage failures preserve playback and show that some changes may not be saved. See [storage details](src/preferences/README.md).
 
 ## Tests
 
@@ -59,6 +64,8 @@ const controller = new SessionController({
 | `src/controller/adaptive-controller.test.ts` | purpose lifecycle, audible evidence gating, correlated clicks, monotonic heard estimates, continued variations after Likes |
 | `src/learner/adaptive/*.test.ts` | joint model, exploration, recovery, no-vote invariants, complete-state adapter |
 | `tests/e2e/adaptive.integration.test.ts` | actual adaptive learner and browser factory through the controller, transport and real relay with a mock upstream |
+| `src/controller/preferences-controller.test.ts` | directional attribution, persistence, profile switching, restore races, failure handling, export/reset |
+| `src/preferences/preferences.test.ts`, `tests/browser/preferences-proof.html` | storage validation/failures and real IndexedDB transactions, retention, reload/export |
 | `src/controller/blend.test.ts` | prompt/feature interpolation, weight floor |
 | `tests/e2e/relay.e2e.test.ts` | controller + `WebSocketTransport` against the real relay (mock upstream): audio, steering, slot release, reconnect, capacity |
 | `tests/e2e/harness.ts` | fake relay, player and learner for other lanes to reuse |
