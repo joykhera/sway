@@ -9,8 +9,8 @@ function ThumbGlyph({ down = false }: { down?: boolean }) {
   return (
     <svg
       viewBox="0 0 24 24"
-      width="26"
-      height="26"
+      width="28"
+      height="28"
       fill="none"
       stroke="currentColor"
       strokeWidth="1.75"
@@ -30,7 +30,7 @@ function ThumbGlyph({ down = false }: { down?: boolean }) {
 /**
  * The only two steering controls: like it / change it. Buttons are never disabled —
  * voting is a synchronous local signal and the controller ignores votes it can't use.
- * `lastVote` adds a brief accent ring flash on the matching side.
+ * `lastVote` fires a brief radial pulse through the matching lens.
  */
 export function ThumbsControls({ onVote, lastVote }: ThumbsControlsProps) {
   return (

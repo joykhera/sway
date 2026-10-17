@@ -172,6 +172,67 @@ describe('PlayerScreen — active session view', () => {
     expect(f.vote.mock.calls[1]?.[0]).toBe('down');
   });
 
+  it('whispers the musical signature when the controller emits one', async () => {
+    const f = makeFake({
+      status: 'playing',
+      signature: {
+        genre: 'lofi',
+        instrument: 'piano',
+        mood: 'calm',
+        texture: 'sparse',
+        focus: 'warm ambient pads',
+      },
+    });
+    render(<PlayerScreen controller={f.controller} />);
+    await act(async () => { });
+    const whisper = screen.getByText(/lofi/);
+    expect(whisper.className).toBe('signature-whisper');
+    expect(whisper.textContent).toBe(
+      'lofi · piano · calm · sparse — "warm ambient pads"',
+    );
+    expect(screen.getByText(/warm ambient pads/)).toBeTruthy();
+  });
+
+  it('whispers partial signatures — absent fields drop out', async () => {
+    const f = makeFake({
+      status: 'playing',
+      signature: { mood: 'calm', focus: 'soft keys' },
+    });
+    const { container } = render(<PlayerScreen controller={f.controller} />);
+    await act(async () => { });
+    expect(container.querySelector('.signature-whisper')?.textContent).toBe(
+      'calm — "soft keys"',
+    );
+  });
+
+  it('renders no whisper line while the signature is absent', async () => {
+    const f = makeFake({ status: 'playing' });
+    const { container } = render(<PlayerScreen controller={f.controller} />);
+    await act(async () => { });
+    expect(container.querySelector('.signature-whisper')).toBeNull();
+  });
+
+  it('renders no whisper line for an empty signature object', async () => {
+    const f = makeFake({ status: 'playing', signature: {} });
+    const { container } = render(<PlayerScreen controller={f.controller} />);
+    await act(async () => { });
+    expect(container.querySelector('.signature-whisper')).toBeNull();
+  });
+
+  it('updates the whisper on a signature-only emission, status untouched', async () => {
+    const f = makeFake({ status: 'playing' });
+    const { container } = render(<PlayerScreen controller={f.controller} />);
+    await act(async () => { });
+    expect(container.querySelector('.signature-whisper')).toBeNull();
+    await act(async () => {
+      f.emit({ status: 'playing', signature: { genre: 'ambient', texture: 'drone' } });
+    });
+    expect(container.querySelector('.signature-whisper')?.textContent).toBe(
+      'ambient · drone',
+    );
+    expect(screen.getByText('playing')).toBeTruthy(); // chip label unchanged
+  });
+
   it('"end session" calls stop()', async () => {
     const f = makeFake({ status: 'playing' });
     render(<PlayerScreen controller={f.controller} />);
@@ -202,7 +263,8 @@ describe('PlayerScreen — active session view', () => {
     const f = makeFake({ status: 'playing' });
     const { unmount } = render(<PlayerScreen controller={f.controller} />);
     await act(async () => { });
-    expect(f.listenerCount()).toBe(1);
+    // ≥1: PlayerScreen subscribes; the visualizer may subscribe too (signature/telemetry).
+    expect(f.listenerCount()).toBeGreaterThanOrEqual(1);
     unmount();
     expect(f.listenerCount()).toBe(0);
     // a later emission must not touch the (unmounted) tree
