@@ -24,7 +24,7 @@ export type LearnerState = {
   lastRecoveryVote: number | null;
 };
 export type Decision = {
-  kind: 'initial' | 'hold' | 'redirect' | 'variation' | 'probe';
+  kind: 'initial' | 'hold' | 'redirect' | 'variation' | 'probe' | 'intent';
   styleEscape?: boolean;
   reason: string;
   phase: string;
@@ -36,5 +36,7 @@ export type Target = BaseTarget & {
   lastDecision?: Decision;
   /** Stable per-session renderer seed, retained when features leave and return. */
   phrasingSalt?: number;
+  /** Request wording suppresses profile embellishments until the request clears. */
+  intentRendering?: true;
 };
 export type { FeatureBlend, FeatureId };

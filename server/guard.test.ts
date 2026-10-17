@@ -21,6 +21,17 @@ describe('guard', () => {
     expect(validateClientMessage({ type: 'stop', extra: 1 })).toEqual({ ok: true, msg: { type: 'stop' } });
   });
 
+  it('accepts resume and only integer prefetch durations from 3 to 8 seconds', () => {
+    expect(validateClientMessage({ type: 'resume' })).toEqual({ ok: true, msg: { type: 'resume' } });
+    const prompts = [{ text: 'a', weight: 1 }];
+    for (const prefetchMs of [3000, 5000, 8000]) {
+      expect(start(prompts, { prefetchMs })).toEqual({ ok: true, msg: { type: 'start', prompts, prefetchMs } });
+    }
+    for (const prefetchMs of [0, 2999, 8001, 3000.5, '5000', null, NaN, Infinity]) {
+      expect(start(prompts, { prefetchMs }).ok).toBe(false);
+    }
+  });
+
   it('accepts and trims a valid start', () => {
     expect(start([{ text: '  lofi ', weight: 1 }])).toEqual({
       ok: true,

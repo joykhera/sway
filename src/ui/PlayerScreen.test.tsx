@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { Mock } from 'vitest';
 import type { MusicSessionController, SessionUiState, Vote } from './contracts.ts';
 import { PlayerScreen } from './PlayerScreen.tsx';
+import type { MusicIntent } from '../shared/intent.ts';
 
 afterEach(() => {
   cleanup();
@@ -53,6 +54,169 @@ function makeFake(initial: SessionUiState = { status: 'idle' }): Fake {
     listenerCount: () => listeners.size,
   };
 }
+
+const requestIntent = (extra: Partial<MusicIntent> = {}): MusicIntent => ({
+  schemaVersion: 1, summary: 'Warm, quiet piano with a little space.', purposeHint: null,
+  requiredFeatures: [], excludedFeatures: [], featureHints: [], contextPrompt: '', avoid: [], references: [], ...extra,
+});
+
+describe('PlayerScreen — optional music requests', () => {
+  it('omits request controls for a legacy or standalone mock controller', () => {
+    const f = makeFake();
+    render(<PlayerScreen controller={f.controller} />);
+    expect(screen.queryByRole('region', { name: 'music request' })).toBeNull();
+    act(() => { f.emit({ status: 'playing' }); });
+    expect(screen.queryByRole('button', { name: 'add a request' })).toBeNull();
+  });
+
+  it('applies trimmed text separately before Start and never starts audio on completion', async () => {
+    let finish!: () => void;
+    const f = makeFake({ status: 'idle', intentAvailable: true });
+    f.controller.interpretText = vi.fn(() => new Promise<void>(resolve => { finish = resolve; }));
+    render(<PlayerScreen controller={f.controller} />);
+    const input = screen.getByRole('textbox', { name: /What would you like to hear/ });
+    const start = screen.getByRole('button', { name: 'start listening' }) as HTMLButtonElement;
+    expect((screen.getByRole('button', { name: 'Apply' }) as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.change(input, { target: { value: '  gentle piano  ' } });
+    fireEvent.submit(screen.getByRole('form', { name: 'describe your music' }));
+    expect(f.controller.interpretText).toHaveBeenCalledExactlyOnceWith('gentle piano');
+    expect(start.disabled).toBe(true);
+    expect(screen.getByText('Finding a direction for your music…')).toBeTruthy();
+    fireEvent.click(start);
+    expect(f.start).not.toHaveBeenCalled();
+    await act(async () => {
+      f.emit({ status: 'idle', intentAvailable: true, intentStatus: 'ready', intentText: 'gentle piano', intent: requestIntent() });
+      finish();
+    });
+    expect(screen.getByText('Warm, quiet piano with a little space.')).toBeTruthy();
+    expect(f.start).not.toHaveBeenCalled();
+    expect(start.disabled).toBe(false);
+    fireEvent.click(start);
+    expect(f.start).toHaveBeenCalledOnce();
+  });
+
+  it('keeps live requests compact, supports editing during a request, and leaves thumbs available', async () => {
+    let finish!: () => void;
+    const f = makeFake({ status: 'playing', intentAvailable: true });
+    f.controller.interpretText = vi.fn(() => new Promise<void>(resolve => { finish = resolve; }));
+    render(<PlayerScreen controller={f.controller} />);
+    expect(screen.queryByRole('textbox')).toBeNull();
+    const toggle = screen.getByRole('button', { name: 'add a request' });
+    expect(toggle.getAttribute('aria-expanded')).toBe('false');
+    fireEvent.click(toggle);
+    const input = screen.getByRole('textbox', { name: /What would you like to hear/ }) as HTMLInputElement;
+    fireEvent.change(input, { target: { value: 'quiet jazz' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Apply' }));
+    fireEvent.change(input, { target: { value: 'quiet jazz with brushes' } });
+    expect(input.disabled).toBe(false);
+    expect((screen.getByRole('button', { name: 'applying…' }) as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.click(screen.getByLabelText(UP));
+    fireEvent.click(screen.getByLabelText(DOWN));
+    expect(f.vote.mock.calls.map(call => call[0])).toEqual(['up', 'down']);
+    await act(async () => {
+      f.emit({ status: 'playing', intentAvailable: true, intentText: 'quiet jazz', intentStatus: 'ready', intent: requestIntent() });
+      finish();
+    });
+    expect(input.value).toBe('quiet jazz with brushes');
+    fireEvent.click(screen.getByRole('button', { name: 'close request' }));
+    expect(screen.queryByRole('textbox')).toBeNull();
+    expect(screen.getByText('Warm, quiet piano with a little space.')).toBeTruthy();
+  });
+
+  it('does not cast arrow-key votes while editing and retains shortcuts elsewhere', () => {
+    const f = makeFake({ status: 'playing' });
+    f.controller.interpretText = vi.fn().mockResolvedValue(undefined);
+    render(<PlayerScreen controller={f.controller} />);
+    fireEvent.click(screen.getByRole('button', { name: 'add a request' }));
+    const input = screen.getByRole('textbox');
+    fireEvent.keyDown(input, { key: 'ArrowUp' });
+    fireEvent.keyDown(input, { key: 'ArrowDown' });
+    expect(f.vote).not.toHaveBeenCalled();
+    fireEvent.keyDown(window, { key: 'ArrowUp' });
+    expect(f.vote).toHaveBeenCalledExactlyOnceWith('up');
+  });
+
+  it('shows clarification and unsupported messages while retaining an editable request', () => {
+    const f = makeFake({ status: 'idle', intentText: 'that soundtrack', intentStatus: 'clarify',
+      intentMessage: 'Which soundtrack do you mean?' });
+    f.controller.interpretText = vi.fn().mockResolvedValue(undefined);
+    render(<PlayerScreen controller={f.controller} />);
+    expect((screen.getByRole('textbox') as HTMLInputElement).value).toBe('that soundtrack');
+    expect(screen.getByRole('status').textContent).toBe('Which soundtrack do you mean?');
+    act(() => { f.emit({ status: 'idle', intentText: 'that soundtrack', intentStatus: 'unsupported',
+      intentMessage: 'Describe its musical mood or instruments.' }); });
+    expect(screen.getByRole('alert').textContent).toBe('Describe its musical mood or instruments.');
+    expect((screen.getByRole('button', { name: 'Apply' }) as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it('shows a safe request failure and keeps ordinary playback available', async () => {
+    const f = makeFake({ status: 'idle' });
+    f.controller.interpretText = vi.fn().mockRejectedValue(new Error('{"provider":"secret details"}'));
+    render(<PlayerScreen controller={f.controller} />);
+    fireEvent.change(screen.getByRole('textbox'), { target: { value: 'piano' } });
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Apply' })); });
+    expect(screen.getByRole('alert').textContent).toBe('Could not apply your request. Please try again.');
+    expect(screen.queryByText(/secret details/)).toBeNull();
+    expect((screen.getByRole('button', { name: 'start listening' }) as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it('disables Apply when requests are unavailable without disabling Start', () => {
+    const f = makeFake({ status: 'idle', intentAvailable: false, intentText: 'piano' });
+    f.controller.interpretText = vi.fn();
+    render(<PlayerScreen controller={f.controller} />);
+    expect(screen.getByRole('alert').textContent).toBe('Text requests are unavailable right now.');
+    expect((screen.getByRole('button', { name: 'Apply' }) as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.click(screen.getByRole('button', { name: 'start listening' }));
+    expect(f.start).toHaveBeenCalledOnce();
+    expect(f.controller.interpretText).not.toHaveBeenCalled();
+  });
+
+  it('clears a pending request and ignores its later rejected completion', async () => {
+    let reject!: (error: Error) => void;
+    const f = makeFake({ status: 'idle', intentText: 'piano' });
+    f.controller.interpretText = vi.fn(() => new Promise<void>((_, fail) => { reject = fail; }));
+    f.controller.clearIntent = vi.fn(() => f.emit({ status: 'idle', intentStatus: 'idle' }));
+    render(<PlayerScreen controller={f.controller} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Apply' }));
+    fireEvent.click(screen.getByRole('button', { name: 'clear request' }));
+    expect(f.controller.clearIntent).toHaveBeenCalledOnce();
+    expect((screen.getByRole('textbox') as HTMLInputElement).value).toBe('');
+    expect((screen.getByRole('button', { name: 'start listening' }) as HTMLButtonElement).disabled).toBe(false);
+    await act(async () => { reject(new Error('late')); });
+    expect(screen.queryByRole('alert')).toBeNull();
+    expect(screen.queryByText('Finding a direction for your music…')).toBeNull();
+  });
+
+  it('renders human interpretation and safe source links, keeping internal fields out of the UI', () => {
+    const f = makeFake({ status: 'idle', intentStatus: 'ready', intent: requestIntent({ contextPrompt: 'internal prompt', references: [
+      { id: 'one', title: 'Rainy-day music', url: 'https://example.com/music' },
+      { id: 'bad', title: 'unsafe reference', url: 'javascript:alert(1)' },
+    ] }) });
+    f.controller.interpretText = vi.fn();
+    render(<PlayerScreen controller={f.controller} />);
+    const link = screen.getByRole('link', { name: 'Rainy-day music' });
+    expect(link.getAttribute('href')).toBe('https://example.com/music');
+    expect(link.getAttribute('rel')).toBe('noopener noreferrer');
+    expect(screen.queryByRole('link', { name: 'unsafe reference' })).toBeNull();
+    expect(screen.queryByText('internal prompt')).toBeNull();
+  });
+
+  it('shows readable enforced constraints before Start and in the collapsed live request', () => {
+    const intent = requestIntent({ requiredFeatures: ['lofi', 'synth'], excludedFeatures: ['percussion'] });
+    const f = makeFake({ status: 'idle', intentStatus: 'ready', intent });
+    f.controller.interpretText = vi.fn();
+    render(<PlayerScreen controller={f.controller} />);
+    expect(screen.getByText('Keep: lo-fi, synthesizer · Avoid: percussion')).toBeTruthy();
+    act(() => { f.emit({ status: 'playing', intentStatus: 'ready', intent }); });
+    expect(screen.queryByRole('textbox')).toBeNull();
+    expect(screen.getByText('Keep: lo-fi, synthesizer · Avoid: percussion')).toBeTruthy();
+    act(() => { f.emit({ status: 'playing', intent: requestIntent({ excludedFeatures: ['synth'] }) }); });
+    expect(screen.getByText('Avoid: synthesizer')).toBeTruthy();
+    expect(screen.queryByText(/^Keep:/)).toBeNull();
+    act(() => { f.emit({ status: 'playing', intent: requestIntent({ featureHints: ['jazz'] }) }); });
+    expect(screen.queryByText(/^(Keep|Avoid):/)).toBeNull();
+  });
+});
 
 describe('PlayerScreen — pre-start view', () => {
   it('idle shows the wordmark, tagline, and a start button that calls start() once', () => {

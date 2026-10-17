@@ -1,9 +1,12 @@
+import type { MusicIntent } from '../shared/intent.ts';
 import type { FeatureBlend, LearnerState, ListeningPurpose, Target, Vote } from '../shared/protocol';
 
 export type SavedProfile = {
   purpose: ListeningPurpose;
   state: LearnerState;
   updatedAt: number;
+  intent?: MusicIntent;
+  intentText?: string;
 };
 
 export type FeedbackRecord = {
@@ -17,6 +20,10 @@ export type FeedbackRecord = {
   evidenceWeight: number;
   targetBefore: Target;
   targetAfter: Target;
+  intent?: MusicIntent;
+  intentText?: string;
+  // False while older audio is still playing after a text request; evidence is zero.
+  intentAppliedToAudible?: boolean;
 };
 
 export type SavedPreferences = {

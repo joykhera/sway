@@ -2,17 +2,13 @@
 // Owned by B (src/ui/**). D's real controller in src/controller/** must be structurally compatible;
 // D may import this type or mirror it. The in-repo mock lives in ./mock-controller.ts.
 
-import type { ListeningPurpose, Vote } from '../shared/protocol.ts';
+import type { ListeningPurpose, Vote, SessionState, MusicSessionController as SharedController } from '../shared/protocol.ts';
 
 export type { ListeningPurpose, Vote };
 
 /** `status` is intentionally an open string; the UI labels known values and shows unknown ones verbatim. */
-export type SessionUiState = {
+export type SessionUiState = Omit<SessionState, 'status'> & {
   status: string;
-  lastError?: string;
-  purpose?: ListeningPurpose;
-  memory?: 'loading' | 'ready' | 'saving' | 'unavailable';
-  savedVotes?: number;
 };
 
 export type KnownStatus =
@@ -24,7 +20,7 @@ export type KnownStatus =
   | 'stopped'
   | 'error';
 
-export interface MusicSessionController {
+export interface MusicSessionController extends Omit<SharedController, 'subscribe'> {
   /** Optional pre-session setup. Persistent controllers keep separate memory per purpose. */
   setPurpose?(purpose: ListeningPurpose): void;
   /** Clears all saved browser profiles and feedback while no session is active. */

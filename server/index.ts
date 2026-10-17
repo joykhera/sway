@@ -2,6 +2,7 @@ import path from 'node:path';
 import { createRelay } from './app.ts';
 import { loadConfig } from './config.ts';
 import type { Config } from './config.ts';
+import { createIntentInterpreter } from './intent/service.ts';
 import { createStreamSlots } from './limits.ts';
 import { log, registerSecret } from './log.ts';
 import { createLyriaFactory } from './upstream/lyria.ts';
@@ -15,10 +16,12 @@ try {
   process.exit(1);
 }
 registerSecret(config.apiKey);
+registerSecret(config.intentApiKey);
 
 const relay = createRelay({
   createUpstream: config.mode === 'live' && config.apiKey ? createLyriaFactory(config.apiKey) : createMockFactory(),
   slots: createStreamSlots(config.maxStreams),
+  interpretIntent: createIntentInterpreter({ apiKey: config.intentApiKey, outputMode: config.intentOutputMode }),
   staticDir: config.production ? path.resolve('dist') : undefined,
 });
 

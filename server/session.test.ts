@@ -199,6 +199,33 @@ describe('session', () => {
     expect(slots.inUse).toBe(0);
   });
 
+  it('releases only the failed stream and never retries a terminal provider close', async () => {
+    const failed = playing();
+    const up = last();
+    const unaffected = playing();
+    up.events.onClosed('terminal provider failure', false);
+    expect(failed.socket.json.at(-1)).toMatchObject({ type: 'error', code: 'upstream_lost', retryable: false });
+    expect(up.closed).toBe(true);
+    expect(failed.session.state).toBe('idle');
+    expect(unaffected.session.state).toBe('playing');
+    expect(last().closed).toBe(false);
+    expect(slots.inUse).toBe(1);
+    await vi.advanceTimersByTimeAsync(80_000);
+    expect(ups).toHaveLength(2);
+    unaffected.session.dispose();
+    expect(slots.inUse).toBe(0);
+  });
+
+  it('reports a terminal setup close as nonretryable upstream_unavailable', async () => {
+    const { session, socket } = setup();
+    session.handle({ type: 'start', prompts: P('a') });
+    last().events.onClosed('terminal setup failure', false);
+    expect(socket.json.at(-1)).toMatchObject({ type: 'error', code: 'upstream_unavailable', retryable: false });
+    await vi.advanceTimersByTimeAsync(80_000);
+    expect(ups).toHaveLength(1);
+    expect(slots.inUse).toBe(0);
+  });
+
   it('turns filtered prompts into a retryable error and keeps streaming', () => {
     const { socket, session } = playing();
     last().events.onFiltered({ text: 'bad', reason: 'x' });

@@ -3,6 +3,8 @@ export type MusicMode = 'live' | 'mock';
 export type Config = {
   mode: MusicMode;
   apiKey: string | undefined;
+  intentApiKey: string | undefined;
+  intentOutputMode: 'json_schema' | 'json_object';
   host: string;
   port: number;
   maxStreams: number;
@@ -18,9 +20,15 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   if (mode === 'live' && !apiKey) {
     throw new Error('GEMINI_API_KEY is required when MUSIC_MODE=live (put it in .env, or set MUSIC_MODE=mock)');
   }
+  const intentOutputMode = env.INTENT_OUTPUT_MODE?.trim() || 'json_object';
+  if (intentOutputMode !== 'json_schema' && intentOutputMode !== 'json_object') {
+    throw new Error('INTENT_OUTPUT_MODE must be json_schema or json_object');
+  }
   return {
     mode,
     apiKey,
+    intentOutputMode,
+    intentApiKey: env.CRUSOE_API_KEY?.trim() || undefined,
     // Loopback by default (local-only plan). Deploys set HOST=0.0.0.0.
     host: env.HOST?.trim() || '127.0.0.1',
     port: intEnv(env, 'PORT', 8787, 0, 65535),
