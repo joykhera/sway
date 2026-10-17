@@ -173,4 +173,19 @@ describe('MusicRequest', () => {
     expect(container.querySelectorAll('a')).toHaveLength(1);
     expect(screen.queryByText('internal instructions')).toBeNull();
   });
+
+  it('offers details for supplemental avoidance alone and combines it with vocabulary exclusions', () => {
+    const c = controller();
+    const onPendingChange = vi.fn();
+    const state: SessionUiState = { status: 'playing', intent: intent({ avoid: ['vocals', 'busy drums'] }) };
+    const view = render(<MusicRequest controller={c} compact state={state} onPendingChange={onPendingChange} />);
+    const details = view.container.querySelector('details')!;
+    expect(details.open).toBe(false);
+    expect(details.textContent).toContain('Avoid: vocals, busy drums');
+    view.rerender(<MusicRequest controller={c} compact state={{ ...state,
+      intent: intent({ excludedFeatures: ['synth'], avoid: ['vocals', 'synthesizer'] }),
+    }} onPendingChange={onPendingChange} />);
+    expect(details.textContent).toContain('Avoid: synthesizer, vocals');
+    expect(details.textContent).not.toContain('vocals, synthesizer');
+  });
 });

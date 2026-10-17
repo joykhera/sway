@@ -84,9 +84,13 @@ export function MusicRequest({ controller, state, compact = false, onPendingChan
       : state.intentStatus === 'unsupported' ? 'Try a mood, style, or instrument.'
         : state.intentStatus === 'error' ? 'Could not apply that. Try again.'
           : !available && editing ? 'Text requests are unavailable right now.' : undefined));
+  const avoided = [...new Set([
+    ...(state.intent?.excludedFeatures.map(featureLabel) ?? []),
+    ...(state.intent?.avoid ?? []),
+  ])];
   const constraints = [
     state.intent?.requiredFeatures.length ? `Keep: ${state.intent.requiredFeatures.map(featureLabel).join(', ')}` : '',
-    state.intent?.excludedFeatures.length ? `Avoid: ${state.intent.excludedFeatures.map(featureLabel).join(', ')}` : '',
+    avoided.length ? `Avoid: ${avoided.join(', ')}` : '',
   ].filter(Boolean).join(' · ');
   const sources = state.intent?.references.flatMap(reference => {
     const url = safeSource(reference.url);
