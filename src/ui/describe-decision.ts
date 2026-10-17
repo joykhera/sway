@@ -6,6 +6,7 @@ const PHRASES: Record<VoteDecision['kind'], string> = {
   redirect: 'moving away from that, trying something new',
   variation: 'exploring a nearby variation',
   probe: 'trying something new to learn',
+  intent: 'following your request',
 };
 
 /** Learner reasons longer than this (first clause) are left out — one humble line. */

@@ -27,6 +27,7 @@ class MockUpstream implements MusicUpstream {
   private startedAt = 0;
   private framesSent = 0;
   private closed = false;
+  private paused = false;
 
   constructor(
     private readonly events: UpstreamEvents,
@@ -47,6 +48,22 @@ class MockUpstream implements MusicUpstream {
     this.freq = toneFrequency(prompts);
   }
 
+  pause(): void {
+    if (this.closed || this.paused) return;
+    this.paused = true;
+    clearInterval(this.timer);
+    this.timer = undefined;
+  }
+
+  resume(): void {
+    if (this.closed || !this.paused) return;
+    this.paused = false;
+    // Resume at the next frame without catching up the time spent paused.
+    this.startedAt = this.now() - this.framesSent * 1000 / MOCK_SAMPLE_RATE;
+    this.timer = setInterval(() => this.tick(), this.chunkMs);
+    this.tick();
+  }
+
   close(): void {
     this.closed = true;
     clearInterval(this.timer);
@@ -55,12 +72,12 @@ class MockUpstream implements MusicUpstream {
 
   // Emits whatever is due by wall clock, so interval jitter doesn't accumulate as drift.
   private tick(): void {
-    if (this.closed) return;
+    if (this.closed || this.paused) return;
     const chunkFrames = Math.round((MOCK_SAMPLE_RATE * this.chunkMs) / 1000);
     const due = Math.floor(((this.now() - this.startedAt) * MOCK_SAMPLE_RATE) / 1000) + chunkFrames;
     let pending = Math.min(due - this.framesSent, chunkFrames * MAX_CATCHUP_CHUNKS);
     if (pending < chunkFrames) return;
-    while (pending >= chunkFrames && !this.closed) {
+    while (pending >= chunkFrames && !this.closed && !this.paused) {
       this.events.onAudio(this.render(chunkFrames), { sampleRateHz: MOCK_SAMPLE_RATE, channels: CHANNELS });
       this.framesSent += chunkFrames;
       pending -= chunkFrames;

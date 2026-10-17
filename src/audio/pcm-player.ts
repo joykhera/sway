@@ -14,6 +14,7 @@ import {
 import { CHANNELS, PENDING_CHUNK_LIMIT } from './constants.ts';
 import { workletUrl as bundledWorkletUrl } from './worklet-url.ts';
 import { createBufferedPCMPlayer } from './buffered-player.ts';
+import { prepareReplacement } from './replacement.ts';
 import { createOutputTap } from './analyser.ts';
 
 /** Narrow slice of `AudioContext` the player actually uses. `AudioContext` satisfies this structurally. */
@@ -75,6 +76,9 @@ export class WorkletPCMPlayer implements PCMPlayer {
   private resumeNeeded = false;
   /** Latest `WorkletOutbound` stats message, or null before the first one. */
   private workletStats: WorkletOutbound | null = null;
+  private replacementId = 0;
+  private replacing = false;
+  private replacementBufferedMs = 0;
 
   constructor(opts: WorkletPCMPlayerOptions = {}) {
     this.makeContext = opts.createAudioContext ?? (() => new AudioContext());
@@ -137,7 +141,10 @@ export class WorkletPCMPlayer implements PCMPlayer {
     this.node = node;
     node.port.onmessage = (event: MessageEvent) => {
       const data = event.data as WorkletOutbound;
-      if (data.type === 'stats') this.workletStats = data;
+      if (this.node === node && data.type === 'stats' && (data.replacementId ?? 0) === this.replacementId) {
+        this.workletStats = data;
+        if (!data.priming) this.replacing = false;
+      }
     };
     node.port.start?.();
     const tap = createOutputTap(ctx);
@@ -188,8 +195,28 @@ export class WorkletPCMPlayer implements PCMPlayer {
     node.port.postMessage({ type: 'pcm', bytes }, [bytes]);
   }
 
+  replacePcm(audio: AudioFormat, chunks: ArrayBuffer[], fadeMs: number): boolean {
+    const node = this.node;
+    if (!node || this.state !== 'ready' || this.ctx?.state !== 'running' || this.replacing) return false;
+    const bytes = prepareReplacement(audio, chunks, fadeMs);
+    if (!bytes) return false;
+    const replacementId = this.replacementId + 1;
+    try {
+      node.port.postMessage({ type: 'replace', sourceSampleRateHz: audio.sampleRateHz,
+        bytes: bytes.buffer as ArrayBuffer, fadeMs, replacementId }, [bytes.buffer]);
+    } catch { return false; }
+    this.replacementId = replacementId;
+    this.replacing = true;
+    this.replacementBufferedMs = Math.floor(chunks.reduce((sum, chunk) => sum + chunk.byteLength, 0) / 4) / audio.sampleRateHz * 1000;
+    this.workletStats = null;
+    this.pending = [];
+    this.sourceSampleRateHz = audio.sampleRateHz;
+    this.configured = true;
+    return true;
+  }
+
   getBufferedDurationMs(): number {
-    return this.workletStats?.bufferedMs ?? 0;
+    return this.workletStats?.bufferedMs ?? (this.replacing ? this.replacementBufferedMs : 0);
   }
 
   /** Spectrum of what is playing, for the visualizer. Null before init and after close. */
@@ -203,12 +230,12 @@ export class WorkletPCMPlayer implements PCMPlayer {
     return {
       state: this.state,
       audioContextState: this.ctx?.state,
-      bufferedMs: ws?.bufferedMs ?? 0,
+      bufferedMs: this.getBufferedDurationMs(),
       underruns: ws?.underruns ?? 0,
       droppedFrames: ws?.droppedFrames ?? 0,
       chunksReceived: ws?.chunksReceived ?? 0,
       // No stats yet means nothing has rendered: still effectively priming.
-      priming: ws?.priming ?? true,
+      priming: this.replacing || (ws?.priming ?? true),
       outputSampleRateHz: this.ctx?.sampleRate ?? 0,
       sourceSampleRateHz: this.sourceSampleRateHz,
       // Live telemetry defaults until the first stats message arrives.
@@ -230,6 +257,9 @@ export class WorkletPCMPlayer implements PCMPlayer {
     this.initPromise = null;
     this.pending = [];
     this.workletStats = null;
+    this.replacementId = 0;
+    this.replacing = false;
+    this.replacementBufferedMs = 0;
     this.resumeNeeded = false;
 
     if (node !== null) {
