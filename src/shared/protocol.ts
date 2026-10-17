@@ -211,7 +211,7 @@ export interface MusicSessionController {
   // Taste and moments: learner scores, and liked moments to return to (never votes).
   getTaste?(): Record<string, number>;
   captureMoment?(): Target | null;
-  recallMoment?(moment: Target): void;
+  recallMoment?(moment: Target): boolean | void;
   // Gradually steer toward one feature the listener picked (not a vote).
   nudge?(feature: string): void;
   start(): Promise<void>;

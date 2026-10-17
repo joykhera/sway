@@ -1,5 +1,6 @@
 import { INTENT_LIMITS, parseMusicIntent, parseInterpretResponse, type MusicIntent } from '../shared/intent.ts';
 import { FEATURE_IDS } from '../learner/vocabulary.ts';
+import { matchesIntent } from '../learner/adaptive/intent.ts';
 import type { IntentInterpreter } from './intent-client.ts';
 import type {
   FeatureBlend,
@@ -885,15 +886,20 @@ export class SessionController implements MusicSessionController {
    * Steer back to a captured moment. The same prompts give a similar sound, not
    * the same audio. Not a vote: the learner's state is untouched.
    */
-  recallMoment(moment: Target): void {
-    if (!this.canHear() || moment.prompts.length === 0) return;
+  recallMoment(moment: Target): boolean {
+    if (!this.canHear() || moment.prompts.length === 0) return false;
+    if (!matchesIntent(moment.features, this.intent)) {
+      this.setState({ ...this.state, intentMessage: 'That moment conflicts with your request. Edit or clear it to return to that sound.' });
+      return false;
+    }
     this.log('recall', { target: moment.features });
-    // Keep learner metadata (e.g. the phrasing salt) so later votes continue from here.
-    this.retarget(
-      { ...this.target, features: { ...moment.features }, prompts: moment.prompts.map((p) => ({ ...p })) },
-      true,
-      this.cfg.voteRampMs,
-    );
+    // Rebuild the current request overlay rather than replaying stale request text.
+    const target = this.deps.learner.restoreTarget?.({ state: this.learnerState, currentTarget: this.target, moment, intent: this.intent })
+      ?? { ...this.target, features: { ...moment.features }, prompts: moment.prompts.map(p => ({ ...p })) };
+    if (!sameTarget(this.target, target)) this.cancelVoteProgress();
+    this.retarget(target, true, this.cfg.voteRampMs);
+    if (this.state.intentStatus === 'ready') this.setState({ ...this.state, intentMessage: undefined });
+    return true;
   }
 
   /**
@@ -902,9 +908,18 @@ export class SessionController implements MusicSessionController {
    */
   nudge(feature: string): void {
     if (!this.canHear() || !this.deps.learner.nudge) return;
-    const target = this.deps.learner.nudge({ state: this.learnerState, target: this.target, feature });
+    const group = GROUP_OF_ID.get(feature);
+    const conflicts = this.intent && (this.intent.excludedFeatures.some(id => id === feature)
+      || this.intent.requiredFeatures.some(id => GROUP_OF_ID.get(id) === group && id !== feature));
+    if (conflicts) {
+      this.setState({ ...this.state, intentMessage: 'That style conflicts with your request. Edit or clear it to explore that direction.' });
+      return;
+    }
+    const target = this.deps.learner.nudge({ state: this.learnerState, target: this.target, feature, intent: this.intent });
+    if (!sameTarget(this.target, target)) this.cancelVoteProgress();
     this.log('nudge', { feature, target: target.features });
     this.retarget(target);
+    if (this.state.intentStatus === 'ready') this.setState({ ...this.state, intentMessage: undefined });
   }
 
   private resetHearing(features: FeatureBlend, prompts?: WeightedPrompt[], intentRevision = this.sentIntentRevision): void {

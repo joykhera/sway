@@ -116,7 +116,7 @@ export function PlayerScreen({ controller }: PlayerScreenProps) {
 
   const handleRecall = useCallback(
     (moment: SessionMoment) => {
-      controller.recallMoment?.(moment.target);
+      if (controller.recallMoment?.(moment.target) === false) return;
       setRecalling(moment);
     },
     [controller],

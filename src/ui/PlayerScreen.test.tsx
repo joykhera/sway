@@ -106,6 +106,18 @@ describe('PlayerScreen — quiet text requests', () => {
     expect(f.stop).toHaveBeenCalledOnce();
   });
 
+  it('does not show a returning caption when the request prevents a moment recall', () => {
+    const f = makeFake({ status: 'playing', intent: requestIntent, intentStatus: 'ready' });
+    f.controller.captureMoment = vi.fn(() => ({ features: { jazz: .5, piano: .4 }, prompts: [{ text: 'Jazz', weight: 1 }] }));
+    f.controller.recallMoment = vi.fn(() => false);
+    render(<PlayerScreen controller={f.controller} />);
+    fireEvent.click(screen.getByLabelText(UP));
+    fireEvent.click(screen.getByRole('button', { name: /return to .* from/ }));
+    expect(f.controller.recallMoment).toHaveBeenCalledOnce();
+    expect(screen.queryByText(/returning to/)).toBeNull();
+    expect(screen.getByText('moments you liked')).toBeTruthy();
+  });
+
   it('restores each profile request and clears it without restoring old panels', () => {
     const f = makeFake({ status: 'idle', purpose: 'focus', intent: requestIntent, intentText: 'jazz', intentStatus: 'ready' });
     f.controller.interpretText = vi.fn();

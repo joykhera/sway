@@ -87,7 +87,7 @@ export interface MusicSessionController extends Omit<SharedController, 'subscrib
   /** Optional: what is audible now, to revisit later. Null when nothing is playing. */
   captureMoment?(): MomentTarget | null;
   /** Optional: steer back toward a captured moment. Not a vote. */
-  recallMoment?(moment: MomentTarget): void;
+  recallMoment?(moment: MomentTarget): boolean | void;
   /** Optional: gradually steer toward one feature (e.g. a tapped style word). Not a vote. */
   nudge?(feature: string): void;
   /** Call synchronously inside the user's Start gesture (autoplay policy). Idempotent while a session is active. */

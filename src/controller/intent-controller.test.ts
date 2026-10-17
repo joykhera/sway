@@ -6,6 +6,7 @@ import { FakePlayer, fakeRelay } from '../../tests/e2e/harness.ts';
 import type { MusicIntent, InterpretResponse } from '../shared/intent.ts';
 import type { SessionState, StreamLevels } from '../shared/protocol.ts';
 import type { FeedbackRecord, PreferencesStore, SavedProfile } from '../preferences/types.ts';
+import { toTarget } from '../learner/targets.ts';
 import type { IntentInterpreter } from './intent-client.ts';
 
 beforeEach(() => vi.useFakeTimers());
@@ -197,5 +198,65 @@ describe('request changes and vote progress', () => {
     r.relay.last.ready(); r.controller.vote('up');
     expect(stats.at(-1)?.steerVote).toBe('up');
     r.controller.stop();
+  });
+});
+
+
+describe('manual controls with an applied request', () => {
+  const intent: MusicIntent = { ...jazz, excludedFeatures: ['percussion'], avoid: ['vocals'] };
+
+  it('rejects conflicting nudges without disturbing a pending vote; compatible nudges preserve the brief and evidence', async () => {
+    const db = memory(); const r = rig(async () => ready(intent), db.store);
+    const nudge = vi.spyOn(r.learner, 'nudge');
+    await r.controller.interpretText('jazz, no percussion'); await r.start();
+    r.controller.vote('down');
+    await r.controller.exportFeedback();
+    const learned = structuredClone(db.profile!.state);
+    const stats: StreamLevels[] = []; r.controller.subscribeStats(s => stats.push(s));
+    for (const feature of ['ambient', 'percussion']) {
+      r.controller.nudge(feature);
+      expect(r.state.intentMessage).toContain('conflicts with your request');
+      expect(nudge).not.toHaveBeenCalled();
+      expect(stats.some(s => s.steerCanceled)).toBe(false);
+    }
+    r.controller.nudge('piano');
+    expect(nudge.mock.calls.at(-1)![0].intent).toEqual(intent);
+    expect(stats.some(s => s.steerCanceled)).toBe(true);
+    expect(r.state.intentMessage).toBeUndefined();
+    await vi.advanceTimersByTimeAsync(2100);
+    const prompts = r.relay.last.steers.at(-1)!.prompts;
+    expect(prompts).toContainEqual({ text: 'For reading', weight: 0.5 });
+    expect(prompts).toContainEqual({ text: 'Avoid: vocals.', weight: 0.3 });
+    await r.controller.exportFeedback();
+    expect(db.profile!.state).toEqual(learned); expect(db.events).toHaveLength(1);
+    r.controller.stop();
+  });
+
+  it('rejects incompatible moments and recalls compatible features using the current description', async () => {
+    const db = memory(); const r = rig(async () => ready(intent), db.store);
+    const restore = vi.spyOn(r.learner, 'restoreTarget');
+    await r.controller.interpretText('jazz, no percussion'); await r.start();
+    r.controller.vote('down'); await r.controller.exportFeedback();
+    const learned = structuredClone(db.profile!.state);
+    const stats: StreamLevels[] = []; r.controller.subscribeStats(s => stats.push(s));
+    const incompatible = toTarget({ ambient: .6, percussion: .4, calm: .3, sparse: .2 });
+    expect(r.controller.recallMoment(incompatible)).toBe(false);
+    expect(r.state.intentMessage).toContain('moment conflicts');
+    expect(restore).not.toHaveBeenCalled();
+    expect(stats.some(s => s.steerCanceled)).toBe(false);
+    const moment = toTarget({ jazz: .6, guitar: .5, hopeful: .25, layered: .2 });
+    moment.prompts.push({ text: 'old cinematic request', weight: .5 });
+    expect(r.controller.recallMoment(moment)).toBe(true);
+    expect(restore.mock.calls.at(-1)![0]).toMatchObject({ intent, moment });
+    expect(stats.some(s => s.steerCanceled)).toBe(true);
+    expect(r.state.intentMessage).toBeUndefined();
+    await vi.advanceTimersByTimeAsync(2600);
+    const prompts = r.relay.last.steers.at(-1)!.prompts;
+    expect(prompts).toContainEqual({ text: 'For reading', weight: .5 });
+    expect(prompts.some(p => p.text === 'old cinematic request')).toBe(false);
+    await r.controller.exportFeedback();
+    expect(db.profile!.state).toEqual(learned); expect(db.events).toHaveLength(1);
+    r.controller.stop();
+    expect(r.controller.recallMoment(moment)).toBe(false);
   });
 });
