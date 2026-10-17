@@ -1,4 +1,4 @@
-import { WEIGHT_MAX, WEIGHT_MIN, type FeatureBlend, type WeightedPrompt } from '../shared/protocol.ts';
+import { MAX_PROMPTS, WEIGHT_MAX, WEIGHT_MIN, type FeatureBlend, type WeightedPrompt } from '../shared/protocol.ts';
 
 export function lerpBlend(from: FeatureBlend, to: FeatureBlend, t: number): FeatureBlend {
   const out: FeatureBlend = {};
@@ -23,5 +23,7 @@ export function lerpPrompts(from: WeightedPrompt[], to: WeightedPrompt[], t: num
     const weight = Math.min(WEIGHT_MAX, w0 + (w1 - w0) * t);
     if (weight >= WEIGHT_MIN) out.push({ text, weight });
   }
-  return out.length > 0 ? out : from.map((p) => ({ ...p }));
+  if (out.length === 0) return from.map((p) => ({ ...p }));
+  // Mid-ramp unions can exceed the relay's prompt cap — keep the heaviest.
+  return out.length <= MAX_PROMPTS ? out : out.sort((a, b) => b.weight - a.weight).slice(0, MAX_PROMPTS);
 }

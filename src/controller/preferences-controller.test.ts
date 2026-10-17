@@ -40,7 +40,7 @@ function rig(store?: PreferencesStore, restoreState: (value: unknown) => Learner
   const vote = vi.spyOn(learner, 'processVote');
   const controller = new SessionController({ learner, player, createTransport: relay.create,
     preferences: store, restoreState, seed: 7,
-    config: { generationLatencyMs: 0, noVoteEvolveMs: 1_000_000 } });
+    config: { generationLatencyMs: 0, noVoteEvolveMs: 1_000_000, voteRampMs: 8000 } });
   const states: SessionState[] = [];
   controller.subscribe(state => states.push(state));
   return { controller, relay, player, vote, states, start: async () => { await controller.start(); await flush(); } };

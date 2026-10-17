@@ -24,6 +24,10 @@ export interface PCMPlayer {
   replacePcm?(audio: AudioFormat, chunks: ArrayBuffer[], fadeMs: number): boolean;
   /** Milliseconds of decoded audio buffered but not yet rendered. 0 before init. */
   getBufferedDurationMs(): number;
+  /** Latest diagnostics snapshot (includes live signal telemetry), if the implementation exposes it. */
+  getStats?(): PCMPlayerStats;
+  /** Optional spectrum tap of what is playing, for the visualizer. Null before init. */
+  getAnalyser?(): AnalyserNode | null;
   /** Release all audio resources. Idempotent. Further `enqueuePcm` calls are ignored. */
   close(): Promise<void>;
 }
@@ -47,6 +51,23 @@ export interface PCMPlayerStats {
   outputSampleRateHz: number;
   /** Source rate from `configure()`; 0 before configure. */
   sourceSampleRateHz: number;
+
+  // --- Live signal telemetry (rendered output, ~100 ms cadence) -------------
+  // Optional: only worklet-based renderers can measure the emitted signal.
+  /** RMS of recently rendered output, 0..1 (interleaved stereo). */
+  energyRms?: number;
+  /**
+   * Spectral-brightness proxy in Hz: mean zero-crossing rate × sr/2 over the
+   * recent render window. Roughly tracks spectral centroid for tonal content.
+   */
+  brightnessHz?: number;
+  /**
+   * Dominant-partial pitch estimate in Hz (zero-crossing rate × sr), or null
+   * when the signal is silent/too noisy for a stable reading.
+   */
+  pitchHz?: number | null;
+  /** PCM blocks pushed since reset — only meaningful on players that receive raw PCM. */
+  chunksReceived?: number;
 }
 
 /** Main thread -> worklet messages (via `AudioWorkletNode.port`). */
@@ -65,6 +86,13 @@ export type WorkletOutbound = {
   priming: boolean;
   /** Identifies the replacement whose audio/stats are now being rendered. */
   replacementId?: number;
+  // Telemetry is optional on the wire (the main thread defaults missing fields
+  // to 0 / null); PcmWorkletCore.getStats always fills them.
+  /** PCM blocks pushed since the last reset — the real generation cadence. */
+  chunksReceived?: number;
+  energyRms?: number;
+  brightnessHz?: number;
+  pitchHz?: number | null;
 };
 
 export const PCM_WORKLET_PROCESSOR_NAME = 'sway-pcm-player';

@@ -149,7 +149,7 @@ describe('LookaheadPool', () => {
     const reordered = {
       features: { piano: 0.3, ambient: 0.4 },
       prompts: [...targets.up.prompts].reverse(),
-      lastDecision: { reason: 'different diagnostic only' },
+      lastDecision: { kind: 'hold' as const, reason: 'different diagnostic only', phase: 'listening', step: 0, prediction: 0, uncertainty: 0 },
     };
     expect(pool.take('up', reordered)).toBeDefined();
   });

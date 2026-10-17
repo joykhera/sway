@@ -317,4 +317,72 @@ describe('MockMusicSessionController', () => {
     c.vote('down');
     expect(timeouts).toHaveLength(1);
   });
+
+  it('getAnalyser() mirrors the player tap (null when it has none)', async () => {
+    const players: FakePlayer[] = [];
+    const c = makeController(players);
+    expect(c.getAnalyser()).toBeNull();
+    await c.start();
+    expect(c.getAnalyser()).toBeNull(); // the fake player exposes no tap
+    const analyser = { fftSize: 2048 } as unknown as AnalyserNode;
+    players[0]!.getAnalyser = () => analyser;
+    expect(c.getAnalyser()).toBe(analyser);
+    c.stop();
+  });
+
+  it('captureMoment() returns the audible blend as a recallable target; null when not playing', async () => {
+    const gen = Object.assign(makeGenerator(), { preset: 'dusk' as string });
+    // Behave like the real MockPcmGenerator: preset switches update `.preset`.
+    gen.cyclePreset.mockImplementation(() => { gen.preset = 'glass'; return 'glass'; });
+    gen.setPreset.mockImplementation((p) => { gen.preset = p as string; });
+    const c = makeController([], [], { generatorFactory: () => asGenerator(gen) });
+    expect(c.captureMoment()).toBeNull(); // nothing playing yet
+    await c.start();
+    const moment = c.captureMoment();
+    expect(moment).toEqual({
+      features: { ambient: 0.6, synth: 0.5, calm: 0.7, layered: 0.4 },
+      prompts: [{ text: 'dusk', weight: 1 }],
+    });
+    c.vote('down');
+    vi.advanceTimersByTime(1000); // the down-steer lands → 'glass'
+    expect(c.getAudibleFeatures()).toEqual({ ambient: 0.5, percussion: 0.35, dreamy: 0.65, sparse: 0.6 });
+    c.recallMoment(moment!);
+    expect(gen.setPreset).toHaveBeenCalledWith('dusk');
+    expect(c.getAudibleFeatures()).toEqual({ ambient: 0.6, synth: 0.5, calm: 0.7, layered: 0.4 });
+    expect(gen.cyclePreset).toHaveBeenCalledTimes(1); // only the real vote cycled the preset
+    c.stop();
+    expect(c.captureMoment()).toBeNull();
+  });
+
+  it('a recall supersedes a pending vote steer and adds nothing to the scores', async () => {
+    const gen = Object.assign(makeGenerator(), { preset: 'dusk' as string });
+    gen.setPreset.mockImplementation((p) => { gen.preset = p as string; });
+    const c = makeController([], [], { generatorFactory: () => asGenerator(gen) });
+    const seen: SessionUiState[] = [];
+    c.subscribe((s) => seen.push(s));
+    await c.start();
+    const moment = c.captureMoment()!;
+    c.vote('down');
+    const afterVote = c.getTaste();
+    c.recallMoment(moment); // lands before the vote's steer delay elapses
+    vi.advanceTimersByTime(2000);
+    expect(gen.cyclePreset).not.toHaveBeenCalled(); // the pending vote steer was superseded
+    expect(gen.setPreset).toHaveBeenCalledWith('dusk'); // the moment's preset was restored
+    expect(c.getTaste()).toEqual(afterVote); // recall is not a vote
+    expect(seen.at(-1)!.decision).toBeUndefined(); // no decision emitted for a recall
+    c.stop();
+  });
+
+  it('getTaste() returns a copy of scores accumulated on the heard blend', async () => {
+    const gen = Object.assign(makeGenerator(), { preset: 'dusk' });
+    const c = makeController([], [], { generatorFactory: () => asGenerator(gen) });
+    await c.start();
+    expect(c.getTaste()).toEqual({});
+    c.vote('up');
+    const taste = c.getTaste();
+    expect(taste).toEqual({ ambient: 0.6, synth: 0.5, calm: 0.7, layered: 0.4 });
+    taste.calm = 99;
+    expect(c.getTaste().calm).toBe(0.7); // a copy, not the live map
+    c.stop();
+  });
 });

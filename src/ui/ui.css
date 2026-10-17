@@ -1,8 +1,9 @@
 @import url('https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=JetBrains+Mono:wght@400;500&display=swap');
 
-/* sway — refined dark minimalism. Warm ink, one amber accent, a cool counter-hue
-   reserved for "hear something different" moments. Mobile-first; all fonts and
-   colors come from the tokens below. */
+/* sway — a liquid instrument. The audio organism fills the whole viewport; the
+   chrome is near-invisible liquid glass floating above it. Deep warm-ink void,
+   one amber accent, a cool counter-hue reserved for "hear something different".
+   Mobile-first; every font and color comes from the tokens below. */
 
 :root {
   --ink: #0b0a09;
@@ -12,11 +13,22 @@
   --accent: #f0a860;
   --accent-cool: #7ec8e3;
   --accent-warm: #e07a5f;
-  --hairline: rgba(236, 229, 216, 0.14);
+  --hairline: rgba(236, 229, 216, 0.18);
   --ring-ink: #ece5d8;
   --accent-glow: rgba(240, 168, 96, 0.16);
   --cool-glow: rgba(126, 200, 227, 0.16);
   --warm-glow: rgba(224, 122, 95, 0.16);
+
+  /* liquid glass: a breath of fg over the void, blurred light, one hairline,
+     an inner top highlight, a faint specular sheen, a soft drop shadow. */
+  --glass-fill: color-mix(in srgb, var(--fg) 6%, transparent);
+  --glass-specular: linear-gradient(165deg, rgba(255, 255, 255, 0.09) 0%, rgba(255, 255, 255, 0) 44%);
+  --glass-blur: blur(18px) saturate(1.4);
+  --glass-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.07),
+    0 18px 44px rgba(0, 0, 0, 0.42);
+  --ease-liquid: cubic-bezier(0.22, 0.8, 0.3, 1);
+
   --font-serif: 'Instrument Serif', Georgia, 'Times New Roman', serif;
   --font-mono: 'JetBrains Mono', ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
 }
@@ -46,10 +58,6 @@ body {
 .app {
   position: relative;
   min-height: 100dvh;
-  display: grid;
-  grid-template-rows: auto 1fr auto;
-  padding:
-    calc(env(safe-area-inset-top, 0px) + 20px) calc(env(safe-area-inset-right, 0px) + 20px) calc(env(safe-area-inset-bottom, 0px) + 24px) calc(env(safe-area-inset-left, 0px) + 20px);
   background: radial-gradient(115% 90% at 50% 38%, #1b1611 0%, var(--ink) 56%, var(--ink-deep) 100%);
   overflow: hidden;
 }
@@ -75,19 +83,23 @@ body {
   box-shadow: inset 0 0 26vmax rgba(0, 0, 0, 0.5);
 }
 
-.app__top,
-.app__stage,
+/* chrome materializes in a slow stagger; the organism fades in underneath. */
+.hud,
 .app__controls,
 .prestart>* {
-  animation: sway-in 520ms cubic-bezier(0.22, 0.8, 0.3, 1) both;
+  animation: sway-in 560ms var(--ease-liquid) both;
 }
 
 .app__stage {
-  animation-delay: 110ms;
+  animation: stage-in 900ms ease-out both;
+}
+
+.hud {
+  animation-delay: 60ms;
 }
 
 .app__controls {
-  animation-delay: 190ms;
+  animation-delay: 240ms;
 }
 
 .prestart>*:nth-child(2) {
@@ -114,6 +126,36 @@ body {
   }
 }
 
+@keyframes stage-in {
+  from {
+    opacity: 0;
+  }
+
+  to {
+    opacity: 1;
+  }
+}
+
+/* ---- liquid glass — one material, different radii ---- */
+
+.thumb,
+.start-button {
+  background: var(--glass-specular), var(--glass-fill);
+  -webkit-backdrop-filter: var(--glass-blur);
+  backdrop-filter: var(--glass-blur);
+  border: 1px solid var(--hairline);
+  box-shadow: var(--glass-shadow);
+}
+
+/* no backdrop-filter: the same sheen over a slightly more opaque fill. */
+@supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+
+  .thumb,
+  .start-button {
+    background: var(--glass-specular), color-mix(in srgb, var(--fg) 13%, var(--ink));
+  }
+}
+
 /* ---- shared button treatment ---- */
 
 .app button {
@@ -123,148 +165,213 @@ body {
 }
 
 .app button:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 3px;
+  outline: 1px solid var(--accent);
+  outline-offset: 4px;
 }
 
-/* ---- status chip (top-left) ---- */
-
-.app__top {
-  display: flex;
-  justify-content: space-between;
-  align-items: flex-start;
-  flex-wrap: wrap;
-  gap: 20px;
-  z-index: 1;
-}
-
-.status-chip {
-  display: inline-flex;
-  align-items: center;
-  gap: 9px;
-  font-size: 11px;
-  font-weight: 500;
-  letter-spacing: 0.16em;
-  text-transform: uppercase;
-  color: var(--muted);
-}
-
-.status-chip__dot {
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: var(--muted);
-  flex: none;
-}
-
-.status-chip--connecting .status-chip__dot,
-.status-chip--reconnecting .status-chip__dot {
-  background: var(--accent);
-  animation: chip-pulse 1.5s ease-in-out infinite;
-}
-
-.status-chip--playing .status-chip__dot {
-  background: var(--accent);
-  box-shadow: 0 0 8px var(--accent-glow);
-}
-
-.status-chip--playing .status-chip__label {
-  color: var(--fg);
-}
-
-.status-chip--unavailable .status-chip__dot {
-  background: var(--accent-cool);
-}
-
-/* error sits between the two accents: a muted terracotta, distinct from both
-   amber (playing/connecting) and cool (unavailable) without shouting. */
-.status-chip--error .status-chip__dot {
-  background: var(--accent-warm);
-  box-shadow: 0 0 8px var(--warm-glow);
-}
-
-.status-chip--error .status-chip__label {
-  color: var(--accent-warm);
-}
-
-.status-chip__body {
-  display: flex;
-  flex-direction: column;
-  gap: 3px;
-}
-
-.status-chip__error {
-  font-size: 10px;
-  font-weight: 400;
-  letter-spacing: 0.03em;
-  text-transform: none;
-  color: var(--accent-cool);
-  max-width: 46vw;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-@keyframes chip-pulse {
-
-  0%,
-  100% {
-    opacity: 1;
-    transform: scale(1);
-  }
-
-  50% {
-    opacity: 0.35;
-    transform: scale(0.8);
-  }
-}
-
-/* ---- visualizer (centered) ---- */
+/* ---- the organism: full-bleed, behind all chrome ---- */
 
 .app__stage {
-  display: grid;
-  place-items: center;
-  min-height: 0;
-  z-index: 1;
+  position: absolute;
+  inset: 0;
+  z-index: 0;
 }
 
 .visualizer {
   display: block;
-  width: min(52vmin, 420px);
-  aspect-ratio: 1 / 1;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
 }
 
-/* ---- thumbs controls (bottom) ---- */
+/* Full-bleed generative piece behind the chrome; grain and vignette stay on top. */
+.visualizer--flow {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  aspect-ratio: auto;
+  z-index: 0;
+  pointer-events: none;
+  animation: flow-in 2.4s ease-out both;
+}
 
-.app__controls {
+@keyframes flow-in {
+  from {
+    opacity: 0;
+  }
+
+  to {
+    opacity: 1;
+  }
+}
+
+/* Taste verse: the learner's picture of you, set in type around the ring. */
+.taste-verse {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  z-index: 0;
+  pointer-events: none;
+  animation: flow-in 3s ease-out both;
+}
+
+/* ---- moments you liked (above the thumbs) ---- */
+
+.moments {
   display: flex;
   flex-direction: column;
   align-items: center;
-  z-index: 1;
+  gap: 8px;
+  margin-bottom: 18px;
+}
+
+.moments__dots {
+  display: flex;
+  gap: 10px;
+}
+
+.app button.moment {
+  position: relative;
+  appearance: none;
+  width: 12px;
+  height: 12px;
+  padding: 0;
+  border-radius: 50%;
+  border: none;
+  background: var(--moment-color);
+  box-shadow: 0 0 10px var(--moment-color);
+  opacity: 0.7;
+  cursor: pointer;
+  animation: moment-in 600ms cubic-bezier(0.22, 0.8, 0.3, 1) both;
+  transition: opacity 200ms ease, transform 200ms ease;
+}
+
+.app button.moment:hover,
+.app button.moment:focus-visible,
+.app button.moment--active {
+  opacity: 1;
+  transform: scale(1.35);
+}
+
+/* The moment's sound, in words, on hover. */
+.app button.moment::after {
+  content: attr(data-label);
+  position: absolute;
+  bottom: 22px;
+  left: 50%;
+  transform: translateX(-50%);
+  white-space: nowrap;
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  color: var(--fg);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 200ms ease;
+}
+
+.app button.moment:hover::after,
+.app button.moment:focus-visible::after {
+  opacity: 0.85;
+}
+
+.moments__caption {
+  margin: 0;
+  font-size: 10px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+@keyframes moment-in {
+  from {
+    opacity: 0;
+    transform: scale(2.4);
+  }
+}
+
+/* ---- session portrait (after End Session) ---- */
+
+.portrait {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 18px;
+  padding: 24px 16px;
+  background: rgba(5, 4, 4, 0.86);
+  backdrop-filter: blur(10px);
+  animation: flow-in 700ms ease-out both;
+}
+
+.portrait__image {
+  max-width: 100%;
+  max-height: calc(100dvh - 120px);
+  aspect-ratio: 1080 / 1350;
+  height: auto;
+  border-radius: 6px;
+  box-shadow: 0 30px 80px rgba(0, 0, 0, 0.6);
+}
+
+.portrait__actions {
+  display: flex;
+  gap: 24px;
+}
+
+.portrait__actions button {
+  appearance: none;
+  background: none;
+  border: 1px solid var(--hairline);
+  border-radius: 999px;
+  padding: 10px 20px;
+  font-size: 11px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--fg);
+  cursor: pointer;
+}
+
+.portrait__actions button:first-child {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+/* ---- thumbs: two glass lenses floating at the bottom ---- */
+
+.app__controls {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: calc(env(safe-area-inset-bottom, 0px) + 18px);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  z-index: 2;
 }
 
 .thumbs {
   display: flex;
-  gap: clamp(24px, 7vw, 44px);
+  gap: clamp(26px, 8vw, 48px);
 }
 
 .thumb {
   appearance: none;
-  width: 64px;
-  height: 64px;
+  width: 76px;
+  height: 76px;
   border-radius: 50%;
-  border: 1px solid var(--hairline);
-  background: transparent;
   color: var(--fg);
   display: grid;
   place-items: center;
   padding: 0;
   cursor: pointer;
   transition:
-    transform 120ms ease,
-    border-color 200ms ease,
-    color 200ms ease,
-    box-shadow 220ms ease;
+    transform 340ms var(--ease-liquid),
+    color 280ms var(--ease-liquid),
+    border-color 280ms var(--ease-liquid),
+    box-shadow 340ms var(--ease-liquid);
 }
 
 .thumb--up {
@@ -277,72 +384,122 @@ body {
   --vote-glow: var(--cool-glow);
 }
 
-.thumb:active {
-  transform: scale(0.94);
-}
-
+/* hover is liquid: the lens lifts a touch, its inner glow swells. */
 @media (hover: hover) {
   .thumb:hover {
-    border-color: var(--vote-hue);
+    transform: translateY(-3px) scale(1.02);
+    border-color: color-mix(in srgb, var(--vote-hue) 60%, var(--hairline));
     color: var(--vote-hue);
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.1),
+      inset 0 0 26px var(--vote-glow),
+      0 26px 54px rgba(0, 0, 0, 0.5),
+      0 0 34px var(--vote-glow);
   }
 }
 
+.thumb:active {
+  transform: scale(0.95);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.07),
+    inset 0 0 30px var(--vote-glow),
+    0 10px 26px rgba(0, 0, 0, 0.5);
+}
+
+/* a vote sends one radial pulse outward through the glass. */
 .thumb--voted {
   border-color: var(--vote-hue);
   color: var(--vote-hue);
-  box-shadow: 0 0 0 1px var(--vote-hue), 0 0 26px var(--vote-glow);
-  animation: vote-flash 700ms ease-out;
+  animation: vote-flash 700ms var(--ease-liquid);
 }
 
 @keyframes vote-flash {
   0% {
-    box-shadow: 0 0 0 0 var(--vote-glow), 0 0 0 1px var(--vote-hue);
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.07),
+      inset 0 0 10px var(--vote-glow),
+      0 0 0 0 color-mix(in srgb, var(--vote-hue) 34%, transparent),
+      0 18px 44px rgba(0, 0, 0, 0.42);
+  }
+
+  40% {
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.1),
+      inset 0 0 34px var(--vote-glow),
+      0 0 0 16px color-mix(in srgb, var(--vote-hue) 16%, transparent),
+      0 18px 44px rgba(0, 0, 0, 0.42);
   }
 
   100% {
-    box-shadow: 0 0 0 20px transparent, 0 0 26px var(--vote-glow);
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.07),
+      inset 0 0 16px var(--vote-glow),
+      0 0 0 30px transparent,
+      0 18px 44px rgba(0, 0, 0, 0.42);
   }
 }
 
 @media (min-width: 640px) {
   .thumb {
-    width: 72px;
-    height: 72px;
+    width: 80px;
+    height: 80px;
   }
 }
 
-/* ---- end session (bottom-right, tiny) ---- */
+/* ---- end session: a hairline murmur at the bottom edge ---- */
 
 .end-session {
-  align-self: flex-end;
-  margin-top: 14px;
+  margin-top: 18px;
   appearance: none;
   background: none;
   border: none;
-  padding: 8px 2px;
-  font-size: 11px;
-  letter-spacing: 0.14em;
+  border-bottom: 1px solid transparent;
+  padding: 10px 4px 9px;
+  font-size: 10px;
+  letter-spacing: 0.2em;
   text-transform: uppercase;
   color: var(--muted);
+  opacity: 0.6;
   cursor: pointer;
-  transition: color 200ms ease;
+  transition:
+    color 300ms var(--ease-liquid),
+    opacity 300ms var(--ease-liquid),
+    border-color 300ms var(--ease-liquid);
 }
 
 @media (hover: hover) {
   .end-session:hover {
     color: var(--fg);
+    opacity: 1;
+    border-bottom-color: var(--hairline);
   }
+}
+
+/* ---- utilities ---- */
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
 }
 
 /* ---- pre-start view ---- */
 
 .app--prestart {
-  grid-template-rows: 1fr;
+  display: grid;
   place-items: center;
+  padding: 24px;
 }
 
 .prestart {
+  position: relative;
+  z-index: 2;
   text-align: center;
   max-width: 440px;
   padding: 0 12px;
@@ -638,33 +795,50 @@ body {
   color: var(--fg);
 }
 
-.tagline {
-  margin: 18px 0 0;
-  font-family: var(--font-serif);
-  font-style: italic;
-  font-size: clamp(17px, 4.6vw, 21px);
-  line-height: 1.45;
-  color: var(--muted);
-}
-
+/* the start lens breathes — a slow opacity/scale swell. `scale` (not transform)
+   keeps it independent of the entrance slide; the breath keyframes open at
+   opacity 1 so no pop is possible whenever it takes over. */
 .start-button {
-  margin-top: 44px;
+  margin-top: 46px;
   appearance: none;
-  background: transparent;
-  border: 1px solid var(--hairline);
   border-radius: 999px;
-  padding: 19px 46px;
+  padding: 21px 52px;
   font-size: 12px;
   font-weight: 500;
-  letter-spacing: 0.24em;
+  letter-spacing: 0.3em;
+  text-indent: 0.3em;
+  /* optically re-centers the trailing letterspace */
   text-transform: uppercase;
   color: var(--fg);
   cursor: pointer;
   transition:
-    transform 120ms ease,
-    border-color 220ms ease,
-    color 220ms ease,
-    box-shadow 320ms ease;
+    transform 340ms var(--ease-liquid),
+    color 300ms var(--ease-liquid),
+    border-color 300ms var(--ease-liquid),
+    box-shadow 380ms var(--ease-liquid);
+}
+
+/* specificity beats .prestart>*:nth-child(n) delays: the entrance runs once
+   (backwards fill only — it must not hold opacity over the endless breath)
+   and the breath sustains the lens. */
+.app .prestart .start-button {
+  animation:
+    start-breath 5.6s ease-in-out infinite,
+    sway-in 560ms var(--ease-liquid) 280ms backwards;
+}
+
+@keyframes start-breath {
+
+  0%,
+  100% {
+    opacity: 1;
+    scale: 1;
+  }
+
+  50% {
+    opacity: 0.78;
+    scale: 1.02;
+  }
 }
 
 .start-button:active {
@@ -673,13 +847,17 @@ body {
 
 @media (hover: hover) {
   .start-button:hover {
-    border-color: var(--accent);
+    border-color: color-mix(in srgb, var(--accent) 60%, var(--hairline));
     color: var(--accent);
-    box-shadow: 0 0 40px var(--accent-glow);
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.1),
+      inset 0 0 22px var(--accent-glow),
+      0 20px 48px rgba(0, 0, 0, 0.46),
+      0 0 44px var(--accent-glow);
   }
 }
 
-/* ---- reduced motion ---- */
+/* ---- reduced motion: no breath, no pulses, no slides ---- */
 
 @media (prefers-reduced-motion: reduce) {
 

@@ -1,6 +1,7 @@
 // All tunables in one place; these are hypotheses to adjust after manual testing.
 export type ControllerConfig = {
-  rampMs: number; // duration of a transition toward a new target
+  rampMs: number; // duration of a scheduled/novelty transition toward a new target
+  voteRampMs: number; // shorter transition for vote-driven retargets, so a vote is heard quickly
   stepMs: number; // interval between intermediate steer messages
   noVoteEvolveMs: number; // fresh-variation cadence; held-target Likes do not defer it (never a score update)
   generationLatencyMs: number; // extra delay between a steer being sent and it being audible, beyond the buffer
@@ -13,6 +14,8 @@ export type ControllerConfig = {
 
 export const DEFAULT_CONTROLLER_CONFIG: ControllerConfig = {
   rampMs: 8000,
+  // ~3 steer steps at stepMs 1000: fast enough to feel caused by the vote, still gradual for Lyria.
+  voteRampMs: 2500,
   stepMs: 1000,
   noVoteEvolveMs: 45_000,
   // Lyria emits 2 s chunks and applies steers with up to ~2 s control lag; the player buffer is added on top.

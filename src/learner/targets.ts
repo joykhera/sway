@@ -56,6 +56,33 @@ export function projectFeatures(input: FeatureBlend, fallback: FeatureBlend = {}
   return result;
 }
 
+/**
+ * One step toward a feature the listener picked: strengthen it if it's playing,
+ * otherwise bring it in at a step's intensity. A full group (2 genres or
+ * instruments, 1 mood or texture) gives up its weakest member to make room.
+ */
+export function nudgeFeatures(features: FeatureBlend, id: FeatureId, step = P.nudgeStep): FeatureBlend {
+  const next = sanitizeFeatures(features);
+  const group = GROUP_IDS.find((g) => (FEATURE_GROUPS[g] as readonly FeatureId[]).includes(id));
+  if (!group) return projectFeatures(next);
+  const current = next[id] ?? 0;
+  if (current > 0) {
+    next[id] = Math.min(P.maxIntensity, current + step);
+  } else {
+    const limit = group === 'genre' || group === 'instrument' ? 2 : 1;
+    const members = activeIds(next, group).sort((a, b) => next[a]! - next[b]!);
+    if (members.length >= limit) {
+      // Take over the weakest member's place, so the swap is a step, not a jump.
+      const weakest = members[0]!;
+      next[id] = next[weakest]!;
+      delete next[weakest];
+    } else {
+      next[id] = Math.max(P.minActiveIntensity, step);
+    }
+  }
+  return projectFeatures(next);
+}
+
 export type Phrasing = {
   /** Prompts whose vocabulary phrasings are kept for features that stay active. */
   keep?: readonly WeightedPrompt[];

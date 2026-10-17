@@ -219,11 +219,10 @@ describe('PlayerScreen — optional music requests', () => {
 });
 
 describe('PlayerScreen — pre-start view', () => {
-  it('idle shows the wordmark, tagline, and a start button that calls start() once', () => {
+  it('idle shows the wordmark and a start button that calls start() once', () => {
     const f = makeFake();
     render(<PlayerScreen controller={f.controller} />);
     expect(screen.getByText('sway')).toBeTruthy();
-    expect(screen.getByText(/infinite instrumental stream/)).toBeTruthy();
     fireEvent.click(screen.getByRole('button', { name: 'start listening' }));
     expect(f.start).toHaveBeenCalledTimes(1);
   });
@@ -302,7 +301,7 @@ describe('PlayerScreen — pre-start view', () => {
     f.controller.setPurpose = vi.fn((purpose) => { calls.push(purpose); });
     f.start.mockImplementation(() => {
       calls.push('start');
-      return new Promise(() => {}); // audio initialization may remain pending
+      return new Promise(() => { }); // audio initialization may remain pending
     });
     render(<PlayerScreen controller={f.controller} />);
 
@@ -552,6 +551,59 @@ describe('PlayerScreen — active session view', () => {
     expect(f.vote.mock.calls[1]?.[0]).toBe('down');
   });
 
+  it('shows the musical identity in the now-playing panel when the controller emits one', async () => {
+    const f = makeFake({
+      status: 'playing',
+      signature: {
+        genre: 'lofi',
+        instrument: 'piano',
+        mood: 'calm',
+        texture: 'sparse',
+        focus: 'warm ambient pads',
+      },
+    });
+    const { container } = render(<PlayerScreen controller={f.controller} />);
+    await act(async () => { });
+    expect(container.querySelector('.now')).toBeTruthy();
+    expect(container.querySelector('.now__field[data-field="genre"] .now__value')?.textContent).toBe('lofi');
+    expect(container.querySelector('.now__field[data-field="instrument"] .now__value')?.textContent).toBe('piano');
+    expect(container.querySelector('.now__field[data-field="mood"] .now__value')?.textContent).toBe('calm');
+    expect(container.querySelector('.now__field[data-field="texture"] .now__value')?.textContent).toBe('sparse');
+    expect(container.querySelector('.now__focus')?.textContent).toContain('warm ambient pads');
+  });
+
+  it('partial signatures drop absent fields', async () => {
+    const f = makeFake({
+      status: 'playing',
+      signature: { mood: 'calm', focus: 'soft keys' },
+    });
+    const { container } = render(<PlayerScreen controller={f.controller} />);
+    await act(async () => { });
+    expect(container.querySelectorAll('.now__field')).toHaveLength(1);
+    expect(container.querySelector('.now__field[data-field="mood"] .now__value')?.textContent).toBe('calm');
+    expect(container.querySelector('.now__focus')?.textContent).toContain('soft keys');
+  });
+
+  it('renders no now-playing block while the signature is absent', async () => {
+    const f = makeFake({ status: 'playing' });
+    const { container } = render(<PlayerScreen controller={f.controller} />);
+    await act(async () => { });
+    expect(container.querySelector('.now__block')).toBeNull();
+  });
+
+  it('updates the panel on a signature-only emission, status untouched', async () => {
+    const f = makeFake({ status: 'playing' });
+    const { container } = render(<PlayerScreen controller={f.controller} />);
+    await act(async () => { });
+    expect(container.querySelector('.now__block')).toBeNull();
+    await act(async () => {
+      f.emit({ status: 'playing', signature: { genre: 'ambient', texture: 'drone' } });
+    });
+    expect(container.querySelector('.now__field[data-field="genre"] .now__value')?.textContent).toBe('ambient');
+    expect(container.querySelector('.now__field[data-field="texture"] .now__value')?.textContent).toBe('drone');
+    expect(screen.getByText('playing')).toBeTruthy(); // status label unchanged
+  });
+
   it('"end session" calls stop()', async () => {
     const f = makeFake({ status: 'playing' });
     render(<PlayerScreen controller={f.controller} />);
@@ -582,12 +634,24 @@ describe('PlayerScreen — active session view', () => {
     const f = makeFake({ status: 'playing' });
     const { unmount } = render(<PlayerScreen controller={f.controller} />);
     await act(async () => { });
-    expect(f.listenerCount()).toBe(1);
+    // ≥1: PlayerScreen subscribes; the visualizer may subscribe too (signature/telemetry).
+    expect(f.listenerCount()).toBeGreaterThanOrEqual(1);
     unmount();
     expect(f.listenerCount()).toBe(0);
     // a later emission must not touch the (unmounted) tree
     await act(async () => {
       f.emit({ status: 'stopped' });
     });
+  });
+});
+
+describe('PlayerScreen — leaning toward a style', () => {
+  it('offers keyboard-reachable buttons that nudge toward each style', () => {
+    const f = makeFake({ status: 'playing' });
+    const nudge = vi.fn();
+    render(<PlayerScreen controller={{ ...f.controller, nudge }} />);
+    fireEvent.click(screen.getByRole('button', { name: 'more jazz' }));
+    expect(nudge).toHaveBeenCalledWith('jazz');
+    expect(f.vote).not.toHaveBeenCalled();
   });
 });

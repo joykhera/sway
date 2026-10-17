@@ -3,7 +3,7 @@ import type { WeightedPrompt } from '../../shared/protocol';
 import type { MusicIntent } from '../../shared/intent';
 import { createRng, hashText, normalizeSeed } from '../rng';
 import type { Rng } from '../rng';
-import { activeIds, fingerprint, signature } from '../targets';
+import { activeIds, fingerprint, nudgeFeatures, signature } from '../targets';
 import { PARAMETERS as P } from './constants';
 import { dot, factor, solve, uncertainty, vector } from './model';
 import { CRAZY_VARIANTS, renderTarget } from './phrasing';
@@ -271,6 +271,20 @@ export function evolveNoVote(args: { state: LearnerState; target: Target; step?:
   const step = Number.isFinite(args.step) ? Math.max(0, Math.trunc(args.step!)) : fallbackStep;
   const rng = createRng(hashText(`${fingerprint(args.target.features)}:${step}`, args.state.seed));
   return choose(args.state, args.target, args.target, 'variation', step, rng, undefined, validatedIntent(args.intent));
+}
+
+/**
+ * Steer one step toward a feature the listener picked. Not a vote: no evidence
+ * changes, and the target keeps its decision and wording for retained features.
+ */
+export function nudge(args: { state: LearnerState; target: Target; feature: FeatureId }): Target {
+  const salt = phrasingSalt(args.target, args.state);
+  const features = nudgeFeatures(args.target.features, args.feature);
+  return {
+    ...args.target,
+    ...renderTarget(features, {}, { keep: args.target.prompts, salt }, args.state.purpose),
+    phrasingSalt: salt,
+  };
 }
 
 export function inspect(state: LearnerState, target: Target) {

@@ -24,3 +24,13 @@ export const STATS_INTERVAL_MS = 100;
 export const PENDING_CHUNK_LIMIT = 256;
 /** Render quantum of the Web Audio API. */
 export const RENDER_QUANTUM_FRAMES = 128;
+
+/** Rolling window for rendered-signal telemetry (energyRms/brightnessHz/pitchHz). */
+export const TELEMETRY_WINDOW_MS = 300;
+/** Window RMS below this counts as silence: pitchHz reports null — the
+ *  zero-crossing rate of near-noise reads as garbage pitch, not a tone. */
+export const TELEMETRY_SILENCE_FLOOR = 0.002;
+/** Fixed slots in the per-render-call telemetry accumulator ring. Sized so the
+ *  ~300 ms window survives render calls down to ~28 frames (production quanta
+ *  are always 128); smaller calls simply shorten the effective window. */
+export const TELEMETRY_SLOTS = 512;

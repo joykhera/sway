@@ -8,10 +8,18 @@
 // and its tests — never hard-depends on the audio barrel's contents. If the import
 // is unavailable, a small built-in procedural generator keeps standalone mode alive.
 
-import { DEFAULT_SAMPLE_RATE_HZ } from '../audio/constants.ts';
+import { DEFAULT_SAMPLE_RATE_HZ, TELEMETRY_SILENCE_FLOOR, TELEMETRY_WINDOW_MS } from '../audio/constants.ts';
 import type { PCMPlayer } from '../audio/types.ts';
 import type { MockPreset } from '../audio/index.ts';
-import type { MusicSessionController, SessionUiState, Vote } from './contracts.ts';
+import type {
+  MomentTarget,
+  MusicSessionController,
+  MusicSignature,
+  SessionUiState,
+  StreamLevels,
+  Vote,
+  VoteDecision,
+} from './contracts.ts';
 
 /** Platform timer handle: number in browsers, Timeout under Node typings. */
 type TimerHandle = unknown;
@@ -21,6 +29,8 @@ type ClearTimerFn = (handle: TimerHandle) => void;
 export type MockPcmGeneratorLike = {
   /** Returns up to `maxMs` of interleaved stereo s16le PCM at the session sample rate. */
   nextChunk(maxMs?: number): ArrayBuffer;
+  /** The preset currently being generated, if the generator exposes it. */
+  readonly preset?: MockPreset;
   setPreset?(p: MockPreset): void;
   cyclePreset?(): MockPreset;
   nudge?(): void;
@@ -46,6 +56,27 @@ export type MockControllerOptions = {
 };
 
 const ACTIVE: ReadonlySet<string> = new Set(['connecting', 'playing']);
+const ZERO_LEVELS: StreamLevels = { energy: 0, brightnessHz: 0, pitchHz: null, bufferedMs: 0, underruns: 0, generation: 0 };
+
+/** Whisperable identity per preset — honest words for what each generator preset sounds like. */
+const PRESET_SIGNATURES: Readonly<Record<string, MusicSignature>> = {
+  dusk: { genre: 'ambient', instrument: 'synth pad', mood: 'calm', texture: 'layered', focus: 'dusk' },
+  glass: { genre: 'ambient', instrument: 'bell tones', mood: 'dreamy', texture: 'sparse', focus: 'glass' },
+  ember: { genre: 'lofi', instrument: 'warm keys', mood: 'hopeful', texture: 'layered', focus: 'ember' },
+  tide: { genre: 'ambient', instrument: 'deep drones', mood: 'melancholic', texture: 'layered', focus: 'tide' },
+};
+
+/**
+ * The feature blend each preset stands in for — what the visualizer "hears" in
+ * `?mock` mode. Keys are real feature ids so the look/taste lanes behave the same
+ * as with the live controller.
+ */
+const PRESET_FEATURES: Readonly<Record<string, Record<string, number>>> = {
+  dusk: { ambient: 0.6, synth: 0.5, calm: 0.7, layered: 0.4 },
+  glass: { ambient: 0.5, percussion: 0.35, dreamy: 0.65, sparse: 0.6 },
+  ember: { lofi: 0.65, piano: 0.5, hopeful: 0.55, layered: 0.4 },
+  tide: { ambient: 0.55, strings: 0.45, melancholic: 0.6, layered: 0.5 },
+};
 
 export class MockMusicSessionController implements MusicSessionController {
   private readonly playerFactory?: () => PCMPlayer;
@@ -64,6 +95,7 @@ export class MockMusicSessionController implements MusicSessionController {
   };
 
   private readonly listeners = new Set<(state: SessionUiState) => void>();
+  private readonly statsListeners = new Set<(levels: StreamLevels) => void>();
   private state: SessionUiState = { status: 'idle' };
 
   private player: PCMPlayer | null = null;
@@ -74,7 +106,22 @@ export class MockMusicSessionController implements MusicSessionController {
   private runId = 0;
   private sessionStartMs = 0;
   private generatedMs = 0;
+  private generation = 0;
   private lastSteerMs = 0;
+  /** Issue #9 mirror: the latest vote's explanation + its ETA to the ears. */
+  private decision: VoteDecision | undefined;
+  private pendingSteer: { vote: Vote; at: number; etaMs: number; generationAtVote: number; doneAt?: number } | undefined;
+  private nowPlayingSig: MusicSignature | undefined;
+  /** Mock learner scores: votes add/subtract the audible blend. Persists across restarts, like the real controller. */
+  private taste: Record<string, number> = {};
+  /** Last known generator preset (from `preset`, `cyclePreset`'s return, or `setPreset`). */
+  private activePreset: string | undefined;
+  /** Rolling ~TELEMETRY_WINDOW_MS aggregates over recently pumped PCM. */
+  private statsWindow: { ms: number; sumSq: number; crossings: number; frames: number; samples: number }[] = [];
+  private statsWindowMs = 0;
+  /** Previous left-channel sample (normalized) — zero-crossing detection across chunk edges. */
+  private statsPrevLeft = 0;
+  private latestStats: StreamLevels = ZERO_LEVELS;
 
   constructor(options: MockControllerOptions = {}) {
     this.playerFactory = options.playerFactory;
@@ -103,9 +150,19 @@ export class MockMusicSessionController implements MusicSessionController {
     };
   }
 
+  subscribeStats(listener: (levels: StreamLevels) => void): () => void {
+    this.statsListeners.add(listener);
+    // Synchronous snapshot: the rolling estimate while playing, zeros when idle.
+    listener(this.state.status === 'playing' ? this.latestStats : ZERO_LEVELS);
+    return () => {
+      this.statsListeners.delete(listener);
+    };
+  }
+
   async start(): Promise<void> {
     if (ACTIVE.has(this.state.status)) return; // idempotent while connecting/playing
     const id = ++this.runId;
+    this.activePreset = undefined; // no stale preset while connecting — resolved generator sets it below
     this.setStatus('connecting');
 
     if (!this.playerFactory) {
@@ -151,14 +208,41 @@ export class MockMusicSessionController implements MusicSessionController {
     this.sessionStartMs = t0;
     this.lastSteerMs = t0;
     this.generatedMs = 0;
+    this.activePreset = this.generator?.preset;
+    this.statsWindow = [];
+    this.statsWindowMs = 0;
+    this.statsPrevLeft = 0;
+    this.generation = 0;
+    this.decision = undefined;
+    this.pendingSteer = undefined;
+    this.nowPlayingSig = this.signatureNow();
+    this.latestStats = ZERO_LEVELS;
     this.setStatus('playing');
     this.pump(); // first burst immediately, then on the interval
+    this.publishStats();
     this.pumpHandle = this.timers.setInterval(() => this.tick(), this.tickMs);
   }
 
   vote(v: Vote): void {
     if (this.state.status !== 'playing') return;
     this.lastSteerMs = this.now(); // reset the idle-evolve clock
+    // Mirror the learner: the vote judges the blend that was audible, not the pending steer.
+    const blend = this.audibleBlend();
+    for (const [id, w] of Object.entries(blend)) this.taste[id] = (this.taste[id] ?? 0) + (v === 'up' ? w : -w);
+    const from = this.signatureNow();
+    const buffered = this.player?.getBufferedDurationMs?.() ?? 0;
+    this.decision = {
+      vote: v,
+      kind: v === 'down' ? 'redirect' : 'hold',
+      reason:
+        v === 'down'
+          ? `moving away from ${from?.focus ?? 'that blend'}, trying something else`
+          : `keeping ${from?.focus ?? 'this direction'}`,
+      phase: 'listening',
+      at: this.now(),
+    };
+    this.pendingSteer = { vote: v, at: this.now(), etaMs: this.steerDelayMs + buffered, generationAtVote: this.generation };
+    this.refreshSignature(); // re-emit so the decision reaches listeners now
     if (this.voteHandle !== null) {
       this.timers.clearTimeout(this.voteHandle); // debounce: latest vote wins
       this.voteHandle = null;
@@ -166,10 +250,69 @@ export class MockMusicSessionController implements MusicSessionController {
     const gen = this.generator;
     this.voteHandle = this.timers.setTimeout(() => {
       this.voteHandle = null;
-      if (v === 'down') gen?.cyclePreset?.();
-      else gen?.nudge?.();
+      if (v === 'down') {
+        const next = gen?.cyclePreset?.();
+        this.activePreset = typeof next === 'string' ? next : (gen?.preset ?? this.activePreset);
+      } else {
+        gen?.nudge?.();
+        this.activePreset = gen?.preset ?? this.activePreset;
+      }
+      this.refreshSignature(); // preset steers update the identity — status stays 'playing'
     }, this.steerDelayMs);
-    // Deliberately no emit — votes never change status.
+    // No status emit on the vote itself — votes never change status.
+  }
+
+  /** The mock tone's spectrum, so the visualizer reacts in `?mock` too. */
+  getAnalyser(): AnalyserNode | null {
+    return this.player?.getAnalyser?.() ?? null;
+  }
+
+  /** The blend currently audible — the active preset's feature mix. Empty when silent. */
+  getAudibleFeatures(): Record<string, number> {
+    return this.state.status === 'playing' ? this.audibleBlend() : {};
+  }
+
+  /** Scores accumulated from votes against the audible blend — mirrors the learner's scores. */
+  getTaste(): Record<string, number> {
+    return { ...this.taste };
+  }
+
+  /** What is audible now, as a target recallMoment can steer back to. Null when not playing. */
+  captureMoment(): MomentTarget | null {
+    if (this.state.status !== 'playing') return null;
+    const name = this.generator?.preset ?? this.activePreset;
+    if (!name) return null;
+    return {
+      features: this.audibleBlend(),
+      // The preset name round-trips through the prompt text so recallMoment can restore it.
+      prompts: [{ text: name, weight: 1 }],
+    };
+  }
+
+  /**
+   * Steer straight back to a captured moment's preset. Not a vote: scores,
+   * the decision, and the pending-steer meter are all untouched.
+   */
+  recallMoment(moment: MomentTarget): void {
+    if (this.state.status !== 'playing' || moment.prompts.length === 0) return;
+    this.lastSteerMs = this.now(); // a steer resets the idle-evolve clock, like a vote
+    if (this.voteHandle !== null) {
+      this.timers.clearTimeout(this.voteHandle); // a pending vote steer is superseded, like a retarget
+      this.voteHandle = null;
+    }
+    const name = moment.prompts[0]!.text;
+    // A name the generator doesn't know (custom/injected generators) is ignored, not fatal.
+    try {
+      this.generator?.setPreset?.(name as MockPreset);
+    } catch { /* unknown preset */ }
+    this.activePreset = name;
+    this.refreshSignature(); // steering updates the identity — status stays 'playing'
+  }
+
+  /** Feature mix of the current preset; unknown presets fall back to their bare name. */
+  private audibleBlend(): Record<string, number> {
+    const name = this.generator?.preset ?? this.activePreset;
+    return { ...(name ? (PRESET_FEATURES[name] ?? { [name]: 1 }) : {}) };
   }
 
   stop(): void {
@@ -187,6 +330,15 @@ export class MockMusicSessionController implements MusicSessionController {
     const player = this.player;
     this.player = null;
     this.generator = null;
+    this.activePreset = undefined;
+    this.statsWindow = [];
+    this.statsWindowMs = 0;
+    this.statsPrevLeft = 0;
+    this.generation = 0;
+    this.decision = undefined;
+    this.pendingSteer = undefined;
+    this.nowPlayingSig = undefined;
+    this.latestStats = ZERO_LEVELS;
     if (player) void player.close();
     this.setStatus('stopped');
   }
@@ -199,17 +351,48 @@ export class MockMusicSessionController implements MusicSessionController {
   }
 
   private setStatus(status: string, lastError?: string): void {
-    this.state = lastError === undefined ? { status } : { status, lastError };
+    const state: SessionUiState = lastError === undefined ? { status } : { status, lastError };
+    const sig = this.signatureNow();
+    if (ACTIVE.has(status)) {
+      if (sig) state.signature = sig;
+      state.nowPlaying = this.nowPlayingSig;
+      state.decision = this.decision;
+    }
+    this.state = state;
     this.emit();
+  }
+
+  /** Recompute the signature from the current preset; emit only when it actually changed. */
+  private refreshSignature(): void {
+    if (!ACTIVE.has(this.state.status)) return;
+    const sig = this.signatureNow();
+    const prev = this.state.signature;
+    if (sig === prev) return;
+    if (sig && prev && sig.genre === prev.genre && sig.instrument === prev.instrument &&
+      sig.mood === prev.mood && sig.texture === prev.texture && sig.focus === prev.focus) return;
+    // The mock's generator swaps presets when the steer applies, so the audible
+    // blend and the target coincide — nowPlaying tracks the same words.
+    this.nowPlayingSig = sig ?? this.nowPlayingSig;
+    this.state = { ...this.state, signature: sig, nowPlaying: this.nowPlayingSig, decision: this.decision };
+    this.emit();
+  }
+
+  private signatureNow(): MusicSignature | undefined {
+    const name = this.generator?.preset ?? this.activePreset;
+    if (!name) return undefined;
+    return PRESET_SIGNATURES[name] ?? { focus: name };
   }
 
   private tick(): void {
     if (this.state.status !== 'playing') return;
     this.pump();
+    this.publishStats();
     const now = this.now();
     if (this.generator?.nudge && now - this.lastSteerMs >= this.idleEvolveMs) {
       this.lastSteerMs = now;
       this.generator.nudge();
+      this.activePreset = this.generator.preset ?? this.activePreset;
+      this.refreshSignature();
     }
   }
 
@@ -224,12 +407,99 @@ export class MockMusicSessionController implements MusicSessionController {
       // Generators may legally emit mid-frame (≢0 mod 4) chunks — only empties stall us.
       if (!(chunk instanceof ArrayBuffer) || chunk.byteLength === 0) break;
       this.generatedMs += (chunk.byteLength / frameBytes / this.sampleRateHz) * 1000;
+      this.accumulateStats(chunk);
+      this.generation++;
       try {
         player.enqueuePcm(chunk);
       } catch {
         break; // a closed/torn-down player swallows further chunks
       }
     }
+  }
+
+  /**
+   * Fold one pumped chunk into the rolling telemetry window: stereo RMS plus
+   * left-channel zero crossings — the same measurements the worklet reports.
+   */
+  private accumulateStats(chunk: ArrayBuffer): void {
+    if (chunk.byteLength % 2 !== 0) return; // not int16-aligned — skip rather than guess
+    const view = new Int16Array(chunk);
+    const n = view.length;
+    if (n === 0) return;
+    let sumSq = 0;
+    let crossings = 0;
+    let frames = 0;
+    let prev = this.statsPrevLeft;
+    for (let i = 0; i < n; i++) {
+      const s = view[i]! / 32768;
+      sumSq += s * s;
+      if ((i & 1) === 0) {
+        frames++;
+        if (prev !== 0 && s !== 0 && s < 0 !== prev < 0) crossings++;
+        if (s !== 0) prev = s;
+      }
+    }
+    this.statsPrevLeft = prev;
+    const ms = (frames / this.sampleRateHz) * 1000;
+    this.statsWindow.push({ ms, sumSq, crossings, frames, samples: n });
+    this.statsWindowMs += ms;
+    // Trim whole entries until the window fits — small chunks make this cheap.
+    while (this.statsWindowMs > TELEMETRY_WINDOW_MS && this.statsWindow.length > 1) {
+      this.statsWindowMs -= this.statsWindow.shift()!.ms;
+    }
+  }
+
+  /** Aggregate the rolling window into StreamLevels and push it to stats subscribers. */
+  private publishStats(): void {
+    let sumSq = 0;
+    let crossings = 0;
+    let frames = 0;
+    let samples = 0;
+    for (const e of this.statsWindow) {
+      sumSq += e.sumSq;
+      crossings += e.crossings;
+      frames += e.frames;
+      samples += e.samples;
+    }
+    const energy = samples > 0 ? Math.sqrt(sumSq / samples) : 0;
+    const windowSec = this.statsWindowMs / 1000;
+    // A periodic signal crosses zero twice per cycle → ZCR/2 tracks the dominant partial;
+    // on a mixed pad it reads as spectral brightness. Both fields share that one estimator.
+    const zcrHz = windowSec > 0 ? crossings / windowSec / 2 : 0;
+    const steer = this.steerProgress();
+    this.latestStats = {
+      energy,
+      brightnessHz: zcrHz,
+      pitchHz: energy > TELEMETRY_SILENCE_FLOOR && zcrHz > 0 ? zcrHz : null,
+      bufferedMs: this.player?.getBufferedDurationMs?.() ?? 0,
+      underruns: 0,
+      generation: this.generation,
+      steerProgress: steer.steerProgress,
+      steerVote: steer.steerVote,
+    };
+    if (this.statsListeners.size === 0) return;
+    for (const l of [...this.statsListeners]) l(this.latestStats);
+  }
+
+  /**
+   * 0..1 ETA to the vote landing in the ears — mirrors the real controller's
+   * estimate: eases along the clock but holds at 0.95 until BOTH the ETA has
+   * passed AND a new chunk has been generated since the vote.
+   */
+  private steerProgress(): { steerProgress: number | null; steerVote: Vote | null } {
+    const p = this.pendingSteer;
+    if (!p || this.state.status !== 'playing') return { steerProgress: null, steerVote: null };
+    const now = this.now();
+    const landed = this.generation > p.generationAtVote;
+    if (landed && now - p.at >= p.etaMs) {
+      p.doneAt ??= now;
+      if (now - p.doneAt > 600) {
+        this.pendingSteer = undefined;
+        return { steerProgress: null, steerVote: null };
+      }
+      return { steerProgress: 1, steerVote: p.vote };
+    }
+    return { steerProgress: Math.min(0.95, Math.max(0, (now - p.at) / p.etaMs)), steerVote: p.vote };
   }
 
   private async makeGenerator(): Promise<MockPcmGeneratorLike> {
@@ -269,6 +539,11 @@ class BasicMockPcmGenerator implements MockPcmGeneratorLike {
   private wobble = 0; // transient detune applied by nudge(), decays over time
 
   constructor(private readonly sampleRateHz: number) { }
+
+  /** The preset currently being generated. */
+  get preset(): MockPreset {
+    return BASIC_PRESETS[this.presetIndex % BASIC_PRESETS.length]!.name as MockPreset;
+  }
 
   nextChunk(maxMs = 60): ArrayBuffer {
     const frames = Math.max(1, Math.round((this.sampleRateHz * maxMs) / 1000));
