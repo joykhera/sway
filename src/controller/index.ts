@@ -52,6 +52,7 @@ export class SessionController implements MusicSessionController {
   private evolveTimer: ReturnType<typeof setTimeout> | undefined;
   private retryTimer: ReturnType<typeof setTimeout> | undefined;
   private attempts = 0;
+  private runId = 0; // bumped by start() and stop() so a superseded start() cannot connect or fail the new session
   // What the current socket's `start` message carried; a vote before `ready` may have moved past it.
   private started: { features: FeatureBlend; prompts: WeightedPrompt[] } | undefined;
 
@@ -69,14 +70,16 @@ export class SessionController implements MusicSessionController {
 
   async start(): Promise<void> {
     if (this.state.status !== 'idle' && this.state.status !== 'stopped' && this.state.status !== 'error') return;
+    const run = ++this.runId;
     this.setState({ status: 'connecting' });
     try {
       // First statement so it runs inside the tap handler's gesture.
       await this.deps.player.initializeFromUserGesture();
     } catch (err) {
+      if (run !== this.runId) return;
       return this.fail(`Audio could not start: ${String(err instanceof Error ? err.message : err)}`);
     }
-    if (this.status() !== 'connecting') return; // stopped while initializing
+    if (run !== this.runId || this.status() !== 'connecting') return; // stopped or restarted while initializing
     this.attempts = 0;
     this.connect();
   }
@@ -98,6 +101,7 @@ export class SessionController implements MusicSessionController {
 
   stop(): void {
     if (this.state.status === 'idle' || this.state.status === 'stopped') return;
+    this.runId++;
     this.transport?.send({ type: 'stop' });
     this.teardownConnection();
     void this.deps.player.close().catch(() => {});
