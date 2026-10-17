@@ -1,4 +1,4 @@
-import { FEATURE_IDS, GROUP_IDS } from '../vocabulary';
+import { FEATURE_IDS, FEATURE_OF_TEXT, GROUP_IDS } from '../vocabulary';
 import type { WeightedPrompt } from '../../shared/protocol';
 import type { MusicIntent } from '../../shared/intent';
 import { createRng, hashText, normalizeSeed } from '../rng';
@@ -6,7 +6,7 @@ import type { Rng } from '../rng';
 import { activeIds, fingerprint, signature } from '../targets';
 import { PARAMETERS as P } from './constants';
 import { dot, factor, solve, uncertainty, vector } from './model';
-import { renderTarget } from './phrasing';
+import { CRAZY_VARIANTS, renderTarget } from './phrasing';
 import { RECIPES, changedGroups, distance, purposePrior } from './recipes';
 import { intentPrior, matchesIntent, validatedIntent, withIntentPrompts } from './intent';
 import type { Decision, FeatureBlend, FeatureId, LearnerState, Purpose, Target } from './types';
@@ -47,10 +47,20 @@ function phrasingSalt(target: Target, state: LearnerState): number {
   return Number.isFinite(target.phrasingSalt) ? normalizeSeed(target.phrasingSalt!) : state.seed;
 }
 
+function retainedPhrasing(target: Target, state: LearnerState, intent?: MusicIntent): readonly WeightedPrompt[] {
+  // Clearing a request must restore the profile's special wording for retained
+  // controls too. Outside that renderer-context change, keep existing phrases.
+  return !intent && target.intentRendering && state.purpose === 'crazy'
+    ? target.prompts.filter(({ text }) => !CRAZY_VARIANTS[FEATURE_OF_TEXT.get(text)!]) : target.prompts;
+}
+
 function withDecision(target: Target, kind: Decision['kind'], reason: string, state: LearnerState, step: number, salt: number, keep: readonly WeightedPrompt[] = target.prompts, styleEscape = false, intent?: MusicIntent): Target {
   const current = context(state, target.features);
   return {
-    ...withIntentPrompts(renderTarget(target.features, {}, { keep, salt }, state.purpose), intent),
+    // Intent is session context, not a saved-profile switch. Neutral vocabulary
+    // cannot retain Crazy's fast/frenetic embellishments over a new slow request.
+    ...withIntentPrompts(renderTarget(target.features, {}, { keep, salt }, intent ? 'explore' : state.purpose), intent),
+    ...(intent ? { intentRendering: true as const } : {}),
     phrasingSalt: salt,
     lastDecision: {
       kind,
@@ -141,7 +151,7 @@ function choose(state: LearnerState, base: Target, pending: Target, mode: 'initi
       : 'Trying another direction after a dislike; preference evidence is still uncertain.'
       : broad ? 'Testing a plausible alternative while keeping room for discovery; silence adds no preference evidence.'
         : 'Adding a nearby variation after exposure; likes guide the family without freezing the music.';
-  return withDecision(best.target, kind, reason, state, step, phrasingSalt(pending, state), mode === 'initial' ? [] : pending.prompts, styleEscape, intent);
+  return withDecision(best.target, kind, reason, state, step, phrasingSalt(pending, state), mode === 'initial' ? [] : retainedPhrasing(pending, state, intent), styleEscape, intent);
 }
 
 export function initialTarget(state: LearnerState, intent?: MusicIntent): Target {
@@ -238,7 +248,7 @@ export function processVote(args: {
   const salt = phrasingSalt(args.currentTarget, state);
   // A stable salt restores an outgoing feature's wording even when a mid-ramp
   // like brings it back after it disappeared from the pending destination.
-  const base = renderTarget(args.audible, args.currentTarget.features, { keep: args.currentTarget.prompts, salt }, state.purpose);
+  const base = renderTarget(args.audible, args.currentTarget.features, { keep: retainedPhrasing(args.currentTarget, state, intent), salt }, intent ? 'explore' : state.purpose);
   const step = args.currentTarget.lastDecision?.step ?? 0;
   // Learn from what was actually heard, but a Like during a request transition
   // must not restore outgoing forbidden ingredients to the new destination.

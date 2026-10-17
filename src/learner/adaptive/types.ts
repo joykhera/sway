@@ -36,5 +36,7 @@ export type Target = BaseTarget & {
   lastDecision?: Decision;
   /** Stable per-session renderer seed, retained when features leave and return. */
   phrasingSalt?: number;
+  /** Request wording suppresses profile embellishments until the request clears. */
+  intentRendering?: true;
 };
 export type { FeatureBlend, FeatureId };

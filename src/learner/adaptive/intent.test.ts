@@ -9,6 +9,7 @@ import { adaptiveLearner, isAdaptiveState } from './adapter';
 import { applyIntent, createLearner, evolveNoVote, initialTarget, processVote } from './index';
 import { intentPrior, matchesIntent } from './intent';
 import { RECIPES } from './recipes';
+import { CRAZY_VARIANTS, renderTarget } from './phrasing';
 import type { LearnerState, Purpose, Target } from './types';
 
 const intent = (patch: Partial<MusicIntent> = {}): MusicIntent => ({
@@ -188,6 +189,34 @@ describe('session intent, separate from preference evidence', () => {
     const variation = learner.evolveNoVote({ state: result.state, target: result.target, intent: request, step: 7 });
     expect(matchesIntent(variation.features, request)).toBe(true);
     expect(variation).toHaveProperty('lastDecision.step', 7);
+  });
+
+  it('uses neutral wording for active intent on Crazy and restores profile wording when cleared', () => {
+    const state = freeze(createLearner(42, 'crazy'));
+    const snapshot = structuredClone(state);
+    const target = initialTarget(state);
+    const crazyTexts = new Set(Object.values(CRAZY_VARIANTS).flat());
+    expect(target.prompts.some(prompt => crazyTexts.has(prompt.text))).toBe(true);
+    const request = intent({ requiredFeatures: [], excludedFeatures: [],
+      contextPrompt: 'Slow unfolding instrumental phrases with unhurried motion', avoid: [] });
+    const applied = applyIntent({ state, currentTarget: target, intent: request });
+    expect(applied.intentRendering).toBe(true);
+    expect(applied.prompts.some(prompt => crazyTexts.has(prompt.text))).toBe(false);
+    expect(applied.prompts.map(prompt => prompt.text).join(' ')).not.toMatch(/fast|frenetic|feverish/);
+    // Even deliberately retained Crazy wording cannot leak through an intent Like.
+    const oldWording = { ...applied, prompts: target.prompts };
+    const held = processVote({ state, audible: target.features, currentTarget: oldWording,
+      vote: 'up', evidenceWeight: 0, intent: request }).target;
+    expect(held.prompts.some(prompt => crazyTexts.has(prompt.text))).toBe(false);
+    expect(held.prompts).toContainEqual({ text: request.contextPrompt, weight: 0.5 });
+    const next = evolveNoVote({ state, target: held, step: 1, intent: request });
+    expect(next.prompts.some(prompt => crazyTexts.has(prompt.text))).toBe(false);
+    const cleared = applyIntent({ state, currentTarget: applied });
+    expect(cleared.intentRendering).toBeUndefined();
+    expect(cleared.prompts).toEqual(renderTarget(cleared.features, {}, { salt: cleared.phrasingSalt }, 'crazy').prompts);
+    expect(cleared.prompts.some(prompt => crazyTexts.has(prompt.text))).toBe(true);
+    expect(state).toEqual(snapshot);
+    expect(state.purpose).toBe('crazy');
   });
 
   it('preserves the exact pre-intent trace when no intent is supplied', () => {
