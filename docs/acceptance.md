@@ -21,7 +21,7 @@
 | 7 | Refresh | Scores reset, new random start | |
 | 8 | Security | Key absent from bundled JS, network panel and error text; beyond `MAX_STREAMS` the relay refuses (relay binds 127.0.0.1) | |
 
-Note: Lyria's session cap is about 10 min (unconfirmed, see `docs/lyria-smoke-report.md`). The relay reconnects upstream itself (`reconnecting`, then a fresh `ready`); the controller keeps its ramp state and the player must reconfigure without double-playing.
+Note: Lyria hard-caps sessions at 10:00 (confirmed, see `docs/lyria-smoke-report.md`; expect about 5 s of silence at each cap). The relay reconnects upstream itself (`reconnecting`, then a fresh `ready`); the controller keeps its ramp state and the player must reconfigure without double-playing.
 
 ## Measuring the downvote response (test 2)
 
