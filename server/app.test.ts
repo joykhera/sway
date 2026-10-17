@@ -55,7 +55,7 @@ describe('relay (mock mode)', () => {
     await until(() => binary.length >= 3);
     expect(json.slice(0, 3)).toEqual([
       { type: 'status', state: 'connecting' },
-      { type: 'ready', audio: { format: 'pcm_s16le', sampleRateHz: 48000, channels: 2 } },
+      { type: 'ready', audio: { format: 'pcm_s16le', sampleRateHz: 48000, channels: 2 }, prefetch: true },
       { type: 'status', state: 'playing' },
     ]);
     expect(binary.every((b) => b.length % 4 === 0)).toBe(true);
@@ -74,5 +74,52 @@ describe('relay (mock mode)', () => {
     await until(() => relay.sessions.size === 0);
     expect(session?.state).toBe('closed');
     expect(slots.inUse).toBe(0);
+  });
+
+  it('prefetches and resumes through the existing WebSocket without replacing its upstream', async () => {
+    await relay.close();
+    const starts = vi.fn();
+    const pauses = vi.fn();
+    const resumes = vi.fn();
+    const closes = vi.fn();
+    relay = createRelay({ slots, createUpstream: events => ({
+      async start() {
+        starts();
+        events.onAudio(Buffer.alloc(48000 * 4 * 3, 1), { sampleRateHz: 48000, channels: 2 });
+      },
+      async steer() {},
+      pause: pauses,
+      resume() {
+        resumes();
+        events.onAudio(Buffer.alloc(4800 * 4, 2), { sampleRateHz: 48000, channels: 2 });
+      },
+      close: closes,
+    }) });
+    port = await relay.listen(0);
+    const ws = new WebSocket(`ws://127.0.0.1:${port}${MUSIC_WS_PATH}`);
+    const messages: ServerMessage[] = [];
+    const audio: Buffer[] = [];
+    ws.on('message', (data, binary) => {
+      if (binary) audio.push(data as Buffer);
+      else messages.push(JSON.parse(data.toString()) as ServerMessage);
+    });
+    await new Promise(resolve => ws.on('open', resolve));
+    ws.send(JSON.stringify({ type: 'start', prompts: [{ text: 'piano', weight: 1 }], prefetchMs: 3000 }));
+    await until(() => messages.some(message => message.type === 'status' && message.state === 'paused'));
+    expect(audio.map(chunk => chunk[0])).toEqual([1]);
+    expect(pauses).toHaveBeenCalledOnce();
+    expect(slots.inUse).toBe(1);
+    ws.send(JSON.stringify({ type: 'resume' }));
+    await until(() => audio.length === 2);
+    expect(audio.map(chunk => chunk[0])).toEqual([1, 2]);
+    expect(starts).toHaveBeenCalledOnce();
+    expect(resumes).toHaveBeenCalledOnce();
+    expect(messages.filter(message => message.type === 'ready')).toHaveLength(1);
+    expect(messages.filter(message => message.type === 'error')).toHaveLength(0);
+    ws.send(JSON.stringify({ type: 'stop' }));
+    await until(() => slots.inUse === 0);
+    expect(closes).toHaveBeenCalledOnce();
+    ws.close();
+    await until(() => relay.sessions.size === 0);
   });
 });
