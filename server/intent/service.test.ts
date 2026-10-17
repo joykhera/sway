@@ -115,6 +115,69 @@ describe('bounded intent interpreter', () => {
     expect(JSON.parse(body.messages.at(-1).content).instruction).toContain('never an empty array');
     expect(JSON.parse(body.messages.at(-1).content).instruction).toContain('Do not select a page merely because it is first');
   });
+  const songSources = [
+    { id: 'wiki:20405', title: 'Miles Davis', url: 'https://en.wikipedia.org/?curid=20405', extract: 'An American jazz musician.' },
+    { id: 'wiki:4727159', title: 'So What (Miles Davis composition)', url: 'https://en.wikipedia.org/?curid=4727159', extract: 'So What is a modal jazz composition by Miles Davis.' },
+  ];
+  const soWhatLookup = { ...lookupPlan, lookupQuery: 'So What Miles Davis' };
+  it('repairs an artist-only citation when another source title covers the full song query', async () => {
+    const lookup = vi.fn().mockResolvedValue(songSources);
+    const fetcher = fetchSequence(completion(soWhatLookup), completion(ready({ references: ['wiki:20405'] })), completion(ready({ references: ['wiki:4727159'] })));
+    const result = await createIntentInterpreter({ apiKey: 'key', fetcher, lookup })({ ...input, text: 'Music inspired by So What by Miles Davis' }, signal());
+    expect(result).toMatchObject({ status: 'ready', intent: { references: [{ id: 'wiki:4727159', title: 'So What (Miles Davis composition)' }] } });
+    expect(lookup).toHaveBeenCalledExactlyOnceWith('So What Miles Davis', expect.any(AbortSignal));
+    expect(fetcher).toHaveBeenCalledTimes(3);
+    const lookupMessage = JSON.parse(JSON.parse(fetcher.mock.calls[1]![1]!.body as string).messages.at(-1).content);
+    expect(lookupMessage.fullQueryTitleMatchIds).toEqual(['wiki:4727159']);
+    const repair = JSON.parse(fetcher.mock.calls[2]![1]!.body as string).messages.at(-1).content;
+    expect(repair).toContain('intent.references must include at least one supplied page whose title covers the full lookup query: wiki:4727159');
+  });
+  it('accepts an exact-query citation immediately and leaves additional supplied references intact', async () => {
+    const fetcher = fetchSequence(completion(soWhatLookup), completion(ready({ references: ['wiki:20405', 'wiki:4727159'] })));
+    const result = await createIntentInterpreter({ apiKey: 'key', fetcher, lookup: vi.fn().mockResolvedValue(songSources) })(input, signal());
+    expect(result).toMatchObject({ status: 'ready', intent: { references: songSources.map(({ extract: _extract, ...reference }) => reference) } });
+    expect(fetcher).toHaveBeenCalledTimes(2);
+  });
+  it.each([false, true])('clarifies without attaching a source or exceeding the shared repair budget (repair already used: %s)', async (repairAlreadyUsed) => {
+    const artistOnly = ready({ references: ['wiki:20405'] });
+    const responses = repairAlreadyUsed
+      ? [completion('malformed'), completion(soWhatLookup), completion(artistOnly)]
+      : [completion(soWhatLookup), completion(artistOnly), completion(artistOnly)];
+    const fetcher = fetchSequence(...responses);
+    const lookup = vi.fn().mockResolvedValue(songSources);
+    const result = await createIntentInterpreter({ apiKey: 'key', fetcher, lookup })(input, signal());
+    expect(result).toMatchObject({ status: 'clarify', message: expect.stringContaining('Which song and artist') });
+    expect(result).not.toHaveProperty('intent');
+    expect(fetcher).toHaveBeenCalledTimes(3);
+    expect(lookup).toHaveBeenCalledTimes(1);
+  });
+  it.each([
+    ['“Ｓｏ　Ｗｈａｔ”—MILES DAVIS', 'So What (Miles Davis composition)'],
+    ['De\u0301ja\u0300 Vu Beyonce\u0301', 'Déjà Vu (Beyoncé song)'],
+  ])('normalizes punctuation, case and Unicode in query/title matching: %s', async (lookupQuery, title) => {
+    const sources = [songSources[0]!, { ...songSources[1]!, title }];
+    const fetcher = fetchSequence(completion({ ...lookupPlan, lookupQuery }), completion(ready({ references: ['wiki:20405'] })), completion(ready({ references: ['wiki:4727159'] })));
+    expect((await createIntentInterpreter({ apiKey: 'key', fetcher, lookup: vi.fn().mockResolvedValue(sources) })(input, signal())).status).toBe('ready');
+    expect(fetcher).toHaveBeenCalledTimes(3);
+    const lookupMessage = JSON.parse(JSON.parse(fetcher.mock.calls[1]![1]!.body as string).messages.at(-1).content);
+    expect(lookupMessage.fullQueryTitleMatchIds).toEqual(['wiki:4727159']);
+  });
+  it.each(['So What by Miles Davis', 'So Whatever Miles Davis', '?!'])('leaves existing grounding unchanged without a whole-token full-query title match: %s', async (lookupQuery) => {
+    const fetcher = fetchSequence(completion({ ...lookupPlan, lookupQuery }), completion(ready({ references: ['wiki:20405'] })));
+    expect(await createIntentInterpreter({ apiKey: 'key', fetcher, lookup: vi.fn().mockResolvedValue(songSources) })(input, signal())).toMatchObject({ status: 'ready', intent: { references: [{ id: 'wiki:20405' }] } });
+    expect(fetcher).toHaveBeenCalledTimes(2);
+    expect(JSON.parse(JSON.parse(fetcher.mock.calls[1]![1]!.body as string).messages.at(-1).content).fullQueryTitleMatchIds).toEqual([]);
+  });
+  it.each([
+    ['Miles Davis', 'Miles Davis', ['wiki:20405', 'wiki:4727159']],
+    ['Modal jazz', 'Modal jazz', ['wiki:20405']],
+  ])('continues to accept artist or style lookups without requiring a song page: %s', async (lookupQuery, title, matchingIds) => {
+    const sources = [{ ...songSources[0]!, title }, songSources[1]!];
+    const fetcher = fetchSequence(completion({ ...lookupPlan, lookupQuery }), completion(ready({ references: ['wiki:20405'] })));
+    expect((await createIntentInterpreter({ apiKey: 'key', fetcher, lookup: vi.fn().mockResolvedValue(sources) })(input, signal())).status).toBe('ready');
+    expect(fetcher).toHaveBeenCalledTimes(2);
+    expect(JSON.parse(JSON.parse(fetcher.mock.calls[1]![1]!.body as string).messages.at(-1).content).fullQueryTitleMatchIds).toEqual(matchingIds);
+  });
   it('repairs the observed song context, avoidance and missing references together without hardening preferences', async () => {
     const sources = [
       { id: 'wiki:20', title: 'Unrelated album', url: 'https://en.wikipedia.org/?curid=20', extract: 'An unrelated album.' },
