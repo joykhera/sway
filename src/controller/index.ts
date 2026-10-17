@@ -340,7 +340,8 @@ export class SessionController implements MusicSessionController {
   private hasAudiblePlayback(): boolean {
     if (!this.canHear()) return false;
     const stats = this.deps.player.getStats?.();
-    return !stats || (stats.state === 'ready' && !stats.priming);
+    return !stats || (stats.state === 'ready' && !stats.priming
+      && (stats.audioContextState === undefined || stats.audioContextState === 'running'));
   }
 
   private nextVariation(): Target {
@@ -355,7 +356,14 @@ export class SessionController implements MusicSessionController {
     if (!this.canHear()) return;
     this.evolveTimer = setTimeout(() => {
       this.evolveTimer = undefined;
-      if (this.canHear()) this.retarget(this.nextVariation());
+      if (!this.canHear()) return;
+      if (!this.hasAudiblePlayback()) {
+        // The connection can keep producing audio while its output is suspended.
+        // Retry the deadline without claiming exposure or advancing novelty.
+        this.scheduleEvolve();
+        return;
+      }
+      this.retarget(this.nextVariation());
     }, this.cfg.noVoteEvolveMs);
   }
 

@@ -9,7 +9,8 @@ afterEach(() => vi.useRealTimers());
 class MeasuredPlayer extends FakePlayer {
   playbackState = 'ready';
   priming = false;
-  getStats() { return { state: this.playbackState, priming: this.priming }; }
+  audioContextState = 'running';
+  getStats() { return { state: this.playbackState, priming: this.priming, audioContextState: this.audioContextState }; }
 }
 
 function rig(options: { auto?: boolean; purpose?: ListeningPurpose; config?: Partial<ControllerConfig>; learner?: Learner } = {}) {
@@ -27,6 +28,28 @@ function rig(options: { auto?: boolean; purpose?: ListeningPurpose; config?: Par
 }
 
 describe('audible feedback evidence', () => {
+  it('freezes heard attribution and evidence while AudioContext is suspended or interrupted, then resumes', async () => {
+    const r = rig();
+    await r.start();
+    r.controller.vote('down');
+    await vi.advanceTimersByTimeAsync(4000);
+    r.controller.vote('up');
+    const heard = { ambient: 0.375, jazz: 0.625 };
+    expect(r.vote.mock.calls.at(-1)![0].audible).toEqual(heard);
+    r.player.audioContextState = 'suspended';
+    await vi.advanceTimersByTimeAsync(1000);
+    r.controller.vote('down');
+    r.player.audioContextState = 'interrupted';
+    await vi.advanceTimersByTimeAsync(1000);
+    r.controller.vote('up');
+    expect(r.vote.mock.calls.slice(-2).map(([args]) => args.audible)).toEqual([heard, heard]);
+    r.player.audioContextState = 'running';
+    r.controller.vote('up');
+    expect(r.vote.mock.calls.map(([args]) => args.evidenceWeight)).toEqual([1, 1, 0, 0, 1]);
+    expect(r.vote.mock.calls.at(-1)![0].audible).not.toEqual(heard);
+    expect(r.vote.mock.results.at(-1)?.value.state.votes).toBe(5);
+  });
+
   it('counts and steers actions without evidence before readiness, during priming, or while reconnecting', async () => {
     const r = rig({ auto: false });
     await r.start();
@@ -168,6 +191,25 @@ describe('purpose lifecycle', () => {
 });
 
 describe('fresh variations and reconnects', () => {
+  it('retries freshness without variation or evidence while output is suspended, advancing only once running', async () => {
+    const r = rig({ config: { noVoteEvolveMs: 100 } });
+    r.player.audioContextState = 'suspended';
+    await r.start();
+    await vi.advanceTimersByTimeAsync(300);
+    r.player.audioContextState = 'interrupted';
+    await vi.advanceTimersByTimeAsync(200);
+    expect(r.evolve).not.toHaveBeenCalled();
+    expect(r.vote).not.toHaveBeenCalled();
+    expect(r.relay.last.steers).toHaveLength(0);
+    expect(r.log.mock.calls.filter(([event]) => event === 'evolve')).toHaveLength(0);
+    r.player.audioContextState = 'running';
+    await vi.advanceTimersByTimeAsync(100);
+    expect(r.evolve).toHaveBeenCalledTimes(1);
+    expect(r.evolve.mock.calls[0]![0].step).toBe(1);
+    expect(r.evolve.mock.calls[0]![0].state.votes).toBe(0);
+    expect(r.vote).not.toHaveBeenCalled();
+  });
+
   it('retains the actual start target when the relay reconnects before its first ready', async () => {
     const r = rig({ auto: false });
     await r.start();
