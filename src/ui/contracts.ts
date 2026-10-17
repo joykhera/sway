@@ -19,6 +19,9 @@ export type SessionUiState = {
   nowPlaying?: MusicSignature;
   /** What the learner decided on the latest vote (from `Target.lastDecision`). Issue #9. */
   decision?: VoteDecision;
+  purpose?: ListeningPurpose;
+  memory?: 'loading' | 'ready' | 'saving' | 'unavailable';
+  savedVotes?: number;
 };
 
 /** One-line, humble explanation of how the learner responded to a vote. */
@@ -64,6 +67,7 @@ export type StreamLevels = {
   steerProgress?: number | null;
   /** Which vote the pending steer belongs to; null/absent when none. */
   steerVote?: Vote | null;
+
 };
 
 export type KnownStatus =
@@ -76,8 +80,12 @@ export type KnownStatus =
   | 'error';
 
 export interface MusicSessionController {
-  /** Optional pre-session setup. Changing purpose starts a fresh preference session. */
+  /** Optional pre-session setup. Persistent controllers keep separate memory per purpose. */
   setPurpose?(purpose: ListeningPurpose): void;
+  /** Clears all saved browser profiles and feedback while no session is active. */
+  resetPreferences?(): Promise<void>;
+  /** Returns a local feedback export as JSON; never sends it to another service. */
+  exportFeedback?(): Promise<string>;
   /** Call synchronously inside the user's Start gesture (autoplay policy). Idempotent while a session is active. */
   start(): Promise<void>;
   /** Synchronous local update; never blocks, never locks the buttons. Ignored when no session is active. */

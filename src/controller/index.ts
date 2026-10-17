@@ -18,6 +18,7 @@ import type {
 import { FEATURE_GROUPS, GROUP_IDS, type FeatureGroup } from '../learner/vocabulary.ts';
 import type { MusicTransport, TransportFactory } from '../transport/types.ts';
 import { lerpBlend, lerpPrompts } from './blend.ts';
+import type { FeedbackRecord, PreferencesStore, SavedProfile } from '../preferences/types.ts';
 import { DEFAULT_CONTROLLER_CONFIG, type ControllerConfig } from './config.ts';
 
 export { DEFAULT_CONTROLLER_CONFIG, type ControllerConfig } from './config.ts';
@@ -89,10 +90,14 @@ export type ControllerDeps = {
   config?: Partial<ControllerConfig>;
   now?: () => number;
   log?: (event: string, data?: Record<string, unknown>) => void;
+  preferences?: PreferencesStore;
+  restoreState?: (value: unknown, purpose: ListeningPurpose) => LearnerState | undefined;
 };
 
 type Ramp = { fromFeatures: FeatureBlend; fromPrompts: WeightedPrompt[]; target: Target; step: number; durationMs: number };
 type Sent = { at: number; features: FeatureBlend; prompts?: WeightedPrompt[] };
+const PURPOSES: ListeningPurpose[] = ['focus', 'relax', 'energy', 'explore', 'crazy'];
+const sessionId = () => `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
 
 function sameSignature(a: MusicSignature | undefined, b: MusicSignature | undefined): boolean {
   if (a === b) return true;
@@ -142,6 +147,20 @@ export class SessionController implements MusicSessionController {
   private pendingSteer: { vote: Vote; at: number; etaMs: number; doneAt?: number } | undefined;
   private nowPlayingSig: MusicSignature | undefined;
   private noveltyStep = 0;
+  private rejected: Sent | undefined;
+  private feedbackSession = sessionId();
+  private feedbackSequence = 0;
+  private profiles: Partial<Record<ListeningPurpose, LearnerState>> = {};
+  private persistedVotes: Partial<Record<ListeningPurpose, number>> = {};
+  private purposeChosen = false;
+  private memoryReady: Promise<void> = Promise.resolve();
+  private writes: Promise<void> = Promise.resolve();
+  private pendingWrites = 0;
+  private memoryFailed = false;
+  private resetting = false;
+  private memoryLoading = false;
+  private memoryRestored = false;
+  private queuedVotes: Array<{ vote: Vote; at: number; session: string; purpose: ListeningPurpose; run: number }> = [];
 
   private transport: MusicTransport | undefined;
   private ready = false;
@@ -173,12 +192,33 @@ export class SessionController implements MusicSessionController {
     this.sentPrompts = this.target.prompts;
     this.resetHearing(this.sentFeatures, this.sentPrompts);
     this.signature = deriveSignature(this.target);
+    this.purposeChosen = deps.purpose !== undefined;
+    if (deps.preferences) {
+      this.memoryLoading = true;
+      this.state = { ...this.state, purpose: this.purpose, memory: 'loading', savedVotes: 0 };
+      this.memoryReady = this.loadPreferences();
+    }
   }
 
   setPurpose(purpose: ListeningPurpose): void {
-    if (purpose === this.purpose || !['idle', 'stopped', 'error'].includes(this.state.status)) return;
+    if (!PURPOSES.includes(purpose) || this.resetting || !['idle', 'stopped', 'error'].includes(this.state.status)) return;
+    this.purposeChosen = true;
+    if (this.deps.preferences) {
+      void this.memoryReady.then(() => {
+        if (this.purpose === purpose) return this.queueWrite(() => this.deps.preferences!.selectPurpose(purpose));
+      });
+    }
+    if (purpose === this.purpose) return;
+    if (this.deps.preferences) this.profiles[this.purpose] = this.learnerState;
     this.purpose = purpose;
-    this.learnerState = this.deps.learner.createLearner(this.seed, purpose);
+    this.activateProfile(this.profiles[purpose]);
+    if (this.deps.preferences) {
+      this.updateMemory(this.state.memory ?? 'ready');
+    }
+  }
+
+  private activateProfile(saved?: LearnerState): void {
+    this.learnerState = saved ?? this.deps.learner.createLearner(this.seed, this.purpose);
     this.target = this.deps.learner.initialTarget(this.learnerState);
     this.sentFeatures = this.target.features;
     this.sentPrompts = this.target.prompts;
@@ -187,9 +227,115 @@ export class SessionController implements MusicSessionController {
     this.signature = deriveSignature(this.target);
   }
 
+  private async loadPreferences(): Promise<void> {
+    try {
+      const saved = await this.deps.preferences!.load();
+      for (const purpose of PURPOSES) {
+        const profile = saved.profiles[purpose];
+        if (!profile || profile.purpose !== purpose) continue;
+        const restored = this.deps.restoreState?.(profile.state, purpose);
+        if (restored) {
+          this.profiles[purpose] = restored;
+          this.persistedVotes[purpose] = restored.votes;
+        }
+      }
+      if (!this.purposeChosen && saved.purpose && PURPOSES.includes(saved.purpose)) this.purpose = saved.purpose;
+      this.activateProfile(this.profiles[this.purpose]);
+      this.memoryRestored = true;
+      this.updateMemory('ready');
+    } catch {
+      this.memoryFailed = true;
+      this.updateMemory('unavailable');
+    } finally {
+      this.memoryLoading = false;
+      for (const pending of this.queuedVotes.splice(0)) {
+        if (pending.run === this.runId && pending.purpose === this.purpose && this.state.status === 'connecting') {
+          this.applyVote(pending.vote, pending.at, true, pending.session);
+        } else {
+          // A canceled pre-playback action is still recorded with zero evidence,
+          // but can never steer or contaminate a different active profile.
+          const state = this.profiles[pending.purpose] ?? this.deps.learner.createLearner(this.seed, pending.purpose);
+          const target = this.deps.learner.initialTarget(state);
+          const result = this.deps.learner.processVote({ state, audible: target.features, currentTarget: target,
+            vote: pending.vote, evidenceWeight: 0 });
+          if (pending.purpose === this.purpose) this.learnerState = result.state;
+          this.saveProfile(pending.purpose, result.state, {
+            id: `${pending.session}:${++this.feedbackSequence}`, at: pending.at, sessionId: pending.session,
+            purpose: pending.purpose, vote: pending.vote, audible: { ...target.features }, evidenceWeight: 0,
+            targetBefore: structuredClone(target), targetAfter: structuredClone(target),
+          });
+        }
+      }
+    }
+  }
+
+  private updateMemory(memory: SessionState['memory']): void {
+    if (!this.deps.preferences) return;
+    this.setState({ ...this.state, purpose: this.purpose, memory, savedVotes: this.persistedVotes[this.purpose] ?? 0 });
+  }
+
+  private queueWrite(action: () => Promise<void>, saved?: SavedProfile, allowWithoutLoad = false): Promise<boolean> {
+    // A failed read is not an empty profile: never overwrite unread saved taste.
+    if (!this.memoryRestored && !allowWithoutLoad) {
+      this.updateMemory('unavailable');
+      return Promise.resolve(false);
+    }
+    this.pendingWrites++;
+    this.updateMemory('saving');
+    const operation = this.writes.then(action).then(() => {
+      if (saved) this.persistedVotes[saved.purpose] = saved.state.votes;
+      return true;
+    }, () => {
+      this.memoryFailed = true;
+      return false;
+    }).finally(() => {
+      this.pendingWrites--;
+      this.updateMemory(this.pendingWrites ? 'saving' : this.memoryFailed ? 'unavailable' : 'ready');
+    });
+    this.writes = operation.then(() => {});
+    return operation;
+  }
+
+  private savePreferences(event?: FeedbackRecord): void {
+    if (!this.deps.preferences) return;
+    this.saveProfile(this.purpose, this.learnerState, event);
+  }
+
+  private saveProfile(purpose: ListeningPurpose, state: LearnerState, event?: FeedbackRecord): void {
+    this.profiles[purpose] = state;
+    const profile: SavedProfile = { purpose, state: structuredClone(state), updatedAt: this.now() };
+    void this.queueWrite(() => this.deps.preferences!.save(profile, event), profile);
+  }
+
+  async exportFeedback(): Promise<string> {
+    if (!this.deps.preferences) throw new Error('Local storage is unavailable.');
+    await this.memoryReady;
+    await this.writes;
+    return this.deps.preferences.export();
+  }
+
+  async resetPreferences(): Promise<void> {
+    if (!this.deps.preferences) throw new Error('Local storage is unavailable.');
+    if (this.resetting || !['idle', 'stopped', 'error'].includes(this.state.status)) throw new Error('End the session before resetting preferences.');
+    this.resetting = true;
+    try {
+      await this.memoryReady;
+      const cleared = await this.queueWrite(() => this.deps.preferences!.clear(), undefined, true);
+      if (!cleared) throw new Error('Could not clear saved preferences.');
+      this.memoryFailed = false;
+      this.memoryRestored = true;
+      this.profiles = {};
+      this.persistedVotes = {};
+      this.activateProfile();
+      this.updateMemory('ready');
+    } finally { this.resetting = false; }
+  }
+
   async start(): Promise<void> {
-    if (this.state.status !== 'idle' && this.state.status !== 'stopped' && this.state.status !== 'error') return;
+    if (this.resetting || (this.state.status !== 'idle' && this.state.status !== 'stopped' && this.state.status !== 'error')) return;
     const run = ++this.runId;
+    this.feedbackSession = sessionId();
+    this.feedbackSequence = 0;
     this.setState({ status: 'connecting' });
     try {
       // First statement so it runs inside the tap handler's gesture.
@@ -198,7 +344,13 @@ export class SessionController implements MusicSessionController {
       if (run !== this.runId) return;
       return this.fail(`Audio could not start: ${String(err instanceof Error ? err.message : err)}`);
     }
-    if (run !== this.runId || this.status() !== 'connecting') return; // stopped or restarted while initializing
+    await this.memoryReady; // AudioContext was already created synchronously in the gesture.
+    if (run !== this.runId || this.status() !== 'connecting') return; // stopped or restarted while initializing/loading
+    if (this.deps.preferences) {
+      const purpose = this.purpose;
+      void this.queueWrite(() => this.deps.preferences!.selectPurpose(purpose));
+      this.savePreferences();
+    }
     this.attempts = 0;
     this.connect();
   }
@@ -206,14 +358,28 @@ export class SessionController implements MusicSessionController {
   vote(v: Vote): void {
     const { status } = this.state;
     if (status === 'idle' || status === 'stopped' || status === 'error') return;
-    const audible = this.estimateAudible();
-    const evidenceWeight = this.evidenceWeight(audible);
+    if (this.memoryLoading) {
+      this.queuedVotes.push({ vote: v, at: this.now(), session: this.feedbackSession, purpose: this.purpose, run: this.runId });
+      return;
+    }
+    this.applyVote(v);
+  }
+
+  private applyVote(v: Vote, at = this.now(), beforePlayback = false, session = this.feedbackSession): void {
+    const audible = beforePlayback ? this.target.features : this.estimateAudible();
+    const evidenceWeight = beforePlayback ? 0 : this.evidenceWeight(audible);
+    const previous = v === 'up' && evidenceWeight > 0 && this.rejected
+      && this.now() - this.rejected.at <= this.cfg.comparisonWindowMs
+      && blendDistance(this.rejected.features, audible) >= this.cfg.evidenceBlendDistance
+      ? { ...this.rejected.features } : undefined;
+    const targetBefore = this.target;
     const result = this.deps.learner.processVote({
       state: this.learnerState,
       audible,
       currentTarget: this.target,
       vote: v,
       evidenceWeight,
+      ...(previous ? { comparison: { previous } } : {}),
     });
     this.learnerState = result.state;
     const d = result.target.lastDecision;
@@ -226,13 +392,20 @@ export class SessionController implements MusicSessionController {
       at: this.now(),
       etaMs: this.cfg.generationLatencyMs + buffered + this.cfg.voteRampMs * 0.5,
     };
-    this.log('vote', { vote: v, audible, evidenceWeight, bufferedMs: buffered, votes: result.state.votes });
+    if (evidenceWeight > 0) this.rejected = v === 'down' ? { at: this.now(), features: { ...audible } } : undefined;
+    this.log('vote', { vote: v, audible, previous, evidenceWeight, bufferedMs: buffered, votes: result.state.votes });
     this.retarget(result.target, true, this.cfg.voteRampMs);
+    this.savePreferences({
+      id: `${session}:${++this.feedbackSequence}`, at, sessionId: session,
+      purpose: this.purpose, vote: v, audible: { ...audible }, ...(previous ? { previous } : {}), evidenceWeight,
+      targetBefore: structuredClone(targetBefore), targetAfter: structuredClone(result.target),
+    });
   }
 
   stop(): void {
     if (this.state.status === 'idle' || this.state.status === 'stopped') return;
     this.runId++;
+    this.rejected = undefined;
     this.transport?.send({ type: 'stop' });
     this.teardownConnection();
     void this.deps.player.close().catch(() => { });
@@ -420,6 +593,7 @@ export class SessionController implements MusicSessionController {
 
   private teardownConnection(): void {
     this.transport?.close();
+    this.rejected = undefined;
     this.transport = undefined;
     this.ready = false;
     this.awaitingReady = false;
@@ -502,6 +676,7 @@ export class SessionController implements MusicSessionController {
     this.heard = this.history[0];
     this.audibleCursor = -Infinity;
     this.evidenceHistory = [];
+    this.rejected = undefined;
   }
 
   private canHear(): boolean {
@@ -560,16 +735,16 @@ export class SessionController implements MusicSessionController {
         decision: this.decision ?? next.decision,
       };
     }
-    if (
-      next.status === this.state.status &&
-      next.lastError === this.state.lastError &&
-      next.signature === this.state.signature &&
-      next.nowPlaying === this.state.nowPlaying &&
-      next.decision === this.state.decision
-    )
-      return;
-    this.state = next;
-    for (const l of this.listeners) l(next);
+    const combined = { ...this.state, ...next };
+    if (!('lastError' in next)) delete combined.lastError;
+    if (!ACTIVE_STATUSES.has(combined.status)) {
+      delete combined.signature;
+      delete combined.nowPlaying;
+      delete combined.decision;
+    }
+    if (JSON.stringify(combined) === JSON.stringify(this.state)) return;
+    this.state = combined;
+    for (const l of this.listeners) l(combined);
     this.updateStatsTimer();
   }
 }

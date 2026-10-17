@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Sway IndexedDB persistence proof</title>
+    <style>
+      body { max-width: 850px; margin: 40px auto; padding: 0 20px; font: 16px/1.5 system-ui, sans-serif; }
+      li { margin: 8px 0; }
+      #status[data-status="pass"] { color: #087f23; }
+      #status[data-status="fail"] { color: #b00020; }
+      code { overflow-wrap: anywhere; }
+    </style>
+  </head>
+  <body>
+    <h1>IndexedDB persistence proof</h1>
+    <p>This page exercises the real preference store in this browser using synthetic records and a disposable database. It does not open audio, call a provider, or access the application's saved preferences.</p>
+    <p id="database"></p>
+    <h2 id="status" data-status="running">RUNNING</h2>
+    <ol id="results"></ol>
+    <script type="module" src="./preferences-proof.ts"></script>
+  </body>
+</html>
