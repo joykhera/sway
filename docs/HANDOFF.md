@@ -20,6 +20,7 @@
 | A: relay (`server/**`) | Done and **verified against live Lyria**: start → `ready` → binary PCM → steer → stop. MUSIC_MODE=mock gives a paced tone for keyless dev and tests. 69 tests pass. |
 | A: smoke test (`pnpm smoke`) | Works live. Results are in `docs/lyria-smoke-report.md`. All questions are answered except how long a steer takes to be heard, which needs a listening pass. |
 | A's plan / decisions | `docs/part-a-plan.md` |
+| D: controller + transport | **Done, on branch `feat/session-controller`** (not yet on `main`). `SessionController` (`src/controller`), `WebSocketTransport` (`src/transport`), contracts for `Learner`, `PCMPlayer`, `MusicSessionController` added to `protocol.ts`, plus unit and relay e2e tests (103 tests green with A's). See README for the wiring snippet. |
 
 **Setup for everyone:** `pnpm install`, `cp .env.example .env`, add your **own** `GEMINI_API_KEY` from aistudio.google.com/apikey (each key belongs to a separate project, so each gets its own quota). Without a key, set `MUSIC_MODE=mock`.
 
@@ -40,6 +41,13 @@
 - **Everyone works on `main`** (pull with rebase, then push). No `feat/*` branches.
 - **10-min cap:** on an upstream drop the relay sends `status:'reconnecting'`, reopens with the latest prompts and sends a **fresh `ready`**. The browser socket stays open, with a 5–10 s re-settle. Seamless rotation comes later, only if testers complain.
 - **Guards trimmed:** validation, a 5-stream cap and cleanup only. No byte caps or rate limits until there's a public URL.
+
+**D status (2026-10-17):**
+- Reviewed `protocol.ts`: `ErrorCode` accepted as proposed. Added the learner, player and controller contracts (additive, no change to existing types).
+- Controller handles repeated `ready`, relay-side `reconnecting`, `prompt_filtered` (stream keeps playing, retargets without learning), retryable errors (new socket, backoff, restarts from latest target) and non-retryable errors (status `error`).
+- Revisions: the controller keeps counting across reconnects (always increasing, which the reset-on-`start` rule allows).
+- Checked against A's relay in mock mode (`tests/e2e/relay.e2e.test.ts`). **Not yet done:** the live Lyria run and the measured downvote latency, which need B's player and C's learner.
+- **Blocked on:** C (`src/learner` must satisfy `Learner` in `protocol.ts`) and B (`src/audio` must satisfy `PCMPlayer`). Neither has pushed yet. Tests use fakes from `tests/e2e/harness.ts`; reuse them.
 
 **Action items by owner:**
 - **B:** (1) The jitter buffer must hold **≥2.5–3 s** before playback starts. Audio arrives in 2 s blocks, so 0.5–1.5 s will underrun. (2) `ready` can arrive **again** after `reconnecting`; reconfigure without double-playing. (3) Drop the mobile checks.
