@@ -151,7 +151,9 @@ export function PlayerScreen({ controller }: PlayerScreenProps) {
                     disabled={memoryAction === 'reset'}
                     aria-pressed={purpose === option.value}
                     onClick={() => {
-                      if (option.value === purpose) return;
+                      // An explicit choice during restoration must win even if
+                      // it matches the temporary default shown before storage loads.
+                      if (option.value === purpose && state.memory !== 'loading') return;
                       controller.setPurpose?.(option.value);
                       setLocalPurpose(option.value);
                       setMemoryNotice(null);

@@ -190,6 +190,18 @@ describe('PlayerScreen — pre-start view', () => {
 });
 
 describe('PlayerScreen — browser preferences', () => {
+  it('records an explicit default choice during loading, then ignores the same choice once ready', () => {
+    const f = makeFake({ status: 'idle', purpose: 'explore', memory: 'loading' });
+    const setPurpose = vi.fn();
+    f.controller.setPurpose = setPurpose;
+    render(<PlayerScreen controller={f.controller} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Explore' }));
+    expect(setPurpose).toHaveBeenCalledExactlyOnceWith('explore');
+    act(() => { f.emit({ status: 'idle', purpose: 'explore', memory: 'ready', savedVotes: 0 }); });
+    fireEvent.click(screen.getByRole('button', { name: 'Explore' }));
+    expect(setPurpose).toHaveBeenCalledTimes(1);
+  });
+
   it('allows Crazy and Start during restoration, then reflects the controller purpose', () => {
     const f = makeFake({ status: 'idle', memory: 'loading' });
     const setPurpose = vi.fn();
