@@ -144,7 +144,23 @@ export type StreamLevels = {
   steerVote?: Vote | null;
 };
 
-export type SessionState = { status: SessionStatus; lastError?: string; signature?: MusicSignature };
+/** How the learner responded to the latest vote (from `Target.lastDecision`). */
+export type VoteDecision = {
+  vote: Vote;
+  kind: 'initial' | 'hold' | 'redirect' | 'variation' | 'probe';
+  reason: string;
+  phase: string;
+  at: number;
+};
+
+export type SessionState = {
+  status: SessionStatus;
+  lastError?: string;
+  signature?: MusicSignature;
+  /** Estimated audible blend right now (not the pending target). */
+  nowPlaying?: MusicSignature;
+  decision?: VoteDecision;
+};
 
 export interface MusicSessionController {
   // Optional pre-session setup; changing purpose starts a fresh preference session.

@@ -12,6 +12,24 @@ export type SessionUiState = {
   lastError?: string;
   /** What the stream is currently steering toward — the "musical identity" the UI whispers. */
   signature?: MusicSignature;
+  /**
+   * What is estimated audible right now (controller's audible-blend estimate,
+   * not the pending target) — so the label matches the sound. Issue #9.
+   */
+  nowPlaying?: MusicSignature;
+  /** What the learner decided on the latest vote (from `Target.lastDecision`). Issue #9. */
+  decision?: VoteDecision;
+};
+
+/** One-line, humble explanation of how the learner responded to a vote. */
+export type VoteDecision = {
+  vote: Vote;
+  kind: 'initial' | 'hold' | 'redirect' | 'variation' | 'probe';
+  /** Learner's own reason text (may be rewritten shorter for display by the UI). */
+  reason: string;
+  phase: string;
+  /** Date.now() when the vote was applied — lets the UI key/animate per vote. */
+  at: number;
 };
 
 /** The blend the controller is steering toward, rendered as whisperable words. */
