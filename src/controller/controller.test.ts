@@ -133,7 +133,10 @@ describe('audible estimate', () => {
     controller.vote('up');
     // heard now = what was sent ~3 s ago = step 2 of 8 (ambient .75 / jazz .25)
     expect(calls.vote[1]!.audible).toEqual({ ambient: 0.75, jazz: 0.25 });
-    expect(relay.last.steers.length).toBeGreaterThan(5);
+    // The fake learner holds the same pending target: preserve the existing ramp.
+    expect(relay.last.steers).toHaveLength(5);
+    await vi.advanceTimersByTimeAsync(3000);
+    expect(relay.last.steers).toHaveLength(8);
   });
 
   it('with an empty buffer uses the most recent step', async () => {
