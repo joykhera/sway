@@ -178,6 +178,53 @@ describe('bounded intent interpreter', () => {
     expect(fetcher).toHaveBeenCalledTimes(2);
     expect(JSON.parse(JSON.parse(fetcher.mock.calls[1]![1]!.body as string).messages.at(-1).content).fullQueryTitleMatchIds).toEqual(matchingIds);
   });
+  it('uses the original named song even when the model searches only for its artist', async () => {
+    const fetcher = fetchSequence(completion({ ...lookupPlan, lookupQuery: 'Miles Davis' }), completion(ready({ references: ['wiki:20405'] })), completion(ready({ references: ['wiki:4727159'] })));
+    const result = await createIntentInterpreter({ apiKey: 'key', fetcher, lookup: vi.fn().mockResolvedValue(songSources) })({ ...input, text: 'Instrumental music inspired by the song So What by Miles Davis for studying.' }, signal());
+    expect(result).toMatchObject({ status: 'ready', intent: { references: [{ id: 'wiki:4727159' }] } });
+    expect(fetcher).toHaveBeenCalledTimes(3);
+    const lookupMessage = JSON.parse(JSON.parse(fetcher.mock.calls[1]![1]!.body as string).messages.at(-1).content);
+    expect(lookupMessage).toMatchObject({ namedSongTitle: 'So What', namedSongTitleMatchIds: ['wiki:4727159'], fullQueryTitleMatchIds: [] });
+    expect(JSON.parse(fetcher.mock.calls[2]![1]!.body as string).messages.at(-1).content).toContain('the song title explicitly named by the listener: wiki:4727159');
+  });
+  it('clarifies an explicitly named song without a matching source before spending another model call', async () => {
+    const fetcher = fetchSequence(completion({ ...lookupPlan, lookupQuery: 'Miles Davis' }));
+    const lookup = vi.fn().mockResolvedValue([songSources[0]!]);
+    const result = await createIntentInterpreter({ apiKey: 'key', fetcher, lookup })({ ...input, text: 'The song So What by Miles Davis for studying' }, signal());
+    expect(result.status).toBe('clarify');
+    expect(result).not.toHaveProperty('intent');
+    expect(fetcher).toHaveBeenCalledTimes(1);
+    expect(lookup).toHaveBeenCalledTimes(1);
+  });
+  it.each([false, true])('keeps the shared repair limit for an uncited explicit song (already used: %s)', async (repairAlreadyUsed) => {
+    const artistLookup = completion({ ...lookupPlan, lookupQuery: 'Miles Davis' });
+    const artistOnly = () => completion(ready({ references: ['wiki:20405'] }));
+    const fetcher = fetchSequence(...(repairAlreadyUsed ? [completion('invalid'), artistLookup, artistOnly()] : [artistLookup, artistOnly(), artistOnly()]));
+    const result = await createIntentInterpreter({ apiKey: 'key', fetcher, lookup: vi.fn().mockResolvedValue(songSources) })({ ...input, text: 'Like the track "So What" by Miles Davis' }, signal());
+    expect(result.status).toBe('clarify');
+    expect(result).not.toHaveProperty('intent');
+    expect(fetcher).toHaveBeenCalledTimes(3);
+  });
+  it.each([
+    ['track "So What" for study', 'So What'],
+    ['song called “Ｓｏ　Ｗｈａｔ”', 'So What'],
+    ["track 'so what'", 'so what'],
+    ['song titled ‘So What’', 'So What'],
+    ['song Stand By Me by Ben E. King', 'Stand By Me'],
+    ["song Don't Stop Believin' by Journey", "Don't Stop Believin'"],
+  ])('recognizes bounded explicit title punctuation without depending on the lookup query: %s', async (text, title) => {
+    const sources = [{ ...songSources[1]!, title: `${title} (song)` }];
+    const fetcher = fetchSequence(completion({ ...lookupPlan, lookupQuery: 'Artist name' }), completion(ready({ references: ['wiki:4727159'] })));
+    expect((await createIntentInterpreter({ apiKey: 'key', fetcher, lookup: vi.fn().mockResolvedValue(sources) })({ ...input, text }, signal())).status).toBe('ready');
+    expect(fetcher).toHaveBeenCalledTimes(2);
+    expect(JSON.parse(JSON.parse(fetcher.mock.calls[1]![1]!.body as string).messages.at(-1).content)).toMatchObject({ namedSongTitle: title, namedSongTitleMatchIds: ['wiki:4727159'] });
+  });
+  it.each(['a song for workout', 'a song for workout by a jazz musician', 'a track with piano by the river', 'a song composed by Miles Davis', 'music in the style of Miles Davis'])('does not extract a song title from a generic request or artist reference: %s', async (text) => {
+    const fetcher = fetchSequence(completion({ ...lookupPlan, lookupQuery: 'Miles Davis' }), completion(ready({ references: ['wiki:20405'] })));
+    expect((await createIntentInterpreter({ apiKey: 'key', fetcher, lookup: vi.fn().mockResolvedValue([songSources[0]!]) })({ ...input, text }, signal())).status).toBe('ready');
+    expect(fetcher).toHaveBeenCalledTimes(2);
+    expect(JSON.parse(JSON.parse(fetcher.mock.calls[1]![1]!.body as string).messages.at(-1).content)).toMatchObject({ namedSongTitle: null, namedSongTitleMatchIds: [] });
+  });
   it('repairs the observed song context, avoidance and missing references together without hardening preferences', async () => {
     const sources = [
       { id: 'wiki:20', title: 'Unrelated album', url: 'https://en.wikipedia.org/?curid=20', extract: 'An unrelated album.' },
