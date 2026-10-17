@@ -6,16 +6,27 @@
 import { useRef, useEffect } from 'react';
 import { PlayerScreen, MockMusicSessionController } from './ui/index.ts';
 import { createPCMPlayer, MockPcmGenerator } from './audio/index.ts';
+import { SessionController } from './controller/index.ts';
+import { WebSocketTransport, defaultMusicUrl } from './transport/index.ts';
+import * as learner from './learner/index.ts';
 import type { MusicSessionController } from './ui/index.ts';
 
 export default function App() {
   const controllerRef = useRef<MusicSessionController | null>(null);
   if (controllerRef.current === null) {
-    // ── Developer D: replace MockMusicSessionController with the real session controller from src/controller/index.ts
-    controllerRef.current = new MockMusicSessionController({
-      playerFactory: () => createPCMPlayer(),
-      generatorFactory: () => new MockPcmGenerator(),
-    });
+    // `?mock` keeps the app standalone (no relay) for local UI work.
+    if (new URLSearchParams(window.location.search).has('mock')) {
+      controllerRef.current = new MockMusicSessionController({
+        playerFactory: () => createPCMPlayer(),
+        generatorFactory: () => new MockPcmGenerator(),
+      });
+    } else {
+      controllerRef.current = new SessionController({
+        learner,
+        player: createPCMPlayer(),
+        createTransport: () => new WebSocketTransport(defaultMusicUrl(window.location)),
+      });
+    }
   }
 
   // Mount-only cleanup. StrictMode replays effects in dev, so stop() must stay a

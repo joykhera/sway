@@ -22,6 +22,7 @@ Ctrl-C still finalizes the WAV and writes the report.
 | 2026-10-17 | A | `pnpm smoke` (12 min) | smoke-out/2026-10-17T19-54-24-234Z | Server closed at **10:00.7** with 1011; small steer at WAV 58.0 s, large at 118.0 s |
 | 2026-10-17 | A | `pnpm smoke --parallel 5` | smoke-out/2026-10-17T20-04-37-179Z | 5/5 sessions got setupComplete + audio |
 | 2026-10-17 | A | relay live mode + ws client, start/steer/stop | — | `ready` 48000/2 at 5.8 s, steer forwarded, clean dispose, key absent from logs |
+| 2026-10-17 | B-side agent | `pnpm smoke --duration 25` (no rate) | smoke-out/smoke-2026-10-17T20-42-16-788Z | Confirmatory re-run on `feat/lyria-relay`: setupComplete +603 ms, first audio 2.9 s, 12×384000 B chunks at ~1× realtime (burst 0.57→0.95), steers at +10 s/+20 s accepted, no filtered prompts, clean 1000 close |
 
 ## Questions this must answer
 

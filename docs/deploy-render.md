@@ -40,7 +40,7 @@ WebSocket traffic to Lyria RealTime. Render terminates TLS and injects `PORT`
 
 ```sh
 curl https://<your-service>.onrender.com/healthz
-# → 200 {"ok":true}
+# → 200 ok (text/plain)
 ```
 
 Open `https://<your-service>.onrender.com` → **Start**. In live mode real Lyria

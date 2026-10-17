@@ -39,9 +39,9 @@ vi.mock('./ui/index.ts', () => {
   class MockMusicSessionController implements FakeController {
     readonly options: ControllerOptions;
     readonly start = vi.fn(() => Promise.resolve());
-    readonly vote = vi.fn((_v: unknown) => {});
-    readonly stop = vi.fn(() => {});
-    readonly subscribe = vi.fn((_listener: unknown) => () => {});
+    readonly vote = vi.fn((_v: unknown) => { });
+    readonly stop = vi.fn(() => { });
+    readonly subscribe = vi.fn((_listener: unknown) => () => { });
     constructor(options: ControllerOptions) {
       this.options = options;
       h.controllerInstances.push(this);
@@ -90,6 +90,8 @@ async function unmount(root: Root, container: HTMLDivElement): Promise<void> {
 }
 
 beforeEach(() => {
+  // App only builds the standalone MockMusicSessionController under `?mock`.
+  window.history.pushState({}, '', '/?mock');
   h.calls.createPCMPlayer = 0;
   h.calls.constructPcmGenerator = 0;
   h.renderedControllers.length = 0;
