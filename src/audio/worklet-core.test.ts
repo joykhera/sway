@@ -45,6 +45,32 @@ function isAllZero(a: Float32Array): boolean {
 }
 
 describe('PcmWorkletCore', () => {
+  it('replaces a long queued stream with a unity-gain crossfade and counts only the destination', () => {
+    const core = makeCore({ prerollMs: 1 });
+    core.pushPcm(pcmConstant(RATE * 4, 8192));
+    core.render(128);
+    core.replacePcm(pcmConstant(RATE * 3, -8192), RATE, 250);
+    expect(core.getStats().bufferedMs).toBe(3000);
+    expect(core.getStats().priming).toBe(true);
+    const out = core.render(RATE / 4).slice();
+    expect(out[0]).toBe(.25);
+    expect(out[out.length - 1]).toBe(-.25);
+    expect(out[RATE / 4]).toBeCloseTo(0, 4);
+    expect(core.getStats()).toMatchObject({ priming: false, bufferedMs: 2750, underruns: 0 });
+    expect([...core.render(128)].every(sample => sample === -.25)).toBe(true);
+  });
+
+  it('resets byte carry and resampler across a format-changing replacement', () => {
+    const core = makeCore({ prerollMs: 1 });
+    core.pushPcm(pcmConstant(4800, 32767));
+    core.pushPcm(new Uint8Array([255, 127, 255]));
+    core.render(128);
+    core.replacePcm(pcmConstant(24000 * 3, -8192), 24000, 0);
+    expect(core.getStats().bufferedMs).toBeCloseTo(3000, 0);
+    expect([...core.render(128)].every(sample => sample === -.25)).toBe(true);
+    expect(core.getStats().priming).toBe(false);
+  });
+
   it('gates output with silence until prerollMs worth is buffered', () => {
     const core = makeCore(); // preroll 2400 frames
     core.pushPcm(pcmSine(2000));

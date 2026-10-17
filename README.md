@@ -33,6 +33,7 @@ import { WebSocketTransport, defaultMusicUrl } from './transport/index.ts';
 const controller = new SessionController({
   learner: adaptiveLearner,       // full adaptive model behind the shared Learner contract
   player,                        // B's PCMPlayer
+  lookahead: true,              // prepared Like/Dislike audio when relay/player support it
   preferences: createBrowserPreferencesStore(),
   restoreState: (value, purpose) => isAdaptiveState(value) && value.purpose === purpose ? value : undefined,
   createTransport: () => new WebSocketTransport(defaultMusicUrl(location)),
@@ -51,6 +52,7 @@ const controller = new SessionController({
 - **Vote while connecting:** the action updates the pending direction immediately with zero learning weight. Before the socket opens, `start` carries the new target. After `start` is sent, the controller ramps to it on `ready`.
 - **Reconnect:** on socket close or a retryable relay error, a new socket is opened with backoff (1, 2, 4, 8, 8 s), and `start` carries the **latest target** (no continuity to protect). Learner scores survive. After the schedule is exhausted the status becomes `error`. Relay-side upstream reconnects (`status:'reconnecting'` then a repeated `ready`) pause steering and resume toward the latest direction once playback is ready again.
 - **`prompt_filtered`:** the stream keeps playing; the controller moves to another combination via `evolveNoVote` (no score change).
+- **Prepared feedback:** while listening, two bounded candidate streams prepare the next Like/Dislike choices. Ready matching audio switches through a 100 ms crossfade; the chosen stream resumes and the next pair is prepared. Actual votes alone update preferences. Slow, stale or failed candidates use the normal ramp. This uses extra generation and up to three provider sessions; `createBrowserController({ lookahead: false })` disables it.
 - **Directional Likes:** a Like after a recent, meaningfully different rejected heard blend also learns from the difference. It uses the existing evidence budget, keeps the liked music immediately, and biases future selections toward the approved change. This compares the full musical combination; it does not identify tempo as the cause.
 - **Repeated Dislikes:** three distinct, effective rejected heard blends since the last effective Like activate a wider search that changes genre and instrument. Rapid clicks still steer but do not inflate this rejection streak.
 - **Purpose:** optional Focus, Relax, Energy, Explore or Crazy supplies a weak starting hint. Crazy adds experimental electronic/percussive phrasing. Each purpose has its own learned model; switching purposes restores that model.

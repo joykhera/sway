@@ -55,4 +55,34 @@ describe('mock upstream', () => {
     expect(a).not.toBe(b);
     for (const f of [a, b]) expect(f >= 220 && f < 440).toBe(true);
   });
+
+  it('preserves sample continuity through pause/resume without catching up paused wall time', async () => {
+    vi.useFakeTimers();
+    const reference: Buffer[] = [];
+    const resumed: Buffer[] = [];
+    const create = (output: Buffer[]) => createMockFactory({ now: () => Date.now() })({
+      onAudio: chunk => output.push(chunk), onFiltered: () => {}, onWarning: () => {}, onClosed: () => {},
+    });
+    const a = create(reference);
+    const b = create(resumed);
+    await a.start([{ text: 'a', weight: 1 }], {});
+    await b.start([{ text: 'a', weight: 1 }], {});
+    await vi.advanceTimersByTimeAsync(200);
+    b.pause!();
+    b.pause!();
+    const prefixLength = resumed.length;
+    await vi.advanceTimersByTimeAsync(200);
+    a.close();
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(resumed).toHaveLength(prefixLength);
+    b.resume!();
+    b.resume!();
+    expect(resumed).toHaveLength(prefixLength + 1);
+    await vi.advanceTimersByTimeAsync(100);
+    b.close();
+    b.resume!();
+    expect(resumed).toHaveLength(prefixLength + 2);
+    expect(Buffer.concat(resumed)).toEqual(Buffer.concat(reference));
+    expect(vi.getTimerCount()).toBe(0);
+  });
 });

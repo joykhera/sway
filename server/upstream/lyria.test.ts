@@ -11,6 +11,7 @@ const fake = vi.hoisted(() => ({
   calls: [] as string[],
   callbacks: undefined as Callbacks | undefined,
   openNow: true,
+  afterPrompts: undefined as (() => void) | undefined,
 }));
 
 vi.mock('@google/genai', () => ({
@@ -21,9 +22,13 @@ vi.mock('@google/genai', () => ({
           fake.callbacks = params.callbacks;
           if (!fake.openNow) return new Promise(() => {});
           return {
-            setWeightedPrompts: async (p: unknown) => void fake.calls.push(`prompts ${JSON.stringify(p)}`),
+            setWeightedPrompts: async (p: unknown) => {
+              fake.calls.push(`prompts ${JSON.stringify(p)}`);
+              fake.afterPrompts?.();
+            },
             setMusicGenerationConfig: async (p: unknown) => void fake.calls.push(`config ${JSON.stringify(p)}`),
             play: () => void fake.calls.push('play'),
+            pause: () => void fake.calls.push('pause'),
             close: () => void fake.calls.push('close'),
           };
         },
@@ -47,6 +52,7 @@ beforeEach(() => {
   fake.calls = [];
   fake.callbacks = undefined;
   fake.openNow = true;
+  fake.afterPrompts = undefined;
   vi.spyOn(console, 'warn').mockImplementation(() => {});
 });
 afterEach(() => vi.restoreAllMocks());
@@ -98,6 +104,30 @@ describe('lyria adapter (fake SDK)', () => {
     expect(fake.calls[1]).toBe('config {"musicGenerationConfig":{"density":0.1,"brightness":0.9}}');
     up.close();
     expect(fake.calls.at(-1)).toBe('close');
+  });
+
+  it('pauses and resumes the existing SDK session without resetting prompts or context', async () => {
+    const up = createLyriaFactory('k')(events());
+    const started = up.start([{ text: 'a', weight: 1 }], {});
+    fake.callbacks!.onmessage({ setupComplete: {} });
+    await started;
+    fake.calls = [];
+    up.pause!();
+    up.resume!();
+    expect(fake.calls).toEqual(['pause', 'play']);
+    up.close();
+    up.pause!();
+    up.resume!();
+    expect(fake.calls).toEqual(['pause', 'play', 'close']);
+  });
+
+  it('does not resurrect a cancelled setup after sending prompts', async () => {
+    const up = createLyriaFactory('k')(events());
+    fake.afterPrompts = () => up.close();
+    const started = up.start([{ text: 'a', weight: 1 }], { density: 0.4 });
+    fake.callbacks!.onmessage({ setupComplete: {} });
+    await expect(started).rejects.toThrow('closed during setup');
+    expect(fake.calls).toEqual(['prompts {"weightedPrompts":[{"text":"a","weight":1}]}', 'close']);
   });
 });
 

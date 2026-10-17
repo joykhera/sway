@@ -11,8 +11,9 @@ import type {
   Vote,
   WeightedPrompt,
 } from '../shared/protocol.ts';
-import type { MusicTransport, TransportFactory } from '../transport/types.ts';
+import type { MusicTransport, TransportFactory, TransportHandlers } from '../transport/types.ts';
 import { lerpBlend, lerpPrompts } from './blend.ts';
+import { LookaheadPool } from './lookahead.ts';
 import type { FeedbackRecord, PreferencesStore, SavedProfile } from '../preferences/types.ts';
 import { DEFAULT_CONTROLLER_CONFIG, type ControllerConfig } from './config.ts';
 
@@ -28,6 +29,7 @@ export type ControllerDeps = {
   now?: () => number;
   log?: (event: string, data?: Record<string, unknown>) => void;
   preferences?: PreferencesStore;
+  lookahead?: boolean;
   restoreState?: (value: unknown, purpose: ListeningPurpose) => LearnerState | undefined;
 };
 
@@ -86,6 +88,11 @@ export class SessionController implements MusicSessionController {
   private queuedVotes: Array<{ vote: Vote; at: number; session: string; purpose: ListeningPurpose; run: number }> = [];
 
   private transport: MusicTransport | undefined;
+  private readonly lookahead: LookaheadPool | undefined;
+  private lookaheadSupported = false;
+  private lookaheadTimer: ReturnType<typeof setTimeout> | undefined;
+  private preparedKey: string | undefined;
+  private branchSettlesAt = -Infinity;
   private ready = false;
   private awaitingReady = false;
   private revision = 0;
@@ -102,6 +109,9 @@ export class SessionController implements MusicSessionController {
     this.cfg = { ...DEFAULT_CONTROLLER_CONFIG, ...deps.config };
     this.now = deps.now ?? Date.now;
     this.log = deps.log ?? (() => {});
+    if (deps.lookahead && deps.player.replacePcm) {
+      this.lookahead = new LookaheadPool(deps.createTransport, { log: this.log });
+    }
     this.seed = deps.seed ?? Math.floor(Math.random() * 0x7fffffff);
     this.purpose = deps.purpose ?? 'explore';
     this.learnerState = deps.learner.createLearner(this.seed, this.purpose);
@@ -300,7 +310,10 @@ export class SessionController implements MusicSessionController {
     this.learnerState = result.state;
     if (evidenceWeight > 0) this.rejected = v === 'down' ? { at: this.now(), features: { ...audible } } : undefined;
     this.log('vote', { vote: v, audible, previous, evidenceWeight, bufferedMs: this.deps.player.getBufferedDurationMs(), votes: result.state.votes });
-    this.retarget(result.target);
+    if (!this.usePrepared(v, result.target)) {
+      this.clearLookahead();
+      this.retarget(result.target);
+    }
     this.savePreferences({
       id: `${session}:${++this.feedbackSequence}`, at, sessionId: session,
       purpose: this.purpose, vote: v, audible: { ...audible }, ...(previous ? { previous } : {}), evidenceWeight,
@@ -335,7 +348,11 @@ export class SessionController implements MusicSessionController {
     this.awaitingReady = false;
     const transport = this.deps.createTransport();
     this.transport = transport;
-    transport.connect({
+    transport.connect(this.activeHandlers(transport));
+  }
+
+  private activeHandlers(transport: MusicTransport): TransportHandlers {
+    return {
       onOpen: () => {
         if (this.transport !== transport) return;
         this.started = { features: this.sentFeatures, prompts: this.sentPrompts };
@@ -348,12 +365,13 @@ export class SessionController implements MusicSessionController {
       onClose: () => {
         if (this.transport === transport) this.connectionLost('connection closed');
       },
-    });
+    };
   }
 
   private onServerMessage(msg: ServerMessage): void {
     switch (msg.type) {
       case 'ready':
+        this.lookaheadSupported = msg.prefetch === true;
         const resetHearing = !this.ready || this.awaitingReady;
         this.deps.player.configure(msg.audio);
         this.ready = true;
@@ -371,9 +389,11 @@ export class SessionController implements MusicSessionController {
         } else {
           this.scheduleEvolve();
         }
+        this.scheduleLookahead();
         return;
       case 'status':
         if (msg.state === 'reconnecting') {
+          this.clearLookahead();
           if (!this.awaitingReady) this.started ??= { features: this.sentFeatures, prompts: this.sentPrompts };
           this.awaitingReady = true;
           this.sentFeatures = this.target.features;
@@ -420,6 +440,10 @@ export class SessionController implements MusicSessionController {
   }
 
   private teardownConnection(): void {
+    this.clearLookahead();
+    this.lookaheadSupported = false;
+    clearTimeout(this.lookaheadTimer);
+    this.lookaheadTimer = undefined;
     this.transport?.close();
     this.rejected = undefined;
     this.transport = undefined;
@@ -437,6 +461,7 @@ export class SessionController implements MusicSessionController {
 
   private retarget(target: Target, resetEvolve = true): void {
     const directionChanged = !sameTarget(this.target, target);
+    if (directionChanged) this.clearLookahead();
     this.target = target;
     if (!this.ready || this.awaitingReady) {
       clearTimeout(this.rampTimer);
@@ -513,10 +538,85 @@ export class SessionController implements MusicSessionController {
   }
 
   private hasAudiblePlayback(): boolean {
+    if (this.now() < this.branchSettlesAt) return false;
     if (!this.canHear()) return false;
     const stats = this.deps.player.getStats?.();
     return !stats || (stats.state === 'ready' && !stats.priming
       && (stats.audioContextState === undefined || stats.audioContextState === 'running'));
+  }
+
+  // Planning uses detached hypothetical states. Only applyVote commits evidence/history.
+  private scheduleLookahead(): void {
+    clearTimeout(this.lookaheadTimer);
+    this.lookaheadTimer = undefined;
+    if (!this.lookahead || !this.lookaheadSupported || !this.canHear()) return;
+    this.lookaheadTimer = setTimeout(() => {
+      this.lookaheadTimer = undefined;
+      this.prepareLookahead();
+      this.scheduleLookahead();
+    }, 1000);
+  }
+
+  private prepareLookahead(): void {
+    if (!this.lookahead || !this.lookaheadSupported || this.ramp || !this.hasAudiblePlayback()) return;
+    const audible = this.estimateAudible();
+    // Predictions while the audible blend is still in a ramp are usually stale.
+    if (blendDistance(audible, this.target.features) > 1e-9) return;
+    const key = JSON.stringify([this.runId, this.learnerState.votes, this.target.features, this.target.prompts, this.rejected?.at]);
+    if (key === this.preparedKey) return;
+    this.preparedKey = key; // at most one attempt per real state; failures do not spin up retries
+    const previous = this.rejected && this.now() - this.rejected.at <= this.cfg.comparisonWindowMs
+      && blendDistance(this.rejected.features, audible) >= this.cfg.evidenceBlendDistance
+      ? this.rejected.features : undefined;
+    const predict = (vote: Vote) => this.deps.learner.processVote({
+      state: structuredClone(this.learnerState), audible: { ...audible }, currentTarget: structuredClone(this.target),
+      vote, evidenceWeight: 1, ...(vote === 'up' && previous ? { comparison: { previous: { ...previous } } } : {}),
+    }).target;
+    const targets = { up: predict('up'), down: predict('down') };
+    this.log('lookahead_prepare', { up: targets.up.features, down: targets.down.features });
+    this.lookahead.prepare(targets);
+  }
+
+  private clearLookahead(): void {
+    this.lookahead?.clear();
+    this.preparedKey = undefined;
+  }
+
+  private usePrepared(vote: Vote, target: Target): boolean {
+    if (!this.lookahead || !this.hasAudiblePlayback() || this.ramp) return false;
+    const prepared = this.lookahead.take(vote, target);
+    if (!prepared) return false;
+    const fadeMs = 100;
+    if (!this.deps.player.replacePcm?.(prepared.audio, prepared.chunks, fadeMs)) {
+      prepared.dispose();
+      return false;
+    }
+    const changed = !sameTarget(this.target, target);
+    const old = this.transport;
+    this.transport = prepared.transport;
+    this.target = target;
+    this.sentFeatures = target.features;
+    this.sentPrompts = target.prompts;
+    this.started = undefined;
+    this.ready = true;
+    this.awaitingReady = false;
+    this.ramp = undefined;
+    clearTimeout(this.rampTimer);
+    this.rampTimer = undefined;
+    // Cached audio starts now, rather than after the old queue/control delay.
+    // Preserve the rejection reference and correlated-click ledger across the switch.
+    this.history = [{ at: this.now(), features: { ...target.features } }];
+    this.heard = this.history[0];
+    this.audibleCursor = -Infinity;
+    this.branchSettlesAt = this.now() + fadeMs + 500;
+    this.preparedKey = undefined;
+    old?.send({ type: 'stop' });
+    old?.close();
+    prepared.activate(this.activeHandlers(prepared.transport));
+    this.log('lookahead_selected', { vote, target: target.features, fadeMs });
+    if (changed || this.evolveTimer === undefined) this.scheduleEvolve();
+    this.scheduleLookahead();
+    return true;
   }
 
   private nextVariation(): Target {
