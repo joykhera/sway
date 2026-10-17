@@ -4,6 +4,7 @@ import { useSessionState } from './use-session-state.ts';
 import { StatusChip } from './StatusChip.tsx';
 import { ThumbsControls } from './ThumbsControls.tsx';
 import { Visualizer } from './Visualizer.tsx';
+import { MusicRequest } from './MusicRequest.tsx';
 import './ui.css';
 
 export type PlayerScreenProps = {
@@ -45,6 +46,7 @@ export function PlayerScreen({ controller }: PlayerScreenProps) {
   const [localPurpose, setLocalPurpose] = useState<ListeningPurpose>('explore');
   const [memoryAction, setMemoryAction] = useState<'export' | 'reset' | null>(null);
   const [memoryNotice, setMemoryNotice] = useState<{ text: string; error: boolean } | null>(null);
+  const [intentPending, setIntentPending] = useState(false);
   const purpose = state.purpose ?? localPurpose;
   const purposeLabel = PURPOSES.find(option => option.value === purpose)!.label;
   const savedVotes = state.savedVotes;
@@ -116,6 +118,9 @@ export function PlayerScreen({ controller }: PlayerScreenProps) {
   useEffect(() => {
     if (!active) return;
     const onKeyDown = (e: KeyboardEvent) => {
+      const target = e.target;
+      if (e.defaultPrevented || (target instanceof HTMLElement
+        && (target.isContentEditable || target.closest('input, textarea, select, [contenteditable="true"]')))) return;
       if (e.key === 'ArrowUp') {
         e.preventDefault();
         handleVote('up');
@@ -168,11 +173,12 @@ export function PlayerScreen({ controller }: PlayerScreenProps) {
               ) : null}
             </fieldset>
           ) : null}
+          <MusicRequest controller={controller} state={state} disabled={memoryAction === 'reset'} onPendingChange={setIntentPending} />
           <button
             type="button"
             className="start-button"
             aria-label="start listening"
-            disabled={memoryAction === 'reset'}
+            disabled={memoryAction === 'reset' || intentPending || state.intentStatus === 'loading'}
             onClick={() => {
               // Called synchronously inside the gesture (autoplay policy). Never awaited —
               // errors surface through session state, not this promise.
@@ -215,6 +221,7 @@ export function PlayerScreen({ controller }: PlayerScreenProps) {
     <main className="app app--live">
       <header className="app__top">
         <StatusChip status={state.status} lastError={state.lastError} />
+        <MusicRequest controller={controller} state={state} compact onPendingChange={setIntentPending} />
       </header>
       <div className="app__stage">
         <Visualizer active={active} lastVote={lastVote} />
