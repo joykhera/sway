@@ -8,10 +8,16 @@
 // and its tests — never hard-depends on the audio barrel's contents. If the import
 // is unavailable, a small built-in procedural generator keeps standalone mode alive.
 
-import { DEFAULT_SAMPLE_RATE_HZ } from '../audio/constants.ts';
+import { DEFAULT_SAMPLE_RATE_HZ, TELEMETRY_SILENCE_FLOOR, TELEMETRY_WINDOW_MS } from '../audio/constants.ts';
 import type { PCMPlayer } from '../audio/types.ts';
 import type { MockPreset } from '../audio/index.ts';
-import type { MusicSessionController, SessionUiState, Vote } from './contracts.ts';
+import type {
+  MusicSessionController,
+  MusicSignature,
+  SessionUiState,
+  StreamLevels,
+  Vote,
+} from './contracts.ts';
 
 /** Platform timer handle: number in browsers, Timeout under Node typings. */
 type TimerHandle = unknown;
@@ -21,6 +27,8 @@ type ClearTimerFn = (handle: TimerHandle) => void;
 export type MockPcmGeneratorLike = {
   /** Returns up to `maxMs` of interleaved stereo s16le PCM at the session sample rate. */
   nextChunk(maxMs?: number): ArrayBuffer;
+  /** The preset currently being generated, if the generator exposes it. */
+  readonly preset?: MockPreset;
   setPreset?(p: MockPreset): void;
   cyclePreset?(): MockPreset;
   nudge?(): void;
@@ -46,6 +54,15 @@ export type MockControllerOptions = {
 };
 
 const ACTIVE: ReadonlySet<string> = new Set(['connecting', 'playing']);
+const ZERO_LEVELS: StreamLevels = { energy: 0, brightnessHz: 0, pitchHz: null, bufferedMs: 0, underruns: 0 };
+
+/** Whisperable identity per preset — honest words for what each generator preset sounds like. */
+const PRESET_SIGNATURES: Readonly<Record<string, MusicSignature>> = {
+  dusk: { genre: 'ambient', instrument: 'synth pad', mood: 'calm', texture: 'layered', focus: 'dusk' },
+  glass: { genre: 'ambient', instrument: 'bell tones', mood: 'dreamy', texture: 'sparse', focus: 'glass' },
+  ember: { genre: 'lofi', instrument: 'warm keys', mood: 'hopeful', texture: 'layered', focus: 'ember' },
+  tide: { genre: 'ambient', instrument: 'deep drones', mood: 'melancholic', texture: 'layered', focus: 'tide' },
+};
 
 export class MockMusicSessionController implements MusicSessionController {
   private readonly playerFactory?: () => PCMPlayer;
@@ -64,6 +81,7 @@ export class MockMusicSessionController implements MusicSessionController {
   };
 
   private readonly listeners = new Set<(state: SessionUiState) => void>();
+  private readonly statsListeners = new Set<(levels: StreamLevels) => void>();
   private state: SessionUiState = { status: 'idle' };
 
   private player: PCMPlayer | null = null;
@@ -75,6 +93,14 @@ export class MockMusicSessionController implements MusicSessionController {
   private sessionStartMs = 0;
   private generatedMs = 0;
   private lastSteerMs = 0;
+  /** Last known generator preset (from `preset`, `cyclePreset`'s return, or `setPreset`). */
+  private activePreset: string | undefined;
+  /** Rolling ~TELEMETRY_WINDOW_MS aggregates over recently pumped PCM. */
+  private statsWindow: { ms: number; sumSq: number; crossings: number; frames: number; samples: number }[] = [];
+  private statsWindowMs = 0;
+  /** Previous left-channel sample (normalized) — zero-crossing detection across chunk edges. */
+  private statsPrevLeft = 0;
+  private latestStats: StreamLevels = ZERO_LEVELS;
 
   constructor(options: MockControllerOptions = {}) {
     this.playerFactory = options.playerFactory;
@@ -103,9 +129,19 @@ export class MockMusicSessionController implements MusicSessionController {
     };
   }
 
+  subscribeStats(listener: (levels: StreamLevels) => void): () => void {
+    this.statsListeners.add(listener);
+    // Synchronous snapshot: the rolling estimate while playing, zeros when idle.
+    listener(this.state.status === 'playing' ? this.latestStats : ZERO_LEVELS);
+    return () => {
+      this.statsListeners.delete(listener);
+    };
+  }
+
   async start(): Promise<void> {
     if (ACTIVE.has(this.state.status)) return; // idempotent while connecting/playing
     const id = ++this.runId;
+    this.activePreset = undefined; // no stale preset while connecting — resolved generator sets it below
     this.setStatus('connecting');
 
     if (!this.playerFactory) {
@@ -151,8 +187,14 @@ export class MockMusicSessionController implements MusicSessionController {
     this.sessionStartMs = t0;
     this.lastSteerMs = t0;
     this.generatedMs = 0;
+    this.activePreset = this.generator?.preset;
+    this.statsWindow = [];
+    this.statsWindowMs = 0;
+    this.statsPrevLeft = 0;
+    this.latestStats = ZERO_LEVELS;
     this.setStatus('playing');
     this.pump(); // first burst immediately, then on the interval
+    this.publishStats();
     this.pumpHandle = this.timers.setInterval(() => this.tick(), this.tickMs);
   }
 
@@ -166,10 +208,16 @@ export class MockMusicSessionController implements MusicSessionController {
     const gen = this.generator;
     this.voteHandle = this.timers.setTimeout(() => {
       this.voteHandle = null;
-      if (v === 'down') gen?.cyclePreset?.();
-      else gen?.nudge?.();
+      if (v === 'down') {
+        const next = gen?.cyclePreset?.();
+        this.activePreset = typeof next === 'string' ? next : (gen?.preset ?? this.activePreset);
+      } else {
+        gen?.nudge?.();
+        this.activePreset = gen?.preset ?? this.activePreset;
+      }
+      this.refreshSignature(); // preset steers update the identity — status stays 'playing'
     }, this.steerDelayMs);
-    // Deliberately no emit — votes never change status.
+    // No status emit on the vote itself — votes never change status.
   }
 
   stop(): void {
@@ -187,6 +235,11 @@ export class MockMusicSessionController implements MusicSessionController {
     const player = this.player;
     this.player = null;
     this.generator = null;
+    this.activePreset = undefined;
+    this.statsWindow = [];
+    this.statsWindowMs = 0;
+    this.statsPrevLeft = 0;
+    this.latestStats = ZERO_LEVELS;
     if (player) void player.close();
     this.setStatus('stopped');
   }
@@ -199,17 +252,41 @@ export class MockMusicSessionController implements MusicSessionController {
   }
 
   private setStatus(status: string, lastError?: string): void {
-    this.state = lastError === undefined ? { status } : { status, lastError };
+    const state: SessionUiState = lastError === undefined ? { status } : { status, lastError };
+    const sig = this.signatureNow();
+    if (sig && ACTIVE.has(status)) state.signature = sig;
+    this.state = state;
     this.emit();
+  }
+
+  /** Recompute the signature from the current preset; emit only when it actually changed. */
+  private refreshSignature(): void {
+    if (!ACTIVE.has(this.state.status)) return;
+    const sig = this.signatureNow();
+    const prev = this.state.signature;
+    if (sig === prev) return;
+    if (sig && prev && sig.genre === prev.genre && sig.instrument === prev.instrument &&
+      sig.mood === prev.mood && sig.texture === prev.texture && sig.focus === prev.focus) return;
+    this.state = sig === undefined ? { ...this.state, signature: undefined } : { ...this.state, signature: sig };
+    this.emit();
+  }
+
+  private signatureNow(): MusicSignature | undefined {
+    const name = this.generator?.preset ?? this.activePreset;
+    if (!name) return undefined;
+    return PRESET_SIGNATURES[name] ?? { focus: name };
   }
 
   private tick(): void {
     if (this.state.status !== 'playing') return;
     this.pump();
+    this.publishStats();
     const now = this.now();
     if (this.generator?.nudge && now - this.lastSteerMs >= this.idleEvolveMs) {
       this.lastSteerMs = now;
       this.generator.nudge();
+      this.activePreset = this.generator.preset ?? this.activePreset;
+      this.refreshSignature();
     }
   }
 
@@ -224,12 +301,73 @@ export class MockMusicSessionController implements MusicSessionController {
       // Generators may legally emit mid-frame (≢0 mod 4) chunks — only empties stall us.
       if (!(chunk instanceof ArrayBuffer) || chunk.byteLength === 0) break;
       this.generatedMs += (chunk.byteLength / frameBytes / this.sampleRateHz) * 1000;
+      this.accumulateStats(chunk);
       try {
         player.enqueuePcm(chunk);
       } catch {
         break; // a closed/torn-down player swallows further chunks
       }
     }
+  }
+
+  /**
+   * Fold one pumped chunk into the rolling telemetry window: stereo RMS plus
+   * left-channel zero crossings — the same measurements the worklet reports.
+   */
+  private accumulateStats(chunk: ArrayBuffer): void {
+    if (chunk.byteLength % 2 !== 0) return; // not int16-aligned — skip rather than guess
+    const view = new Int16Array(chunk);
+    const n = view.length;
+    if (n === 0) return;
+    let sumSq = 0;
+    let crossings = 0;
+    let frames = 0;
+    let prev = this.statsPrevLeft;
+    for (let i = 0; i < n; i++) {
+      const s = view[i]! / 32768;
+      sumSq += s * s;
+      if ((i & 1) === 0) {
+        frames++;
+        if (prev !== 0 && s !== 0 && s < 0 !== prev < 0) crossings++;
+        if (s !== 0) prev = s;
+      }
+    }
+    this.statsPrevLeft = prev;
+    const ms = (frames / this.sampleRateHz) * 1000;
+    this.statsWindow.push({ ms, sumSq, crossings, frames, samples: n });
+    this.statsWindowMs += ms;
+    // Trim whole entries until the window fits — small chunks make this cheap.
+    while (this.statsWindowMs > TELEMETRY_WINDOW_MS && this.statsWindow.length > 1) {
+      this.statsWindowMs -= this.statsWindow.shift()!.ms;
+    }
+  }
+
+  /** Aggregate the rolling window into StreamLevels and push it to stats subscribers. */
+  private publishStats(): void {
+    let sumSq = 0;
+    let crossings = 0;
+    let frames = 0;
+    let samples = 0;
+    for (const e of this.statsWindow) {
+      sumSq += e.sumSq;
+      crossings += e.crossings;
+      frames += e.frames;
+      samples += e.samples;
+    }
+    const energy = samples > 0 ? Math.sqrt(sumSq / samples) : 0;
+    const windowSec = this.statsWindowMs / 1000;
+    // A periodic signal crosses zero twice per cycle → ZCR/2 tracks the dominant partial;
+    // on a mixed pad it reads as spectral brightness. Both fields share that one estimator.
+    const zcrHz = windowSec > 0 ? crossings / windowSec / 2 : 0;
+    this.latestStats = {
+      energy,
+      brightnessHz: zcrHz,
+      pitchHz: energy > TELEMETRY_SILENCE_FLOOR && zcrHz > 0 ? zcrHz : null,
+      bufferedMs: this.player?.getBufferedDurationMs?.() ?? 0,
+      underruns: 0,
+    };
+    if (this.statsListeners.size === 0) return;
+    for (const l of [...this.statsListeners]) l(this.latestStats);
   }
 
   private async makeGenerator(): Promise<MockPcmGeneratorLike> {
@@ -269,6 +407,11 @@ class BasicMockPcmGenerator implements MockPcmGeneratorLike {
   private wobble = 0; // transient detune applied by nudge(), decays over time
 
   constructor(private readonly sampleRateHz: number) { }
+
+  /** The preset currently being generated. */
+  get preset(): MockPreset {
+    return BASIC_PRESETS[this.presetIndex % BASIC_PRESETS.length]!.name as MockPreset;
+  }
 
   nextChunk(maxMs = 60): ArrayBuffer {
     const frames = Math.max(1, Math.round((this.sampleRateHz * maxMs) / 1000));

@@ -79,18 +79,59 @@ export interface PCMPlayer {
   configure(audio: AudioFormat): void;
   enqueuePcm(bytes: ArrayBuffer): void;
   getBufferedDurationMs(): number;
+  /** Latest diagnostics snapshot (includes live signal telemetry), if the implementation exposes it. */
+  getStats?(): PCMPlayerStats;
   close(): Promise<void>;
 }
+
+/** Diagnostics subset the controller maps onto StreamLevels; implementations may expose more fields. */
+export type PCMPlayerStats = {
+  /** Decoded audio buffered but not yet rendered. */
+  bufferedMs: number;
+  /** Render callbacks that ran out of audio since the last reset. */
+  underruns: number;
+  /** RMS of recently rendered output, 0..1. */
+  energyRms: number;
+  /** Spectral-brightness proxy in Hz. */
+  brightnessHz: number;
+  /** Dominant-partial pitch estimate in Hz, or null when silent/indeterminate. */
+  pitchHz: number | null;
+};
 
 // ---- Controller contract (implemented by D in src/controller, consumed by UI) ----
 
 export type SessionStatus = 'idle' | 'connecting' | 'playing' | 'reconnecting' | 'stopped' | 'error';
 
-export type SessionState = { status: SessionStatus; lastError?: string };
+/** The blend the controller is steering toward, rendered as whisperable words. */
+export type MusicSignature = {
+  genre?: string;
+  instrument?: string;
+  mood?: string;
+  texture?: string;
+  /** Highest-weight prompt phrase the relay was last told to play. */
+  focus?: string;
+};
+
+/** Live rendered-signal telemetry, ~10 Hz. Written straight to canvas — never re-render React per tick. */
+export type StreamLevels = {
+  /** 0..1 RMS of rendered output. */
+  energy: number;
+  /** Spectral-brightness proxy in Hz. */
+  brightnessHz: number;
+  /** Dominant-partial pitch estimate in Hz, or null when silent/indeterminate. */
+  pitchHz: number | null;
+  /** Audio buffered but not yet rendered. */
+  bufferedMs: number;
+  underruns: number;
+};
+
+export type SessionState = { status: SessionStatus; lastError?: string; signature?: MusicSignature };
 
 export interface MusicSessionController {
   start(): Promise<void>;
   vote(v: Vote): void; // synchronous, never locked out
   stop(): void;
   subscribe(listener: (state: SessionState) => void): () => void;
+  /** Optional: ~10 Hz live levels while a session is active; synchronous snapshot on subscribe (zeros when idle). */
+  subscribeStats?(listener: (levels: StreamLevels) => void): () => void;
 }

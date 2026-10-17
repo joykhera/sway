@@ -197,6 +197,10 @@ export class WorkletPCMPlayer implements PCMPlayer {
       priming: ws?.priming ?? true,
       outputSampleRateHz: this.ctx?.sampleRate ?? 0,
       sourceSampleRateHz: this.sourceSampleRateHz,
+      // Live telemetry defaults until the first stats message arrives.
+      energyRms: ws?.energyRms ?? 0,
+      brightnessHz: ws?.brightnessHz ?? 0,
+      pitchHz: ws?.pitchHz ?? null,
     };
   }
 

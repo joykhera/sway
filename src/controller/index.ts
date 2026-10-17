@@ -3,18 +3,74 @@ import type {
   Learner,
   LearnerState,
   MusicSessionController,
+  MusicSignature,
   PCMPlayer,
+  PCMPlayerStats,
   ServerMessage,
   SessionState,
+  StreamLevels,
   Target,
   Vote,
   WeightedPrompt,
 } from '../shared/protocol.ts';
+import { FEATURE_GROUPS, GROUP_IDS, type FeatureGroup } from '../learner/vocabulary.ts';
 import type { MusicTransport, TransportFactory } from '../transport/types.ts';
 import { lerpBlend, lerpPrompts } from './blend.ts';
 import { DEFAULT_CONTROLLER_CONFIG, type ControllerConfig } from './config.ts';
 
 export { DEFAULT_CONTROLLER_CONFIG, type ControllerConfig } from './config.ts';
+
+/** Stats polling cadence for `subscribeStats` — matches the player's telemetry window rate. */
+const STATS_INTERVAL_MS = 100;
+/** Statuses during which the session is steering toward a target and stats flow. */
+const ACTIVE_STATUSES: ReadonlySet<SessionState['status']> = new Set(['connecting', 'playing', 'reconnecting']);
+const ZERO_LEVELS: StreamLevels = { energy: 0, brightnessHz: 0, pitchHz: null, bufferedMs: 0, underruns: 0 };
+
+/** Reverse lookup: bare feature id ('lofi') -> its group ('genre'). */
+const GROUP_OF_ID = new Map<string, FeatureGroup>();
+for (const group of GROUP_IDS) {
+  for (const id of FEATURE_GROUPS[group]) GROUP_OF_ID.set(id, group);
+}
+
+/**
+ * The stream's musical identity: the highest-weight feature in each group plus the
+ * highest-weight prompt phrase. Feature ids may be bare ('lofi') or carry a
+ * 'group:' prefix ('genre:lofi') — both resolve to the same group.
+ */
+export function deriveSignature(target: Target): MusicSignature | undefined {
+  const best = new Map<FeatureGroup, { word: string; weight: number }>();
+  for (const [key, weight] of Object.entries(target.features)) {
+    if (typeof weight !== 'number' || !Number.isFinite(weight) || weight <= 0) continue;
+    let group: FeatureGroup | undefined;
+    let word = key;
+    const colon = key.indexOf(':');
+    if (colon > 0 && key.slice(0, colon) in FEATURE_GROUPS) {
+      group = key.slice(0, colon) as FeatureGroup;
+      word = key.slice(colon + 1);
+    } else {
+      group = GROUP_OF_ID.get(key);
+    }
+    if (!group) continue;
+    const cur = best.get(group);
+    if (!cur || weight > cur.weight) best.set(group, { word, weight });
+  }
+  let focus: string | undefined;
+  let top = -Infinity;
+  for (const p of target.prompts) {
+    if (p.weight > top) {
+      top = p.weight;
+      focus = p.text;
+    }
+  }
+  const signature: MusicSignature = {
+    genre: best.get('genre')?.word,
+    instrument: best.get('instrument')?.word,
+    mood: best.get('mood')?.word,
+    texture: best.get('texture')?.word,
+    focus,
+  };
+  return Object.values(signature).some((v) => v !== undefined) ? signature : undefined;
+}
 
 export type ControllerDeps = {
   learner: Learner;
@@ -34,7 +90,10 @@ export class SessionController implements MusicSessionController {
   private readonly now: () => number;
   private readonly log: (event: string, data?: Record<string, unknown>) => void;
   private readonly listeners = new Set<(s: SessionState) => void>();
+  private readonly statsListeners = new Set<(l: StreamLevels) => void>();
   private state: SessionState = { status: 'idle' };
+  // Derived from `this.target` whenever it changes; surfaced on states emitted while active.
+  private signature: MusicSignature | undefined;
 
   private learnerState: LearnerState;
   private target: Target;
@@ -51,6 +110,7 @@ export class SessionController implements MusicSessionController {
   private rampTimer: ReturnType<typeof setTimeout> | undefined;
   private evolveTimer: ReturnType<typeof setTimeout> | undefined;
   private retryTimer: ReturnType<typeof setTimeout> | undefined;
+  private statsTimer: ReturnType<typeof setInterval> | undefined;
   private attempts = 0;
   private runId = 0; // bumped by start() and stop() so a superseded start() cannot connect or fail the new session
   // What the current socket's `start` message carried; a vote before `ready` may have moved past it.
@@ -59,13 +119,14 @@ export class SessionController implements MusicSessionController {
   constructor(private readonly deps: ControllerDeps) {
     this.cfg = { ...DEFAULT_CONTROLLER_CONFIG, ...deps.config };
     this.now = deps.now ?? Date.now;
-    this.log = deps.log ?? (() => {});
+    this.log = deps.log ?? (() => { });
     const seed = deps.seed ?? Math.floor(Math.random() * 0x7fffffff);
     this.learnerState = deps.learner.createLearner(seed);
     this.target = deps.learner.initialTarget(this.learnerState);
     this.sentFeatures = this.target.features;
     this.sentPrompts = this.target.prompts;
     this.history = [{ at: this.now(), features: this.sentFeatures }];
+    this.signature = deriveSignature(this.target);
   }
 
   async start(): Promise<void> {
@@ -104,7 +165,7 @@ export class SessionController implements MusicSessionController {
     this.runId++;
     this.transport?.send({ type: 'stop' });
     this.teardownConnection();
-    void this.deps.player.close().catch(() => {});
+    void this.deps.player.close().catch(() => { });
     this.setState({ status: 'stopped' });
   }
 
@@ -112,6 +173,47 @@ export class SessionController implements MusicSessionController {
     this.listeners.add(listener);
     listener(this.state);
     return () => this.listeners.delete(listener);
+  }
+
+  subscribeStats(listener: (l: StreamLevels) => void): () => void {
+    this.statsListeners.add(listener);
+    listener(this.statsSnapshot()); // synchronous snapshot: zeros when idle/no stats
+    this.updateStatsTimer();
+    return () => {
+      this.statsListeners.delete(listener);
+      this.updateStatsTimer();
+    };
+  }
+
+
+  // ---- live stats (~10 Hz while active) ----
+
+  private updateStatsTimer(): void {
+    const want = this.statsListeners.size > 0 && ACTIVE_STATUSES.has(this.state.status);
+    if (want && this.statsTimer === undefined) {
+      this.statsTimer = setInterval(() => this.emitStats(), STATS_INTERVAL_MS);
+    } else if (!want && this.statsTimer !== undefined) {
+      clearInterval(this.statsTimer);
+      this.statsTimer = undefined;
+    }
+  }
+
+  private emitStats(): void {
+    const snapshot = this.statsSnapshot();
+    for (const l of this.statsListeners) l(snapshot);
+  }
+
+  private statsSnapshot(): StreamLevels {
+    if (!ACTIVE_STATUSES.has(this.state.status)) return ZERO_LEVELS;
+    const stats: PCMPlayerStats | undefined = this.deps.player.getStats?.();
+    if (!stats) return ZERO_LEVELS; // a torn-down player reports silence, not an exception
+    return {
+      energy: stats.energyRms,
+      brightnessHz: stats.brightnessHz,
+      pitchHz: stats.pitchHz,
+      bufferedMs: stats.bufferedMs,
+      underruns: stats.underruns,
+    };
   }
 
   // ---- connection ----
@@ -190,7 +292,7 @@ export class SessionController implements MusicSessionController {
 
   private fail(message: string): void {
     this.teardownConnection();
-    void this.deps.player.close().catch(() => {});
+    void this.deps.player.close().catch(() => { });
     this.setState({ status: 'error', lastError: message });
   }
 
@@ -202,13 +304,20 @@ export class SessionController implements MusicSessionController {
     clearTimeout(this.rampTimer);
     clearTimeout(this.evolveTimer);
     clearTimeout(this.retryTimer);
+    clearInterval(this.statsTimer);
     this.rampTimer = this.evolveTimer = this.retryTimer = undefined;
+    this.statsTimer = undefined;
   }
 
   // ---- steering ----
 
   private retarget(target: Target, resetEvolve = true): void {
     this.target = target;
+    this.signature = deriveSignature(target);
+    if (ACTIVE_STATUSES.has(this.state.status)) {
+      // Signature-only steering change: same status, new identity — still an emission.
+      this.setState({ ...this.state });
+    }
     clearTimeout(this.rampTimer);
     if (!this.ready) {
       // Not streaming yet (or reconnecting): connect() will start from this target.
@@ -257,8 +366,17 @@ export class SessionController implements MusicSessionController {
   }
 
   private setState(next: SessionState): void {
-    if (next.status === this.state.status && next.lastError === this.state.lastError) return;
+    if (ACTIVE_STATUSES.has(next.status) && this.signature !== undefined) {
+      next = { ...next, signature: this.signature };
+    }
+    if (
+      next.status === this.state.status &&
+      next.lastError === this.state.lastError &&
+      next.signature === this.state.signature
+    )
+      return;
     this.state = next;
     for (const l of this.listeners) l(next);
+    this.updateStatsTimer();
   }
 }

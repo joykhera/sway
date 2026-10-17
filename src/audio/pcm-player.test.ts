@@ -259,7 +259,15 @@ describe('WorkletPCMPlayer', () => {
     await player.initializeFromUserGesture();
     expect(player.getBufferedDurationMs()).toBe(0);
 
-    nodes[0]!.emitStats({ bufferedMs: 250, underruns: 2, droppedFrames: 3, priming: false });
+    nodes[0]!.emitStats({
+      bufferedMs: 250,
+      underruns: 2,
+      droppedFrames: 3,
+      priming: false,
+      energyRms: 0.4,
+      brightnessHz: 220.5,
+      pitchHz: 440,
+    });
     expect(player.getBufferedDurationMs()).toBe(250);
     const stats = player.getStats();
     expect(stats).toMatchObject({
@@ -269,6 +277,28 @@ describe('WorkletPCMPlayer', () => {
       droppedFrames: 3,
       priming: false,
       outputSampleRateHz: 48000,
+      energyRms: 0.4,
+      brightnessHz: 220.5,
+      pitchHz: 440,
+    });
+  });
+
+  it('getStats() reports telemetry defaults before init and before first stats', async () => {
+    const { player } = makeRig();
+    // Before init: no ctx, no worklet messages.
+    expect(player.getStats()).toMatchObject({
+      state: 'idle',
+      energyRms: 0,
+      brightnessHz: 0,
+      pitchHz: null,
+    });
+    await player.initializeFromUserGesture();
+    // Ready but silent: still no stats message from the worklet.
+    expect(player.getStats()).toMatchObject({
+      state: 'ready',
+      energyRms: 0,
+      brightnessHz: 0,
+      pitchHz: null,
     });
   });
 

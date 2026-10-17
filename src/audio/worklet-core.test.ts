@@ -166,4 +166,95 @@ describe('PcmWorkletCore', () => {
     core.pushPcm(pcmSine(48));
     expect(isAllZero(core.render(48))).toBe(false);
   });
+
+  describe('rendered-signal telemetry', () => {
+    it('reports ~0 energy, 0 brightness, and null pitch on silence', () => {
+      const core = makeCore({ prerollMs: 0 });
+      core.pushPcm(pcmConstant(4800, 0)); // 100 ms of digital silence
+      for (let i = 0; i < 20; i++) core.render(128);
+      const s = core.getStats();
+      expect(s.energyRms).toBe(0);
+      expect(s.brightnessHz).toBe(0);
+      expect(s.pitchHz).toBeNull();
+    });
+
+    it('reports ~0 energy and null pitch while priming emits silence', () => {
+      const core = makeCore(); // 2400-frame preroll, not yet met
+      core.pushPcm(pcmSine(1000));
+      for (let i = 0; i < 10; i++) core.render(128); // all priming zeros
+      const s = core.getStats();
+      expect(s.priming).toBe(true);
+      expect(s.energyRms).toBe(0);
+      expect(s.pitchHz).toBeNull();
+    });
+
+    it('locks a 440 Hz sine: pitch ≈440, brightness ≈220, energy in (0,1]', () => {
+      const core = makeCore({ prerollMs: 0 });
+      core.pushPcm(pcmSine(48000, RATE, 440)); // 1 s of tone
+      // Render > TELEMETRY_WINDOW_MS (300 ms) so the window is all tone.
+      for (let i = 0; i < 200; i++) core.render(128); // 25 600 f ≈ 533 ms
+      const s = core.getStats();
+      // zcrHz ≈ 2·440 = 880 crossings/s → pitchHz = zcrHz/2 ≈ 440.
+      expect(s.pitchHz).not.toBeNull();
+      expect(s.pitchHz!).toBeGreaterThanOrEqual(440 * 0.85);
+      expect(s.pitchHz!).toBeLessThanOrEqual(440 * 1.15);
+      // brightnessHz = zcrHz/4 ≈ 220 for a pure tone (generous tolerance).
+      expect(s.brightnessHz).toBeGreaterThanOrEqual(140);
+      expect(s.brightnessHz).toBeLessThanOrEqual(300);
+      // amp 20000/32768 ≈ 0.61 peak → RMS ≈ 0.43.
+      expect(s.energyRms).toBeGreaterThan(0);
+      expect(s.energyRms).toBeLessThanOrEqual(1);
+      expect(s.energyRms).toBeGreaterThan(0.3);
+      expect(s.energyRms).toBeLessThan(0.6);
+    });
+
+    it('higher-frequency sine reads proportionally brighter', () => {
+      const bright = makeCore({ prerollMs: 0 });
+      bright.pushPcm(pcmSine(48000, RATE, 4000));
+      for (let i = 0; i < 200; i++) bright.render(128);
+      const dark = makeCore({ prerollMs: 0 });
+      dark.pushPcm(pcmSine(48000, RATE, 220));
+      for (let i = 0; i < 200; i++) dark.render(128);
+      expect(bright.getStats().brightnessHz).toBeGreaterThan(
+        dark.getStats().brightnessHz,
+      );
+      expect(dark.getStats().pitchHz!).toBeGreaterThanOrEqual(220 * 0.85);
+      expect(dark.getStats().pitchHz!).toBeLessThanOrEqual(220 * 1.15);
+    });
+
+    it('window slides: pitch locks on tone, returns to null once it drains', () => {
+      const core = makeCore({ prerollMs: 0, reprimeMs: 10 });
+      core.pushPcm(pcmConstant(19200, 0)); // 400 ms silence
+      for (let i = 0; i < 150; i++) core.render(128); // render all of it
+      let s = core.getStats();
+      expect(s.energyRms).toBeLessThan(0.002);
+      expect(s.pitchHz).toBeNull();
+
+      core.pushPcm(pcmSine(24000, RATE, 440)); // 500 ms of tone
+      for (let i = 0; i < 190; i++) core.render(128); // exhausts the ring
+      s = core.getStats();
+      expect(s.pitchHz).not.toBeNull();
+      expect(s.pitchHz!).toBeGreaterThanOrEqual(440 * 0.85);
+      expect(s.pitchHz!).toBeLessThanOrEqual(440 * 1.15);
+
+      // ~500 ms of underrun/priming zeros slides the window fully past the tone.
+      for (let i = 0; i < 200; i++) core.render(128);
+      s = core.getStats();
+      expect(s.energyRms).toBeLessThan(0.002);
+      expect(s.brightnessHz).toBe(0);
+      expect(s.pitchHz).toBeNull();
+    });
+
+    it('reset() clears telemetry back to silence defaults', () => {
+      const core = makeCore({ prerollMs: 0 });
+      core.pushPcm(pcmSine(24000, RATE, 440));
+      for (let i = 0; i < 190; i++) core.render(128);
+      expect(core.getStats().pitchHz).not.toBeNull();
+      core.reset();
+      const s = core.getStats();
+      expect(s.energyRms).toBe(0);
+      expect(s.brightnessHz).toBe(0);
+      expect(s.pitchHz).toBeNull();
+    });
+  });
 });
