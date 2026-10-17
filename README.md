@@ -10,7 +10,7 @@ Finding music that actually fits your taste is surprisingly hard. Recommendation
 
 Sway generates music live with **Google Lyria RealTime**. A small in-memory learner turns every vote into a weighted blend of musical features (genre, instrument, mood, texture) and steers the generation prompts toward it — cross-fading so playback never stops. Tap a word in the visualizer to lean the stream that way; like what you hear and it's saved as a moment you can return to.
 
-- 👎 votes redirect fast — the change is audible in ~2.5 s
+- 👎 uses prepared audio when ready, with a 100 ms crossfade; otherwise it steers over ~2.5 s plus generation and playback-buffer delay
 - Learns only from explicit feedback; silence never becomes evidence
 - Preferences persist per-purpose in your browser (IndexedDB) — nothing leaves the device except the stream
 - The whole session is visualized live: a WebGL2 particle field that breathes with the actual audio
@@ -45,7 +45,9 @@ flowchart LR
     RELAY <-->|"secure stream"| LYRIA
 ```
 
-Vote → learner picks a new target → controller cross-fades the prompts over ~2.5 s → Lyria keeps generating → the next audio block lands already shaped by your taste.
+While listening, two bounded streams prepare the next Like and Dislike choices. Vote → learner picks a target → matching prepared audio replaces playback with a 100 ms crossfade → the chosen stream resumes and the next pair is prepared. Unready, stale or failed candidates use the normal prompt-steering ramp.
+
+Preparation uses extra generation and up to three provider sessions; `createBrowserController({ lookahead: false })` disables it. See [cache integration and measured latency](docs/adaptive-integration.md#main-integration-and-live-cache-verification--2026-10-17) for readiness conditions and test limits.
 
 ## Run
 

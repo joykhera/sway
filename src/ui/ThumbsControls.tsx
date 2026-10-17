@@ -240,8 +240,9 @@ export function ThumbsControls({ onVote, lastVote, controller }: ThumbsControlsP
   );
 
   const handle = (v: Vote) => {
-    onVote(v);
+    // The controller may synchronously report a fresh cached-audio transition.
     begin(v, 'timer');
+    onVote(v);
   };
 
   const cls = (v: Vote) => {

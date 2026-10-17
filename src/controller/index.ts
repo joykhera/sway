@@ -16,8 +16,9 @@ import type {
   WeightedPrompt,
 } from '../shared/protocol.ts';
 import { FEATURE_GROUPS, GROUP_IDS, type FeatureGroup } from '../learner/vocabulary.ts';
-import type { MusicTransport, TransportFactory } from '../transport/types.ts';
+import type { MusicTransport, TransportFactory, TransportHandlers } from '../transport/types.ts';
 import { lerpBlend, lerpPrompts } from './blend.ts';
+import { LookaheadPool } from './lookahead.ts';
 import type { FeedbackRecord, PreferencesStore, SavedProfile } from '../preferences/types.ts';
 import { DEFAULT_CONTROLLER_CONFIG, type ControllerConfig } from './config.ts';
 
@@ -91,6 +92,7 @@ export type ControllerDeps = {
   now?: () => number;
   log?: (event: string, data?: Record<string, unknown>) => void;
   preferences?: PreferencesStore;
+  lookahead?: boolean;
   restoreState?: (value: unknown, purpose: ListeningPurpose) => LearnerState | undefined;
 };
 
@@ -144,7 +146,7 @@ export class SessionController implements MusicSessionController {
   private evidenceHistory: Sent[] = [];
   // Issue #9: the latest vote's explanation + an ETA for when it reaches the ears.
   private decision: VoteDecision | undefined;
-  private pendingSteer: { vote: Vote; at: number; etaMs: number; generationAtVote: number; doneAt?: number } | undefined;
+  private pendingSteer: { vote: Vote; at: number; etaMs: number; generationAtVote: number; prepared?: boolean; doneAt?: number } | undefined;
   // PCM blocks landed on the current socket — the real generation cadence behind steerProgress.
   private blocksLanded = 0;
   private nowPlayingSig: MusicSignature | undefined;
@@ -165,6 +167,11 @@ export class SessionController implements MusicSessionController {
   private queuedVotes: Array<{ vote: Vote; at: number; session: string; purpose: ListeningPurpose; run: number }> = [];
 
   private transport: MusicTransport | undefined;
+  private readonly lookahead: LookaheadPool | undefined;
+  private lookaheadSupported = false;
+  private lookaheadTimer: ReturnType<typeof setTimeout> | undefined;
+  private preparedKey: string | undefined;
+  private branchSettlesAt = -Infinity;
   private ready = false;
   private awaitingReady = false;
   private revision = 0;
@@ -185,7 +192,10 @@ export class SessionController implements MusicSessionController {
       this.cfg.voteRampMs = deps.config.rampMs;
     }
     this.now = deps.now ?? Date.now;
-    this.log = deps.log ?? (() => { });
+    this.log = deps.log ?? (() => {});
+    if (deps.lookahead && deps.player.replacePcm) {
+      this.lookahead = new LookaheadPool(deps.createTransport, { log: this.log });
+    }
     this.seed = deps.seed ?? Math.floor(Math.random() * 0x7fffffff);
     this.purpose = deps.purpose ?? 'explore';
     this.learnerState = deps.learner.createLearner(this.seed, this.purpose);
@@ -397,7 +407,14 @@ export class SessionController implements MusicSessionController {
     };
     if (evidenceWeight > 0) this.rejected = v === 'down' ? { at: this.now(), features: { ...audible } } : undefined;
     this.log('vote', { vote: v, audible, previous, evidenceWeight, bufferedMs: buffered, votes: result.state.votes });
-    this.retarget(result.target, true, this.cfg.voteRampMs);
+    if (!this.usePrepared(v, result.target)) {
+      this.log('lookahead_miss', { vote: v });
+      this.clearLookahead();
+      this.retarget(result.target, true, this.cfg.voteRampMs);
+    }
+    // Deliver a fresh progress sample before the next polling tick; ready cached
+    // audio can finish its fade before that tick reaches the UI.
+    this.emitStats();
     this.savePreferences({
       id: `${session}:${++this.feedbackSequence}`, at, sessionId: session,
       purpose: this.purpose, vote: v, audible: { ...audible }, ...(previous ? { previous } : {}), evidenceWeight,
@@ -485,13 +502,14 @@ export class SessionController implements MusicSessionController {
    * ramp) but holds at 0.95 until BOTH the ETA has passed AND at least one new
    * generated PCM block has landed since the vote — a fast upstream completes
    * right at the ETA; a stalled one parks the fill just under full. Lingers
-   * ~600 ms at 1, then clears to null.
+   * ~600 ms at 1, then clears to null. Prepared audio instead uses the local
+   * crossfade duration and needs no new provider block.
    */
   private steerProgress(): { p: number | null; v: Vote | null } {
     const s = this.pendingSteer;
     if (!s || !this.ready) return { p: null, v: null };
     const now = this.now();
-    const landed = this.blocksLanded > s.generationAtVote;
+    const landed = s.prepared || this.blocksLanded > s.generationAtVote;
     if (landed && now - s.at >= s.etaMs) {
       s.doneAt ??= now;
       if (now - s.doneAt > 600) {
@@ -515,7 +533,11 @@ export class SessionController implements MusicSessionController {
     this.blocksLanded = 0; // a new socket restarts the generation count
     const transport = this.deps.createTransport();
     this.transport = transport;
-    transport.connect({
+    transport.connect(this.activeHandlers(transport));
+  }
+
+  private activeHandlers(transport: MusicTransport): TransportHandlers {
+    return {
       onOpen: () => {
         if (this.transport !== transport) return;
         this.started = { features: this.sentFeatures, prompts: this.sentPrompts };
@@ -530,12 +552,13 @@ export class SessionController implements MusicSessionController {
       onClose: () => {
         if (this.transport === transport) this.connectionLost('connection closed');
       },
-    });
+    };
   }
 
   private onServerMessage(msg: ServerMessage): void {
     switch (msg.type) {
       case 'ready':
+        this.lookaheadSupported = msg.prefetch === true;
         const resetHearing = !this.ready || this.awaitingReady;
         this.deps.player.configure(msg.audio);
         this.ready = true;
@@ -553,9 +576,11 @@ export class SessionController implements MusicSessionController {
         } else {
           this.scheduleEvolve();
         }
+        this.scheduleLookahead();
         return;
       case 'status':
         if (msg.state === 'reconnecting') {
+          this.clearLookahead();
           if (!this.awaitingReady) this.started ??= { features: this.sentFeatures, prompts: this.sentPrompts };
           this.awaitingReady = true;
           this.sentFeatures = this.target.features;
@@ -602,6 +627,10 @@ export class SessionController implements MusicSessionController {
   }
 
   private teardownConnection(): void {
+    this.clearLookahead();
+    this.lookaheadSupported = false;
+    clearTimeout(this.lookaheadTimer);
+    this.lookaheadTimer = undefined;
     this.transport?.close();
     this.rejected = undefined;
     this.transport = undefined;
@@ -623,6 +652,7 @@ export class SessionController implements MusicSessionController {
 
   private retarget(target: Target, resetEvolve = true, rampMs = this.cfg.rampMs): void {
     const directionChanged = !sameTarget(this.target, target);
+    if (directionChanged) this.clearLookahead();
     this.target = target;
     this.signature = deriveSignature(target);
     if (ACTIVE_STATUSES.has(this.state.status)) {
@@ -761,10 +791,90 @@ export class SessionController implements MusicSessionController {
   }
 
   private hasAudiblePlayback(): boolean {
+    if (this.now() < this.branchSettlesAt) return false;
     if (!this.canHear()) return false;
     const stats = this.deps.player.getStats?.();
     return !stats || (stats.state === 'ready' && !stats.priming
       && (stats.audioContextState === undefined || stats.audioContextState === 'running'));
+  }
+
+  // Planning uses detached hypothetical states. Only applyVote commits evidence/history.
+  private scheduleLookahead(): void {
+    clearTimeout(this.lookaheadTimer);
+    this.lookaheadTimer = undefined;
+    if (!this.lookahead || !this.lookaheadSupported || !this.canHear()) return;
+    this.lookaheadTimer = setTimeout(() => {
+      this.lookaheadTimer = undefined;
+      this.prepareLookahead();
+      this.scheduleLookahead();
+    }, 1000);
+  }
+
+  private prepareLookahead(): void {
+    if (!this.lookahead || !this.lookaheadSupported || this.ramp || !this.hasAudiblePlayback()) return;
+    const audible = this.estimateAudible();
+    // Predictions while the audible blend is still in a ramp are usually stale.
+    if (blendDistance(audible, this.target.features) > 1e-9) return;
+    const key = JSON.stringify([this.runId, this.learnerState.votes, this.target.features, this.target.prompts, this.rejected?.at]);
+    if (key === this.preparedKey) return;
+    this.preparedKey = key; // at most one attempt per real state; failures do not spin up retries
+    const previous = this.rejected && this.now() - this.rejected.at <= this.cfg.comparisonWindowMs
+      && blendDistance(this.rejected.features, audible) >= this.cfg.evidenceBlendDistance
+      ? this.rejected.features : undefined;
+    const predict = (vote: Vote) => this.deps.learner.processVote({
+      state: structuredClone(this.learnerState), audible: { ...audible }, currentTarget: structuredClone(this.target),
+      vote, evidenceWeight: 1, ...(vote === 'up' && previous ? { comparison: { previous: { ...previous } } } : {}),
+    }).target;
+    const targets = { up: predict('up'), down: predict('down') };
+    this.log('lookahead_prepare', { up: targets.up.features, down: targets.down.features });
+    this.lookahead.prepare(targets);
+  }
+
+  private clearLookahead(): void {
+    this.lookahead?.clear();
+    this.preparedKey = undefined;
+  }
+
+  private usePrepared(vote: Vote, target: Target): boolean {
+    if (!this.lookahead || !this.hasAudiblePlayback() || this.ramp) return false;
+    const prepared = this.lookahead.take(vote, target);
+    if (!prepared) return false;
+    const fadeMs = 100;
+    if (!this.deps.player.replacePcm?.(prepared.audio, prepared.chunks, fadeMs)) {
+      prepared.dispose();
+      return false;
+    }
+    const changed = !sameTarget(this.target, target);
+    const old = this.transport;
+    this.transport = prepared.transport;
+    this.target = target;
+    this.sentFeatures = target.features;
+    this.sentPrompts = target.prompts;
+    this.started = undefined;
+    this.ready = true;
+    this.awaitingReady = false;
+    this.ramp = undefined;
+    clearTimeout(this.rampTimer);
+    this.rampTimer = undefined;
+    // Cached audio starts now, rather than after the old queue/control delay.
+    // Preserve the rejection reference and correlated-click ledger across the switch.
+    this.history = [{ at: this.now(), features: { ...target.features }, prompts: target.prompts.map(p => ({ ...p })) }];
+    this.heard = this.history[0];
+    this.audibleCursor = -Infinity;
+    this.signature = deriveSignature(target);
+    this.nowPlayingSig = this.signature;
+    // Cached PCM is already available; this path has no provider/old-buffer wait.
+    this.pendingSteer = { vote, at: this.now(), etaMs: fadeMs, generationAtVote: this.blocksLanded, prepared: true };
+    this.setState({ status: 'playing' });
+    this.branchSettlesAt = this.now() + fadeMs + 500;
+    this.preparedKey = undefined;
+    old?.send({ type: 'stop' });
+    old?.close();
+    prepared.activate(this.activeHandlers(prepared.transport));
+    this.log('lookahead_selected', { vote, target: target.features, fadeMs });
+    if (changed || this.evolveTimer === undefined) this.scheduleEvolve();
+    this.scheduleLookahead();
+    return true;
   }
 
   private nextVariation(): Target {

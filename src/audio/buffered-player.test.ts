@@ -3,6 +3,7 @@ import {
   BufferedPCMPlayer, createBufferedPCMPlayer,
   type BufferedAudioBufferLike, type BufferedAudioContextLike,
   type BufferedPCMPlayerOptions, type BufferedSourceLike,
+  type BufferedGainLike,
 } from './buffered-player.ts';
 import { PENDING_CHUNK_LIMIT } from './constants.ts';
 
@@ -18,6 +19,7 @@ class FakeSource implements BufferedSourceLike {
   onended: ((event: Event) => void) | null = null;
   startAt = NaN;
   stops = 0;
+  stopAt = Infinity;
   disconnects = 0;
   connections = 0;
   ended = false;
@@ -25,7 +27,18 @@ class FakeSource implements BufferedSourceLike {
   connect(destination?: unknown) { this.connections++; this.connectedTo.push(destination); }
   disconnect() { this.disconnects++; }
   start(when = 0) { this.startAt = when; }
-  stop() { this.stops++; }
+  stop(when = 0) { this.stops++; this.stopAt = when; }
+}
+class FakeGain implements BufferedGainLike {
+  automation: { kind: string; value: number; when: number }[] = [];
+  disconnects = 0;
+  readonly connections: unknown[] = [];
+  gain = {
+    setValueAtTime: (value: number, when: number) => { this.automation.push({ kind: 'set', value, when }); },
+    linearRampToValueAtTime: (value: number, when: number) => { this.automation.push({ kind: 'ramp', value, when }); },
+  };
+  connect(destination: unknown) { this.connections.push(destination); }
+  disconnect() { this.disconnects++; }
 }
 class FakeAnalyser {
   fftSize = 0;
@@ -43,6 +56,7 @@ class FakeContext implements BufferedAudioContextLike {
   sources: FakeSource[] = [];
   analysers: FakeAnalyser[] = [];
   buffers: FakeBuffer[] = [];
+  gains: FakeGain[] = [];
   resumes = 0;
   closes = 0;
   resumeGate?: Promise<void>;
@@ -62,6 +76,7 @@ class FakeContext implements BufferedAudioContextLike {
     this.analysers.push(analyser);
     return analyser as unknown as AnalyserNode;
   }
+  createGain() { const gain = new FakeGain(); this.gains.push(gain); return gain; }
   async resume() {
     this.resumes++;
     await this.resumeGate;
@@ -73,7 +88,7 @@ class FakeContext implements BufferedAudioContextLike {
     if (this.state !== 'running') return;
     this.currentTime += seconds;
     for (const source of [...this.sources]) {
-      if (!source.ended && source.buffer && source.startAt + source.buffer.frames / source.buffer.rate <= this.currentTime) {
+      if (!source.ended && source.buffer && Math.min(source.stopAt, source.startAt + source.buffer.frames / source.buffer.rate) <= this.currentTime) {
         source.ended = true;
         source.onended?.(new Event('ended'));
       }
@@ -105,6 +120,100 @@ function rig(opts: BufferedPCMPlayerOptions = {}, outputRate = 48000) {
 
 // These exercise scheduling and decoded content, not just method-call snapshots.
 describe('BufferedPCMPlayer', () => {
+  it('crossfades a prepared replacement immediately and reports only its remaining audio', async () => {
+    const { player, contexts } = rig({ schedulingLeadMs: 0 });
+    await player.initializeFromUserGesture();
+    player.configure(format());
+    player.enqueuePcm(pcm(48000 * 8));
+    const ctx = contexts[0]!;
+    ctx.advance(1);
+    const old = [...ctx.sources];
+    expect(player.replacePcm(format(24000), [pcm(24000 * 3, 8192, -8192)], 250)).toBe(true);
+    expect(contexts).toHaveLength(1);
+    expect(player.getBufferedDurationMs()).toBeCloseTo(3000);
+    expect(player.getStats().priming).toBe(true);
+    const fresh = ctx.sources.slice(old.length);
+    expect(fresh[0]!.startAt).toBe(1);
+    expect(fresh[0]!.buffer!.data[0]![0]).toBe(.25);
+    expect(old.filter(source => source.disconnects === 0).every(source => source.stopAt === 1.25)).toBe(true);
+    expect(ctx.gains[0]!.automation.at(-1)).toEqual({ kind: 'ramp', value: 0, when: 1.25 });
+    expect(ctx.gains[1]!.automation.at(-1)).toEqual({ kind: 'ramp', value: 1, when: 1.25 });
+    expect(player.replacePcm(format(), [pcm(144000)], 250)).toBe(false);
+    expect(ctx.gains).toHaveLength(2);
+    ctx.advance(.25);
+    expect(player.getStats().priming).toBe(false);
+    expect(player.getBufferedDurationMs()).toBeCloseTo(2750);
+    expect(old.every(source => source.disconnects === 1)).toBe(true);
+    expect(ctx.gains[0]!.disconnects).toBe(1);
+    expect(player.replacePcm(format(), [pcm(144000)], 250)).toBe(true);
+    await player.close();
+    expect(ctx.gains.every(gain => gain.disconnects === 1)).toBe(true);
+  });
+
+  it('rejects bad/unready replacements unchanged and resets old partial frames on success', async () => {
+    const { player, contexts } = rig({ schedulingLeadMs: 0 });
+    const prepared = pcm(144000, 12345, -23456);
+    expect(player.replacePcm(format(), [prepared], 250)).toBe(false);
+    await player.initializeFromUserGesture();
+    player.configure(format());
+    player.enqueuePcm(pcm(144000));
+    player.enqueuePcm(new Uint8Array([255, 127, 1]).buffer);
+    const ctx = contexts[0]!;
+    const before = ctx.sources.length;
+    for (const [audio, chunks, fade] of [
+      [format(NaN), [prepared], 250], [format(), [pcm(48000)], 250],
+      [format(), [pcm(48000 * 13)], 250], [format(), [prepared], Infinity],
+    ] as const) expect(player.replacePcm(audio, [...chunks], fade)).toBe(false);
+    expect(player.getBufferedDurationMs()).toBeCloseTo(3000);
+    expect(ctx.sources).toHaveLength(before);
+    ctx.setState('suspended');
+    expect(player.replacePcm(format(), [prepared], 250)).toBe(false);
+    ctx.setState('running');
+    expect(player.replacePcm(format(), [prepared.slice(0, 1), prepared.slice(1)], 250)).toBe(true);
+    expect(ctx.sources[before]!.buffer!.data[0]![0]).toBe(12345 / 32768);
+    expect(ctx.sources[before]!.buffer!.data[1]![0]).toBe(-23456 / 32768);
+  });
+
+  it('keeps a replacement gated while the audio clock is suspended and reclaims late-ended sources', async () => {
+    const { player, contexts } = rig({ schedulingLeadMs: 20 });
+    await player.initializeFromUserGesture();
+    player.configure(format());
+    player.enqueuePcm(pcm(144000));
+    const ctx = contexts[0]!;
+    ctx.advance(.5);
+    expect(player.replacePcm(format(), [pcm(144000)], 250)).toBe(true);
+    ctx.setState('suspended');
+    ctx.advance(20);
+    expect(player.getStats().priming).toBe(true);
+    ctx.setState('running');
+    ctx.currentTime = 1; // simulate onended delivery being delayed
+    expect(player.getStats().priming).toBe(false);
+    expect(ctx.gains[0]!.disconnects).toBe(1);
+    expect(player.getBufferedDurationMs()).toBeCloseTo(2520);
+  });
+
+  it('rolls back staged destination resources when allocation fails, leaving old playback intact', async () => {
+    const { player, contexts } = rig({ schedulingLeadMs: 0 });
+    await player.initializeFromUserGesture();
+    player.configure(format());
+    player.enqueuePcm(pcm(144000));
+    const ctx = contexts[0]!;
+    const old = [...ctx.sources];
+    const createBuffer = ctx.createBuffer.bind(ctx);
+    let count = 0;
+    ctx.createBuffer = (...args) => {
+      if (++count === 2) throw new Error('allocation failed');
+      return createBuffer(...args);
+    };
+    expect(player.replacePcm(format(), [pcm(144000)], 250)).toBe(false);
+    expect(player.getBufferedDurationMs()).toBe(3000);
+    expect(player.getStats().priming).toBe(false);
+    expect(old.every(source => source.stops === 0 && source.disconnects === 0)).toBe(true);
+    expect(ctx.gains[0]!.automation).toEqual([]);
+    expect(ctx.gains[1]!.disconnects).toBe(1);
+    expect(ctx.sources.at(-1)).toMatchObject({ stops: 1, disconnects: 1 });
+  });
+
   it.each([44100, 48000])('keeps source duration/pitch and adjacent scheduling at %i Hz output', async (outputRate) => {
     const { player, contexts } = rig({}, outputRate);
     player.configure(format(48000));
@@ -335,8 +444,18 @@ describe('output tap', () => {
     expect(player.getAnalyser()).toBe(analyser);
     player.enqueuePcm(pcm(144000)); // 3 s — enough to clear the 2750 ms preroll
     expect(ctx.sources.length).toBeGreaterThan(0);
-    for (const source of ctx.sources) expect(source.connectedTo).toEqual([analyser]);
+    const oldSources = [...ctx.sources];
+    for (const source of oldSources) expect(source.connectedTo).toEqual([ctx.gains[0]]);
+    expect(ctx.gains[0]!.connections).toEqual([analyser]);
+    expect(player.replacePcm(format(), [pcm(144000)], 100)).toBe(true);
+    const replacementSources = ctx.sources.slice(oldSources.length);
+    expect(replacementSources.length).toBeGreaterThan(0);
+    for (const source of replacementSources) expect(source.connectedTo).toEqual([ctx.gains[1]]);
+    expect(ctx.gains[1]!.connections).toEqual([analyser]);
+    expect(player.getAnalyser()).toBe(analyser);
     await player.close();
+    expect(ctx.gains.every(gain => gain.disconnects === 1)).toBe(true);
+    expect(ctx.sources.every(source => source.disconnects === 1)).toBe(true);
     expect(analyser.disconnects).toBe(1);
     expect(player.getAnalyser()).toBeNull();
   });

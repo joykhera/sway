@@ -44,6 +44,7 @@ class SwayPcmProcessor extends AudioWorkletProcessor {
     Math.round((sampleRate * STATS_INTERVAL_MS) / 1000),
   );
   private framesSinceStats = 0;
+  private replacementId = 0;
 
   constructor() {
     super();
@@ -55,6 +56,12 @@ class SwayPcmProcessor extends AudioWorkletProcessor {
           break;
         case 'pcm':
           this.core.pushPcm(new Uint8Array(msg.bytes));
+          break;
+        case 'replace':
+          this.core.replacePcm(new Uint8Array(msg.bytes), msg.sourceSampleRateHz, msg.fadeMs);
+          this.replacementId = msg.replacementId;
+          // Acknowledge only from process(), after the destination renders.
+          this.framesSinceStats = this.statsEveryFrames;
           break;
         case 'reset':
           this.core.reset();
@@ -82,7 +89,7 @@ class SwayPcmProcessor extends AudioWorkletProcessor {
     this.framesSinceStats += frames;
     if (this.framesSinceStats >= this.statsEveryFrames) {
       this.framesSinceStats = 0;
-      const stats: WorkletOutbound = { type: 'stats', ...this.core.getStats() };
+      const stats: WorkletOutbound = { type: 'stats', ...this.core.getStats(), replacementId: this.replacementId };
       this.port.postMessage(stats);
     }
     return true;

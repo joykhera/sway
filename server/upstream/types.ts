@@ -7,7 +7,8 @@ export type UpstreamEvents = {
   onFiltered(info: { text?: string; reason?: string }): void;
   onWarning(message: string): void;
   // Unexpected close only; not fired after close() is called.
-  onClosed(reason: string): void;
+  // retryable defaults to true; wrappers may mark a terminal provider failure false.
+  onClosed(reason: string, retryable?: boolean): void;
 };
 
 export interface MusicUpstream {
@@ -15,6 +16,10 @@ export interface MusicUpstream {
   start(prompts: WeightedPrompt[], config: StreamConfig): Promise<void>;
   // `config`, when given, is the full desired config (not a delta).
   steer(prompts: WeightedPrompt[], config?: StreamConfig): Promise<void>;
+  // Optional capability: pause preserves generation context; resume continues it.
+  // Both methods must exist before the relay advertises bounded prefetch support.
+  pause?(): void;
+  resume?(): void;
   close(): void;
 }
 

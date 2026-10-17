@@ -20,6 +20,8 @@ export interface PCMPlayer {
   configure(audio: AudioFormat): void;
   /** Interleaved stereo signed 16-bit little-endian bytes. The buffer is transferred (detached) by the player. */
   enqueuePcm(bytes: ArrayBuffer): void;
+  /** Atomic bounded handoff; false leaves current playback unchanged. */
+  replacePcm?(audio: AudioFormat, chunks: ArrayBuffer[], fadeMs: number): boolean;
   /** Milliseconds of decoded audio buffered but not yet rendered. 0 before init. */
   getBufferedDurationMs(): number;
   /** Latest diagnostics snapshot (includes live signal telemetry), if the implementation exposes it. */
@@ -72,6 +74,7 @@ export interface PCMPlayerStats {
 export type WorkletInbound =
   | { type: 'configure'; sourceSampleRateHz: number }
   | { type: 'pcm'; bytes: ArrayBuffer }
+  | { type: 'replace'; sourceSampleRateHz: number; bytes: ArrayBuffer; fadeMs: number; replacementId: number }
   | { type: 'reset' };
 
 /** Worklet -> main thread messages. */
@@ -86,6 +89,8 @@ export type WorkletOutbound = {
   energyRms: number;
   brightnessHz: number;
   pitchHz: number | null;
+  /** Identifies the replacement whose audio/stats are now being rendered. */
+  replacementId?: number;
 };
 
 export const PCM_WORKLET_PROCESSOR_NAME = 'sway-pcm-player';

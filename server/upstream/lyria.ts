@@ -73,9 +73,11 @@ class LyriaUpstream implements MusicUpstream {
     const session = this.session;
     if (this.closed || !session) throw new Error('closed during setup');
     await session.setWeightedPrompts({ weightedPrompts: prompts });
+    if (this.closed) throw new Error('closed during setup');
     if (Object.keys(this.config).length > 0) {
       await session.setMusicGenerationConfig({ musicGenerationConfig: this.config });
     }
+    if (this.closed) throw new Error('closed during setup');
     session.play();
   }
 
@@ -88,6 +90,14 @@ class LyriaUpstream implements MusicUpstream {
       this.config = toSdkConfig(config);
       await session.setMusicGenerationConfig({ musicGenerationConfig: this.config });
     }
+  }
+
+  pause(): void {
+    if (!this.closed) this.session?.pause();
+  }
+
+  resume(): void {
+    if (!this.closed) this.session?.play();
   }
 
   close(): void {
