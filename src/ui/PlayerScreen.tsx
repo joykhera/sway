@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useState } from 'react';
 import type { ComponentType } from 'react';
-import type { MusicSessionController, MusicSignature, Vote } from './contracts.ts';
+import type { ListeningPurpose, MusicSessionController, MusicSignature, Vote } from './contracts.ts';
 import { useSessionState } from './use-session-state.ts';
 import { StatusChip } from './StatusChip.tsx';
+import { TelemetryStrip } from './TelemetryStrip.tsx';
 import { ThumbsControls } from './ThumbsControls.tsx';
 import { Visualizer } from './Visualizer.tsx';
 import type { VisualizerProps } from './Visualizer.tsx';
@@ -13,6 +14,12 @@ export type PlayerScreenProps = {
 };
 
 const VOTE_FLASH_MS = 700;
+const PURPOSES: { value: ListeningPurpose; label: string }[] = [
+  { value: 'focus', label: 'Focus' },
+  { value: 'relax', label: 'Relax' },
+  { value: 'energy', label: 'Energy' },
+  { value: 'explore', label: 'Explore' },
+];
 
 /**
  * The audio lane's Visualizer rebuild drinks live telemetry straight from the
@@ -50,11 +57,13 @@ function signatureLine(signature: MusicSignature | undefined): string | null {
  * The whole visible app: a centered pre-start view, or the live session view —
  * the audio organism filling the viewport with the chrome floating over it as
  * liquid glass (status pill · signature whisper · thumb lenses · end session).
- * Start, like, and dislike are the only controls.
+ * Purpose is optional pre-session setup; start, like, and dislike are the only
+ * controls.
  */
 export function PlayerScreen({ controller }: PlayerScreenProps) {
   const state = useSessionState(controller);
   const [lastVote, setLastVote] = useState<{ v: Vote; at: number } | null>(null);
+  const [purpose, setPurpose] = useState<ListeningPurpose>('explore');
 
   // 'error' is terminal-but-recoverable: the pre-start view offers the way back
   // (start() accepts 'error'), with lastError shown for context.
@@ -107,9 +116,33 @@ export function PlayerScreen({ controller }: PlayerScreenProps) {
             <p className="prestart__hint">session ended</p>
           ) : null}
           {state.status === 'error' ? (
-            <p className="prestart__hint prestart__hint--error">
+            <p className="prestart__hint prestart__hint--error" role="alert">
               {state.lastError ?? 'something went wrong'}
             </p>
+          ) : null}
+          {controller.setPurpose ? (
+            <fieldset className="purpose-choice">
+              <legend>start with</legend>
+              <div className="purpose-choice__options">
+                {PURPOSES.map((option) => (
+                  <button
+                    key={option.value}
+                    type="button"
+                    aria-pressed={purpose === option.value}
+                    onClick={() => {
+                      if (option.value === purpose) return;
+                      controller.setPurpose?.(option.value);
+                      setPurpose(option.value);
+                    }}
+                  >
+                    {option.label}
+                  </button>
+                ))}
+              </div>
+              {state.status === 'stopped' ? (
+                <p className="purpose-choice__hint">Changing this starts a fresh preference session.</p>
+              ) : null}
+            </fieldset>
           ) : null}
           <button
             type="button"
@@ -138,6 +171,7 @@ export function PlayerScreen({ controller }: PlayerScreenProps) {
       </header>
       {whisper ? <p className="signature-whisper">{whisper}</p> : null}
       <footer className="app__controls">
+        <TelemetryStrip controller={controller} />
         <ThumbsControls onVote={handleVote} lastVote={lastVote} />
         <button
           type="button"

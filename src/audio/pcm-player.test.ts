@@ -199,6 +199,23 @@ describe('WorkletPCMPlayer', () => {
     expect(contexts).toHaveLength(1);
   });
 
+  it('reports live context suspension and resumption even when cached worklet stats remain playable', async () => {
+    const { player, contexts, nodes } = makeRig();
+    await player.initializeFromUserGesture();
+    const ctx = contexts[0]!;
+    nodes[0]!.emitStats({ bufferedMs: 250, underruns: 0, droppedFrames: 0, priming: false, energyRms: 0.3, brightnessHz: 300, pitchHz: 330 });
+    expect(player.getStats()).toMatchObject({ state: 'ready', priming: false, audioContextState: 'running' });
+
+    ctx.setState('suspended');
+    expect(player.getStats()).toMatchObject({ state: 'ready', priming: false, audioContextState: 'suspended' });
+
+    // No new worklet message: getStats must read the live context, not cached stats.
+    await player.initializeFromUserGesture();
+    expect(ctx.resumes).toBe(1);
+    expect(player.getStats()).toMatchObject({ state: 'ready', priming: false, audioContextState: 'running' });
+    expect(player.getBufferedDurationMs()).toBe(250);
+  });
+
   it('close() resets the node, closes the ctx, and makes enqueuePcm a no-op', async () => {
     const { player, contexts, nodes } = makeRig();
     player.configure({ ...ready });

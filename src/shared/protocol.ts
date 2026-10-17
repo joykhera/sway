@@ -3,6 +3,7 @@
 // Browser-safe: no Node imports.
 
 export type Vote = 'up' | 'down';
+export type ListeningPurpose = 'focus' | 'relax' | 'energy' | 'explore';
 
 // Lyria normalizes weights to sum to 1.0, so only ratios between prompts matter.
 export type WeightedPrompt = { text: string; weight: number };
@@ -41,6 +42,8 @@ export type ErrorCode =
 export const MUSIC_WS_PATH = '/api/music';
 export const WEIGHT_MIN = 0.1;
 export const WEIGHT_MAX = 2.0;
+/** Max weighted prompts per client message — the relay guard rejects longer lists. */
+export const MAX_PROMPTS = 10;
 
 // ---- Learner contract (implemented by C in src/learner, consumed by D) ----
 
@@ -59,16 +62,18 @@ export type Target = {
 };
 
 export interface Learner {
-  createLearner(seed: number): LearnerState;
+  createLearner(seed: number, purpose?: ListeningPurpose): LearnerState;
   initialTarget(state: LearnerState): Target;
   processVote(args: {
     state: LearnerState;
     audible: FeatureBlend;
     currentTarget: Target;
     vote: Vote;
+    // Correlated clicks or pre-playback actions can steer without inventing evidence.
+    evidenceWeight?: number;
   }): { state: LearnerState; target: Target };
   // Must not change state.scores. Silence is not feedback.
-  evolveNoVote(args: { state: LearnerState; target: Target }): Target;
+  evolveNoVote(args: { state: LearnerState; target: Target; step?: number }): Target;
 }
 
 // ---- Playback contract (implemented by B in src/audio, consumed by D) ----
@@ -79,23 +84,29 @@ export interface PCMPlayer {
   configure(audio: AudioFormat): void;
   enqueuePcm(bytes: ArrayBuffer): void;
   getBufferedDurationMs(): number;
-  /** Latest diagnostics snapshot (includes live signal telemetry), if the implementation exposes it. */
+  /** Latest diagnostics snapshot (live telemetry + readiness), optional for test/alternative players. */
   getStats?(): PCMPlayerStats;
   close(): Promise<void>;
 }
 
 /** Diagnostics subset the controller maps onto StreamLevels; implementations may expose more fields. */
 export type PCMPlayerStats = {
+  /** Worklet/player lifecycle ('idle' | 'initializing' | 'ready' | 'closed'). */
+  state?: string;
+  /** Still filling the preroll buffer — output is silence. */
+  priming?: boolean;
+  /** AudioContext.state where applicable ('running' | 'suspended' | ...) — gates audible-time tracking. */
+  audioContextState?: string;
   /** Decoded audio buffered but not yet rendered. */
-  bufferedMs: number;
+  bufferedMs?: number;
   /** Render callbacks that ran out of audio since the last reset. */
-  underruns: number;
-  /** RMS of recently rendered output, 0..1. */
-  energyRms: number;
-  /** Spectral-brightness proxy in Hz. */
-  brightnessHz: number;
+  underruns?: number;
+  /** RMS of recently rendered output, 0..1 — only worklet renderers measure this. */
+  energyRms?: number;
+  /** Spectral-brightness proxy in Hz — only worklet renderers measure this. */
+  brightnessHz?: number;
   /** Dominant-partial pitch estimate in Hz, or null when silent/indeterminate. */
-  pitchHz: number | null;
+  pitchHz?: number | null;
 };
 
 // ---- Controller contract (implemented by D in src/controller, consumed by UI) ----
@@ -128,6 +139,8 @@ export type StreamLevels = {
 export type SessionState = { status: SessionStatus; lastError?: string; signature?: MusicSignature };
 
 export interface MusicSessionController {
+  // Optional pre-session setup; changing purpose starts a fresh preference session.
+  setPurpose?(purpose: ListeningPurpose): void;
   start(): Promise<void>;
   vote(v: Vote): void; // synchronous, never locked out
   stop(): void;

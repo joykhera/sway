@@ -13,6 +13,7 @@ import {
 } from './types.ts';
 import { CHANNELS, PENDING_CHUNK_LIMIT } from './constants.ts';
 import { workletUrl as bundledWorkletUrl } from './worklet-url.ts';
+import { createBufferedPCMPlayer } from './buffered-player.ts';
 
 /** Narrow slice of `AudioContext` the player actually uses. `AudioContext` satisfies this structurally. */
 export interface AudioContextLike {
@@ -190,6 +191,7 @@ export class WorkletPCMPlayer implements PCMPlayer {
     const ws = this.workletStats;
     return {
       state: this.state,
+      audioContextState: this.ctx?.state,
       bufferedMs: ws?.bufferedMs ?? 0,
       underruns: ws?.underruns ?? 0,
       droppedFrames: ws?.droppedFrames ?? 0,
@@ -249,7 +251,17 @@ export class WorkletPCMPlayer implements PCMPlayer {
   }
 }
 
-/** Default player factory for the app composition root (src/App.tsx). */
+/**
+ * Select without creating an AudioContext before the user's gesture.
+ * The browser's secure-context flag includes trustworthy localhost origins;
+ * HTTPS alone does not guarantee AudioWorklet support (for example, in an iframe).
+ * Explicit worklet injection retains the existing test/custom-player contract.
+ */
 export function createPCMPlayer(opts: WorkletPCMPlayerOptions = {}): PCMPlayer {
-  return new WorkletPCMPlayer(opts);
+  if (opts.createAudioContext !== undefined || opts.createWorkletNode !== undefined) return new WorkletPCMPlayer(opts);
+  const supportsWorklet = globalThis.isSecureContext === true
+    && typeof globalThis.AudioContext === 'function'
+    && typeof globalThis.AudioWorkletNode === 'function'
+    && 'audioWorklet' in globalThis.AudioContext.prototype;
+  return supportsWorklet ? new WorkletPCMPlayer(opts) : createBufferedPCMPlayer();
 }

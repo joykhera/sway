@@ -1,7 +1,8 @@
 import { WEIGHT_MAX, WEIGHT_MIN } from '../src/shared/protocol.ts';
 import type { ClientMessage, StreamConfig, WeightedPrompt } from '../src/shared/protocol.ts';
 
-export const MAX_PROMPTS = 10;
+import { MAX_PROMPTS } from '../src/shared/protocol.ts';
+export { MAX_PROMPTS };
 export const MAX_PROMPT_CHARS = 200;
 
 export type GuardResult = { ok: true; msg: ClientMessage } | { ok: false; error: string };

@@ -1,0 +1,8 @@
+# Pin the test DOM dependency to a release allowed by the age policy.
+overrides:
+  '@asamuzakjp/css-color': 7.1.6
+# No dependency lifecycle scripts are needed for this app/test build.
+allowBuilds:
+  '@google/genai': false
+  esbuild: false
+  protobufjs: false

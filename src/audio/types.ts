@@ -33,6 +33,8 @@ export type PCMPlayerState = 'idle' | 'initializing' | 'ready' | 'closed';
 /** Diagnostics for D's audible-blend estimate and for tuning the jitter buffer. */
 export interface PCMPlayerStats {
   state: PCMPlayerState;
+  /** Live Web Audio execution state; lifecycle `ready` alone does not mean audible. */
+  audioContextState?: string;
   /** Decoded audio buffered in the worklet but not yet rendered, at the output rate. */
   bufferedMs: number;
   /** Render callbacks that ran out of audio since the last reset. */
@@ -47,18 +49,19 @@ export interface PCMPlayerStats {
   sourceSampleRateHz: number;
 
   // --- Live signal telemetry (rendered output, ~100 ms cadence) -------------
+  // Optional: only worklet-based renderers can measure the emitted signal.
   /** RMS of recently rendered output, 0..1 (interleaved stereo). */
-  energyRms: number;
+  energyRms?: number;
   /**
    * Spectral-brightness proxy in Hz: mean zero-crossing rate × sr/2 over the
    * recent render window. Roughly tracks spectral centroid for tonal content.
    */
-  brightnessHz: number;
+  brightnessHz?: number;
   /**
    * Dominant-partial pitch estimate in Hz (zero-crossing rate × sr), or null
    * when the signal is silent/too noisy for a stable reading.
    */
-  pitchHz: number | null;
+  pitchHz?: number | null;
 }
 
 /** Main thread -> worklet messages (via `AudioWorkletNode.port`). */
