@@ -1,94 +1,84 @@
-// No-network MusicUpstream: a quiet stereo sine pad paced at ~1x realtime.
-// For Vitest and keyless devs only (MUSIC_MODE=mock).
+import type { WeightedPrompt } from '../../src/shared/protocol.ts';
+import type { MusicUpstream, UpstreamEvents, UpstreamFactory } from './types.ts';
 
-import type {
-  AudioFormat,
-  StreamConfig,
-  WeightedPrompt,
-} from '../../src/shared/protocol.ts';
-import type {
-  MusicUpstream,
-  UpstreamCallbacks,
-  UpstreamStartArgs,
-} from './types.ts';
-
-const SAMPLE_RATE = 48000;
+export const MOCK_SAMPLE_RATE = 48_000;
 const CHANNELS = 2;
-const BYTES_PER_FRAME = CHANNELS * 2; // s16le stereo
-const CHUNK_MS = 200; // emit a 200 ms chunk every 200 ms → 1x realtime
-const AMPLITUDE = 0.1; // ~ -20 dBFS
-const BASE_FREQ_HZ = 220;
-const STEER_SHIFT = 1.05; // +5% base frequency per steer — audibly different
-const FRAMES_PER_CHUNK = Math.floor((SAMPLE_RATE * CHUNK_MS) / 1000); // 9600
+const AMPLITUDE = 0.2 * 32767;
+const MAX_CATCHUP_CHUNKS = 5;
 
-export class MockUpstream implements MusicUpstream {
-  private cb: UpstreamCallbacks | null = null;
-  private timer: NodeJS.Timeout | null = null;
+export type MockOptions = { chunkMs?: number; now?: () => number };
+
+export function createMockFactory(opts: MockOptions = {}): UpstreamFactory {
+  return (events) => new MockUpstream(events, opts.chunkMs ?? 100, opts.now ?? (() => performance.now()));
+}
+
+// Pitch in [220, 440) Hz derived from the prompt set, so steers are audible.
+export function toneFrequency(prompts: WeightedPrompt[]): number {
+  const key = prompts.map((p) => `${p.text}:${p.weight.toFixed(1)}`).sort().join('|');
+  let h = 2166136261;
+  for (let i = 0; i < key.length; i++) h = Math.imul(h ^ key.charCodeAt(i), 16777619);
+  return 220 + ((h >>> 0) % 220);
+}
+
+class MockUpstream implements MusicUpstream {
+  private timer: ReturnType<typeof setInterval> | undefined;
+  private freq = 330;
+  private phase = 0;
+  private startedAt = 0;
+  private framesSent = 0;
   private closed = false;
-  private sampleCursor = 0;
-  private steerCount = 0;
 
-  /** Latest inputs + current base frequency — test/debug introspection. */
-  latestPrompts: WeightedPrompt[] = [];
-  latestConfig: StreamConfig | undefined;
-  currentFreq = BASE_FREQ_HZ;
+  constructor(
+    private readonly events: UpstreamEvents,
+    private readonly chunkMs: number,
+    private readonly now: () => number,
+  ) {}
 
-  async start(
-    args: UpstreamStartArgs,
-    cb: UpstreamCallbacks,
-  ): Promise<{ audio: AudioFormat }> {
-    if (this.closed) throw new Error('MockUpstream is closed');
-    this.cb = cb;
-    this.latestPrompts = args.prompts;
-    this.latestConfig = args.config;
-    // Short async tick so `start` behaves like a real async connect.
-    await new Promise<void>((resolve) => setTimeout(resolve, 5));
-    if (this.closed) throw new Error('MockUpstream closed during start');
-    this.timer = setInterval(() => this.emitChunk(), CHUNK_MS);
-    this.timer.unref?.();
-    return {
-      audio: { format: 'pcm_s16le', sampleRateHz: SAMPLE_RATE, channels: CHANNELS },
-    };
+  async start(prompts: WeightedPrompt[]): Promise<void> {
+    if (this.closed) throw new Error('closed');
+    this.freq = toneFrequency(prompts);
+    this.startedAt = this.now();
+    this.framesSent = 0;
+    this.timer = setInterval(() => this.tick(), this.chunkMs);
+    this.tick();
   }
 
-  steer(prompts: WeightedPrompt[], config?: StreamConfig): void {
-    if (this.closed) return;
-    this.latestPrompts = prompts;
-    if (config) this.latestConfig = config;
-    this.steerCount += 1;
-    this.currentFreq = BASE_FREQ_HZ * Math.pow(STEER_SHIFT, this.steerCount);
+  async steer(prompts: WeightedPrompt[]): Promise<void> {
+    this.freq = toneFrequency(prompts);
   }
 
-  async close(): Promise<void> {
-    if (this.closed) return;
+  close(): void {
     this.closed = true;
-    if (this.timer) {
-      clearInterval(this.timer);
-      this.timer = null;
-    }
-    this.cb = null;
+    clearInterval(this.timer);
+    this.timer = undefined;
   }
 
-  private emitChunk(): void {
-    const cb = this.cb;
-    if (this.closed || !cb) return;
-    const buf = Buffer.alloc(FRAMES_PER_CHUNK * BYTES_PER_FRAME);
-    const f = this.currentFreq;
-    let offset = 0;
-    for (let i = 0; i < FRAMES_PER_CHUNK; i++) {
-      const t = (this.sampleCursor + i) / SAMPLE_RATE;
-      // Root + fifth + soft octave-ish overtone: a pad, not a beep.
-      const v =
-        AMPLITUDE *
-        (0.55 * Math.sin(2 * Math.PI * f * t) +
-          0.3 * Math.sin(2 * Math.PI * f * 1.5 * t) +
-          0.15 * Math.sin(2 * Math.PI * f * 2.02 * t));
-      const s16 = Math.round(Math.max(-1, Math.min(1, v)) * 32767);
-      buf.writeInt16LE(s16, offset);
-      buf.writeInt16LE(s16, offset + 2);
-      offset += BYTES_PER_FRAME;
+  // Emits whatever is due by wall clock, so interval jitter doesn't accumulate as drift.
+  private tick(): void {
+    if (this.closed) return;
+    const chunkFrames = Math.round((MOCK_SAMPLE_RATE * this.chunkMs) / 1000);
+    const due = Math.floor(((this.now() - this.startedAt) * MOCK_SAMPLE_RATE) / 1000) + chunkFrames;
+    let pending = Math.min(due - this.framesSent, chunkFrames * MAX_CATCHUP_CHUNKS);
+    if (pending < chunkFrames) return;
+    while (pending >= chunkFrames && !this.closed) {
+      this.events.onAudio(this.render(chunkFrames), { sampleRateHz: MOCK_SAMPLE_RATE, channels: CHANNELS });
+      this.framesSent += chunkFrames;
+      pending -= chunkFrames;
     }
-    this.sampleCursor += FRAMES_PER_CHUNK;
-    cb.onAudio(buf);
+    // After a long stall, skip ahead rather than bursting the backlog.
+    if (due - this.framesSent > chunkFrames * MAX_CATCHUP_CHUNKS) this.framesSent = due - chunkFrames;
+  }
+
+  private render(frames: number): Buffer {
+    const buf = Buffer.alloc(frames * CHANNELS * 2);
+    const step = (2 * Math.PI * this.freq) / MOCK_SAMPLE_RATE;
+    for (let i = 0; i < frames; i++) {
+      const s = Math.round(Math.sin(this.phase) * AMPLITUDE);
+      buf.writeInt16LE(s, i * 4);
+      buf.writeInt16LE(s, i * 4 + 2);
+      this.phase += step;
+    }
+    this.phase %= 2 * Math.PI;
+    return buf;
   }
 }

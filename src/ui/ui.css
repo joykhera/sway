@@ -1,0 +1,405 @@
+@import url('https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=JetBrains+Mono:wght@400;500&display=swap');
+
+/* sway — refined dark minimalism. Warm ink, one amber accent, a cool counter-hue
+   reserved for "hear something different" moments. Mobile-first; all fonts and
+   colors come from the tokens below. */
+
+:root {
+  --ink: #0b0a09;
+  --ink-deep: #050404;
+  --fg: #ece5d8;
+  --muted: #8d8478;
+  --accent: #f0a860;
+  --accent-cool: #7ec8e3;
+  --hairline: rgba(236, 229, 216, 0.14);
+  --ring-ink: #ece5d8;
+  --accent-glow: rgba(240, 168, 96, 0.16);
+  --cool-glow: rgba(126, 200, 227, 0.16);
+  --font-serif: 'Instrument Serif', Georgia, 'Times New Roman', serif;
+  --font-mono: 'JetBrains Mono', ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--ink);
+  color: var(--fg);
+  font-family: var(--font-mono);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+/* ---- app frame ---- */
+
+.app {
+  position: relative;
+  min-height: 100dvh;
+  display: grid;
+  grid-template-rows: auto 1fr auto;
+  padding:
+    calc(env(safe-area-inset-top, 0px) + 20px) calc(env(safe-area-inset-right, 0px) + 20px) calc(env(safe-area-inset-bottom, 0px) + 24px) calc(env(safe-area-inset-left, 0px) + 20px);
+  background: radial-gradient(115% 90% at 50% 38%, #1b1611 0%, var(--ink) 56%, var(--ink-deep) 100%);
+  overflow: hidden;
+}
+
+/* film grain overlay — tiny inline SVG turbulence texture */
+.app::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  z-index: 30;
+  pointer-events: none;
+  opacity: 0.04;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='2' stitchTiles='stitch'/%3E%3CfeColorMatrix type='saturate' values='0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+}
+
+/* vignette */
+.app::after {
+  content: '';
+  position: fixed;
+  inset: 0;
+  z-index: 29;
+  pointer-events: none;
+  box-shadow: inset 0 0 26vmax rgba(0, 0, 0, 0.5);
+}
+
+.app__top,
+.app__stage,
+.app__controls,
+.prestart>* {
+  animation: sway-in 520ms cubic-bezier(0.22, 0.8, 0.3, 1) both;
+}
+
+.app__stage {
+  animation-delay: 110ms;
+}
+
+.app__controls {
+  animation-delay: 190ms;
+}
+
+.prestart>*:nth-child(2) {
+  animation-delay: 90ms;
+}
+
+.prestart>*:nth-child(3) {
+  animation-delay: 160ms;
+}
+
+.prestart>*:nth-child(4) {
+  animation-delay: 230ms;
+}
+
+@keyframes sway-in {
+  from {
+    opacity: 0;
+    transform: translateY(12px);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* ---- shared button treatment ---- */
+
+.app button {
+  font-family: var(--font-mono);
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.app button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+}
+
+/* ---- status chip (top-left) ---- */
+
+.app__top {
+  display: flex;
+  justify-content: flex-start;
+  z-index: 1;
+}
+
+.status-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 9px;
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.status-chip__dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--muted);
+  flex: none;
+}
+
+.status-chip--connecting .status-chip__dot,
+.status-chip--reconnecting .status-chip__dot {
+  background: var(--accent);
+  animation: chip-pulse 1.5s ease-in-out infinite;
+}
+
+.status-chip--playing .status-chip__dot {
+  background: var(--accent);
+  box-shadow: 0 0 8px var(--accent-glow);
+}
+
+.status-chip--playing .status-chip__label {
+  color: var(--fg);
+}
+
+.status-chip--unavailable .status-chip__dot {
+  background: var(--accent-cool);
+}
+
+.status-chip__body {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.status-chip__error {
+  font-size: 10px;
+  font-weight: 400;
+  letter-spacing: 0.03em;
+  text-transform: none;
+  color: var(--accent-cool);
+  max-width: 46vw;
+}
+
+@keyframes chip-pulse {
+
+  0%,
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+
+  50% {
+    opacity: 0.35;
+    transform: scale(0.8);
+  }
+}
+
+/* ---- visualizer (centered) ---- */
+
+.app__stage {
+  display: grid;
+  place-items: center;
+  min-height: 0;
+  z-index: 1;
+}
+
+.visualizer {
+  display: block;
+  width: min(52vmin, 420px);
+  aspect-ratio: 1 / 1;
+}
+
+/* ---- thumbs controls (bottom) ---- */
+
+.app__controls {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  z-index: 1;
+}
+
+.thumbs {
+  display: flex;
+  gap: clamp(24px, 7vw, 44px);
+}
+
+.thumb {
+  appearance: none;
+  width: 64px;
+  height: 64px;
+  border-radius: 50%;
+  border: 1px solid var(--hairline);
+  background: transparent;
+  color: var(--fg);
+  display: grid;
+  place-items: center;
+  padding: 0;
+  cursor: pointer;
+  transition:
+    transform 120ms ease,
+    border-color 200ms ease,
+    color 200ms ease,
+    box-shadow 220ms ease;
+}
+
+.thumb--up {
+  --vote-hue: var(--accent);
+  --vote-glow: var(--accent-glow);
+}
+
+.thumb--down {
+  --vote-hue: var(--accent-cool);
+  --vote-glow: var(--cool-glow);
+}
+
+.thumb:active {
+  transform: scale(0.94);
+}
+
+@media (hover: hover) {
+  .thumb:hover {
+    border-color: var(--vote-hue);
+    color: var(--vote-hue);
+  }
+}
+
+.thumb--voted {
+  border-color: var(--vote-hue);
+  color: var(--vote-hue);
+  box-shadow: 0 0 0 1px var(--vote-hue), 0 0 26px var(--vote-glow);
+  animation: vote-flash 700ms ease-out;
+}
+
+@keyframes vote-flash {
+  0% {
+    box-shadow: 0 0 0 0 var(--vote-glow), 0 0 0 1px var(--vote-hue);
+  }
+
+  100% {
+    box-shadow: 0 0 0 20px transparent, 0 0 26px var(--vote-glow);
+  }
+}
+
+@media (min-width: 640px) {
+  .thumb {
+    width: 72px;
+    height: 72px;
+  }
+}
+
+/* ---- end session (bottom-right, tiny) ---- */
+
+.end-session {
+  align-self: flex-end;
+  margin-top: 14px;
+  appearance: none;
+  background: none;
+  border: none;
+  padding: 8px 2px;
+  font-size: 11px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--muted);
+  cursor: pointer;
+  transition: color 200ms ease;
+}
+
+@media (hover: hover) {
+  .end-session:hover {
+    color: var(--fg);
+  }
+}
+
+/* ---- pre-start view ---- */
+
+.app--prestart {
+  grid-template-rows: 1fr;
+  place-items: center;
+}
+
+.prestart {
+  text-align: center;
+  max-width: 440px;
+  padding: 0 12px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
+.prestart__hint {
+  margin: 26px 0 -16px;
+  font-size: 11px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.wordmark {
+  margin: 0;
+  font-family: var(--font-serif);
+  font-style: italic;
+  font-weight: 400;
+  font-size: clamp(58px, 17vw, 104px);
+  line-height: 1;
+  color: var(--fg);
+}
+
+.tagline {
+  margin: 18px 0 0;
+  font-family: var(--font-serif);
+  font-style: italic;
+  font-size: clamp(17px, 4.6vw, 21px);
+  line-height: 1.45;
+  color: var(--muted);
+}
+
+.start-button {
+  margin-top: 44px;
+  appearance: none;
+  background: transparent;
+  border: 1px solid var(--hairline);
+  border-radius: 999px;
+  padding: 19px 46px;
+  font-size: 12px;
+  font-weight: 500;
+  letter-spacing: 0.24em;
+  text-transform: uppercase;
+  color: var(--fg);
+  cursor: pointer;
+  transition:
+    transform 120ms ease,
+    border-color 220ms ease,
+    color 220ms ease,
+    box-shadow 320ms ease;
+}
+
+.start-button:active {
+  transform: scale(0.97);
+}
+
+@media (hover: hover) {
+  .start-button:hover {
+    border-color: var(--accent);
+    color: var(--accent);
+    box-shadow: 0 0 40px var(--accent-glow);
+  }
+}
+
+/* ---- reduced motion ---- */
+
+@media (prefers-reduced-motion: reduce) {
+
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}

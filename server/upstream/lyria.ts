@@ -1,319 +1,127 @@
-// Adapter from MusicUpstream to @google/genai's Lyria RealTime live-music API.
-//
-// SDK shape (verified against @google/genai@2.30.0 dist/node/index.mjs):
-//   const ai = new GoogleGenAI({ apiKey });
-//   const session = await ai.live.music.connect({ model, callbacks });
-//   // resolves when the socket OPENS (R4) — the SDK then sends {setup:{model}}
-//   // itself; the server's setupComplete arrives later via onmessage.
-//   await session.setWeightedPrompts({ weightedPrompts });
-//   await session.setMusicGenerationConfig({ musicGenerationConfig });
-//   session.play();  // sends {playbackControl:'PLAY'}
-//   session.close();
-//
-// LiveMusicServerMessage = {
-//   setupComplete?: {},
-//   serverContent?: { audioChunks?: [{ data?: base64, mimeType?: string }] },
-//   filteredPrompt?: { text?: string, filteredReason?: string },
-// }
-//
-// R8: the SDK builds the upstream URL as `...BidiGenerateMusic?key=${apiKey}`.
-// We never log URLs or raw ErrorEvent/CloseEvent objects — only extracted
-// safe fields pass through the redacting logger.
-
 import { GoogleGenAI } from '@google/genai';
-import type {
-  LiveMusicCallbacks,
-  LiveMusicGenerationConfig,
-  LiveMusicServerMessage,
-} from '@google/genai';
-import { errMessage, log } from '../log.ts';
-import type {
-  AudioFormat,
-  StreamConfig,
-  WeightedPrompt,
-} from '../../src/shared/protocol.ts';
-import type {
-  MusicUpstream,
-  UpstreamCallbacks,
-  UpstreamStartArgs,
-} from './types.ts';
+import type { LiveMusicGenerationConfig, LiveMusicServerMessage, LiveMusicSession } from '@google/genai';
+import type { StreamConfig, WeightedPrompt } from '../../src/shared/protocol.ts';
+import { errorMessage, log, redact } from '../log.ts';
+import type { MusicUpstream, UpstreamEvents, UpstreamFactory, UpstreamFormat } from './types.ts';
 
-export const LYRIA_MODEL = 'models/lyria-realtime-exp';
-
-// R2: official output is 48 kHz stereo s16le. We refine it from
-// AudioChunk.mimeType when present.
-const DEFAULT_AUDIO: AudioFormat = {
-  format: 'pcm_s16le',
-  sampleRateHz: 48000,
-  channels: 2,
-};
-
-// connect() resolves on socket open; if the socket never opens the SDK never
-// settles it, and after open the server may still stall before setupComplete.
-// One timeout covers both gaps.
+const MODEL = 'models/lyria-realtime-exp';
 const SETUP_TIMEOUT_MS = 15_000;
+const DEFAULT_FORMAT: UpstreamFormat = { sampleRateHz: 48_000, channels: 2 };
 
-/**
- * Minimal structural view of LiveMusicSession — lets tests inject a fake
- * without a real socket. LiveMusicSession satisfies this shape (its methods
- * are bivariant under strictFunctionTypes).
- */
-export interface LyriaSessionLike {
-  setWeightedPrompts(params: { weightedPrompts: WeightedPrompt[] }): Promise<void>;
-  setMusicGenerationConfig(params: {
-    musicGenerationConfig: LiveMusicGenerationConfig;
-  }): Promise<void>;
-  play(): void;
-  close(): void;
+export function createLyriaFactory(apiKey: string): UpstreamFactory {
+  const ai = new GoogleGenAI({ apiKey, httpOptions: { apiVersion: 'v1alpha' } });
+  return (events) => new LyriaUpstream(ai, events);
 }
 
-/** Test seam: replace connect to drive callbacks without network. */
-export type LyriaConnect = (
-  callbacks: LiveMusicCallbacks,
-) => Promise<LyriaSessionLike>;
-
-export type LyriaUpstreamOptions = {
-  apiKey: string;
-  model?: string;
-  connect?: LyriaConnect;
-};
-
-export class LyriaUpstream implements MusicUpstream {
-  private readonly apiKey: string;
-  private readonly model: string;
-  private readonly connectFn: LyriaConnect | null;
-
-  private session: LyriaSessionLike | null = null;
-  private cb: UpstreamCallbacks | null = null;
-  private audioFormat: AudioFormat = DEFAULT_AUDIO;
-
-  private started = false;
-  private closed = false;
-  private setupDone = false;
-  private played = false;
-
-  /** Newest pending prompt set — latest-wins coalescing (R11 ~200 ms cadence). */
-  private pendingSteer: { prompts: WeightedPrompt[]; config?: StreamConfig } | null = null;
-  private sending = false;
-
-  private setupTimer: NodeJS.Timeout | null = null;
-  private finishStart: ((v: { audio: AudioFormat }) => void) | null = null;
-  private failStart: ((e: Error) => void) | null = null;
-
-  constructor(options: LyriaUpstreamOptions) {
-    this.apiKey = options.apiKey;
-    this.model = options.model ?? LYRIA_MODEL;
-    this.connectFn = options.connect ?? null;
-  }
-
-  start(args: UpstreamStartArgs, cb: UpstreamCallbacks): Promise<{ audio: AudioFormat }> {
-    if (this.started) return Promise.reject(new Error('start() called twice'));
-    if (this.closed) return Promise.reject(new Error('upstream is closed'));
-    this.started = true;
-    this.cb = cb;
-    // Seed the prompt queue: flushed to the socket once setupComplete lands.
-    this.pendingSteer = { prompts: args.prompts, config: args.config };
-
-    const connect =
-      this.connectFn ?? ((callbacks: LiveMusicCallbacks) => this.connectSdk(callbacks));
-    const callbacks: LiveMusicCallbacks = {
-      onmessage: (e) => this.handleMessage(e),
-      onerror: (e) => this.handleError(e),
-      onclose: (e) => this.handleClose(e),
-    };
-    const sessionPromise = Promise.resolve().then(() => connect(callbacks));
-
-    return new Promise<{ audio: AudioFormat }>((resolve, reject) => {
-      this.finishStart = resolve;
-      this.failStart = reject;
-      this.setupTimer = setTimeout(() => {
-        this.abortStart(new Error('timed out waiting for Lyria setupComplete'));
-      }, SETUP_TIMEOUT_MS);
-      this.setupTimer.unref?.();
-
-      sessionPromise.then(
-        (session) => {
-          this.session = session;
-          void this.flushSteer();
-        },
-        (err) => this.abortStart(err instanceof Error ? err : new Error(errMessage(err))),
-      );
-    });
-  }
-
-  steer(prompts: WeightedPrompt[], config?: StreamConfig): void {
-    if (this.closed || !this.started) return;
-    // Latest-wins: overwrite whatever is queued (incl. the pre-setup seed).
-    this.pendingSteer = { prompts, config };
-    void this.flushSteer();
-  }
-
-  async close(): Promise<void> {
-    if (this.closed) return;
-    this.closed = true;
-    this.clearSetupTimer();
-    this.pendingSteer = null;
-    // A pending start must not hang the session's connect path.
-    const fail = this.failStart;
-    this.failStart = null;
-    this.finishStart = null;
-    fail?.(new Error('upstream closed before setupComplete'));
-    const session = this.session;
-    this.session = null;
-    try {
-      session?.close();
-    } catch {
-      // 'WebSocket is not connected' etc. — already closed is success.
-    }
-  }
-
-  // ---- internals ---------------------------------------------------------
-
-  private async connectSdk(callbacks: LiveMusicCallbacks): Promise<LyriaSessionLike> {
-    const ai = new GoogleGenAI({ apiKey: this.apiKey });
-    // Never log the URL this builds — it carries ?key=<GEMINI_API_KEY> (R8).
-    return await ai.live.music.connect({ model: this.model, callbacks });
-  }
-
-  private handleMessage(msg: LiveMusicServerMessage): void {
-    if (this.closed) return;
-    if (msg.setupComplete) {
-      this.setupDone = true;
-      this.clearSetupTimer();
-      const finish = this.finishStart;
-      this.finishStart = null;
-      this.failStart = null;
-      finish?.({ audio: this.audioFormat });
-      void this.flushSteer();
-      return;
-    }
-    const chunks = msg.serverContent?.audioChunks;
-    if (chunks) {
-      for (const chunk of chunks) {
-        this.noteMimeType(chunk.mimeType);
-        if (chunk.data) {
-          this.cb?.onAudio(Buffer.from(chunk.data, 'base64'));
-        }
-      }
-    }
-    const filtered = msg.filteredPrompt;
-    if (filtered) {
-      const text = filtered.text ?? '';
-      log.warn('lyria filtered prompt', {
-        text,
-        reason: filtered.filteredReason ?? '',
-      });
-      this.cb?.onFiltered?.([text]);
-    }
-  }
-
-  private handleError(e: unknown): void {
-    if (this.closed) return;
-    // Extract a safe field only — the raw event may embed the keyed URL (R8).
-    const detail =
-      typeof (e as { message?: unknown })?.message === 'string'
-        ? (e as { message: string }).message
-        : 'socket error';
-    this.terminate(`upstream ${detail}`);
-  }
-
-  private handleClose(e: unknown): void {
-    if (this.closed) return;
-    const evt = e as { code?: unknown; reason?: unknown };
-    const code = typeof evt?.code === 'number' ? evt.code : undefined;
-    const reason = typeof evt?.reason === 'string' ? evt.reason : undefined;
-    this.terminate(
-      `upstream socket closed (code ${code ?? 'unknown'}${reason ? `, reason ${reason}` : ''})`,
-    );
-  }
-
-  /** Terminal event: reject a pending start, else notify onClosed once. */
-  private terminate(reason: string): void {
-    if (this.closed) return;
-    this.closed = true;
-    this.clearSetupTimer();
-    this.pendingSteer = null;
-    // Tear down whatever socket remains (setup-timeout aborts leave it open).
-    const session = this.session;
-    this.session = null;
-    try {
-      session?.close();
-    } catch {
-      // already closed
-    }
-    if (this.failStart) {
-      const fail = this.failStart;
-      this.failStart = null;
-      this.finishStart = null;
-      fail(new Error(reason));
-      return;
-    }
-    this.cb?.onClosed(reason);
-  }
-
-  private abortStart(err: Error): void {
-    this.terminate(err.message);
-  }
-
-  /**
-   * Newest-wins coalescing: at most one steer in flight; anything queued while
-   * sending (or before setupComplete) collapses to the newest set.
-   */
-  private async flushSteer(): Promise<void> {
-    if (this.sending || this.closed || !this.setupDone || !this.session) return;
-    const job = this.pendingSteer;
-    if (!job) return;
-    this.pendingSteer = null;
-    this.sending = true;
-    try {
-      await this.session.setWeightedPrompts({ weightedPrompts: job.prompts });
-      if (job.config) {
-        await this.session.setMusicGenerationConfig({
-          musicGenerationConfig: toGenerationConfig(job.config),
-        });
-      }
-      if (!this.played) {
-        this.session.play();
-        this.played = true;
-      }
-    } catch (err) {
-      this.cb?.onWarning?.(`steer send failed: ${errMessage(err)}`);
-    } finally {
-      this.sending = false;
-    }
-    if (this.pendingSteer) void this.flushSteer();
-  }
-
-  /** R2: parse `rate=` out of e.g. `audio/pcm;rate=48000` when present. */
-  private noteMimeType(mimeType: string | undefined): void {
-    if (!mimeType) return;
-    const rate = /rate=(\d+)/i.exec(mimeType)?.[1];
-    if (!rate) return;
-    const sampleRateHz = Number(rate);
-    if (!Number.isFinite(sampleRateHz) || sampleRateHz <= 0) return;
-    if (sampleRateHz !== this.audioFormat.sampleRateHz) {
-      log.warn('lyria audio rate differs from reported format', {
-        expected: this.audioFormat.sampleRateHz,
-        actual: sampleRateHz,
-        mimeType,
-      });
-      this.cb?.onWarning?.(`audio mimeType ${mimeType} reports ${sampleRateHz} Hz`);
-      this.audioFormat = { ...this.audioFormat, sampleRateHz };
-    }
-  }
-
-  private clearSetupTimer(): void {
-    if (this.setupTimer) {
-      clearTimeout(this.setupTimer);
-      this.setupTimer = null;
-    }
-  }
+// e.g. "audio/l16;rate=48000;channels=2"; missing fields fall back to the documented 48 kHz stereo.
+export function parseAudioFormat(mimeType: string | undefined): UpstreamFormat {
+  const rate = Number(/rate=(\d+)/i.exec(mimeType ?? '')?.[1]);
+  const channels = Number(/channels=(\d+)/i.exec(mimeType ?? '')?.[1]);
+  return {
+    sampleRateHz: Number.isInteger(rate) && rate > 0 ? rate : DEFAULT_FORMAT.sampleRateHz,
+    channels: Number.isInteger(channels) && channels > 0 ? channels : DEFAULT_FORMAT.channels,
+  };
 }
 
-function toGenerationConfig(config: StreamConfig): LiveMusicGenerationConfig {
+function toSdkConfig(config: StreamConfig): LiveMusicGenerationConfig {
   const out: LiveMusicGenerationConfig = {};
   if (config.density !== undefined) out.density = config.density;
   if (config.brightness !== undefined) out.brightness = config.brightness;
   if (config.temperature !== undefined) out.temperature = config.temperature;
   return out;
+}
+
+class LyriaUpstream implements MusicUpstream {
+  private session: LiveMusicSession | undefined;
+  private config: LiveMusicGenerationConfig = {};
+  private closed = false;
+  private setupDone: (() => void) | undefined;
+  private setupFailed: ((err: Error) => void) | undefined;
+
+  constructor(
+    private readonly ai: GoogleGenAI,
+    private readonly events: UpstreamEvents,
+  ) {}
+
+  async start(prompts: WeightedPrompt[], config: StreamConfig): Promise<void> {
+    this.config = toSdkConfig(config);
+    const setup = new Promise<void>((resolve, reject) => {
+      this.setupDone = resolve;
+      this.setupFailed = reject;
+    });
+    const timer = setTimeout(() => this.setupFailed?.(new Error('setup timed out')), SETUP_TIMEOUT_MS);
+    // connect() resolves when the socket opens (and never settles if it fails to open), but the
+    // server only accepts prompts/config/play after `setupComplete`, so wait for both.
+    const connecting = this.ai.live.music
+      .connect({
+        model: MODEL,
+        callbacks: {
+          onmessage: (m) => this.onMessage(m),
+          onerror: (e) => log.warn('lyria', 'socket error', { message: redact(String(e?.message ?? '')) }),
+          onclose: (e) => this.onClose(e?.code, e?.reason),
+        },
+      })
+      .then((s) => {
+        this.session = s;
+        if (this.closed) s.close();
+      });
+    try {
+      await Promise.all([connecting, setup]);
+    } finally {
+      clearTimeout(timer);
+    }
+    const session = this.session;
+    if (this.closed || !session) throw new Error('closed during setup');
+    await session.setWeightedPrompts({ weightedPrompts: prompts });
+    if (Object.keys(this.config).length > 0) {
+      await session.setMusicGenerationConfig({ musicGenerationConfig: this.config });
+    }
+    session.play();
+  }
+
+  async steer(prompts: WeightedPrompt[], config?: StreamConfig): Promise<void> {
+    const session = this.session;
+    if (this.closed || !session) return;
+    await session.setWeightedPrompts({ weightedPrompts: prompts });
+    if (config) {
+      // setMusicGenerationConfig replaces the whole config; unset fields reset to defaults.
+      this.config = toSdkConfig(config);
+      await session.setMusicGenerationConfig({ musicGenerationConfig: this.config });
+    }
+  }
+
+  close(): void {
+    if (this.closed) return;
+    this.closed = true;
+    this.setupFailed?.(new Error('closed'));
+    try {
+      this.session?.close();
+    } catch (err) {
+      log.warn('lyria', 'close failed', { error: errorMessage(err) });
+    }
+  }
+
+  private onMessage(m: LiveMusicServerMessage): void {
+    if (this.closed) return;
+    const { setupComplete, serverContent, filteredPrompt, ...rest } = m;
+    if (setupComplete) this.setupDone?.();
+    for (const chunk of serverContent?.audioChunks ?? []) {
+      if (!chunk.data) continue;
+      this.events.onAudio(Buffer.from(chunk.data, 'base64'), parseAudioFormat(chunk.mimeType));
+    }
+    if (filteredPrompt) {
+      this.events.onFiltered({ text: filteredPrompt.text, reason: filteredPrompt.filteredReason });
+    }
+    if (Object.keys(rest).length > 0) {
+      this.events.onWarning(JSON.stringify(rest).slice(0, 500));
+    }
+  }
+
+  private onClose(code: number | undefined, reason: string | undefined): void {
+    const detail = `code=${code ?? '?'} reason=${redact(reason ?? '').slice(0, 200)}`;
+    if (this.closed) return;
+    this.closed = true;
+    this.setupFailed?.(new Error(`closed before setup (${detail})`));
+    this.events.onClosed(detail);
+  }
 }

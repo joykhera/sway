@@ -1,58 +1,39 @@
-// Tiny structured logger: one JSON object per line.
-// info → stdout, warn/error → stderr.
-//
-// R8: the @google/genai SDK embeds the Gemini API key in the upstream URL as
-// `?key=...`. Never log upstream URLs, raw ws ErrorEvent/CloseEvent objects,
-// or process.env. `redact` scrubs any `key=<value>` substring from every
-// logged string as a second line of defense.
+type Fields = Record<string, unknown>;
 
-export type LogFields = Record<string, unknown>;
+const secrets = new Set<string>();
 
-const KEY_PARAM = /key=[^&\s]+/g;
-
-/** Strip `key=<value>` URL params (upstream auth) from a logged string. */
-export function redact(value: string): string {
-  return value.replace(KEY_PARAM, 'key=[redacted]');
+export function registerSecret(value: string | undefined): void {
+  if (value && value.length >= 4) secrets.add(value);
 }
 
-function redactValue(value: unknown): unknown {
-  if (typeof value === 'string') return redact(value);
-  if (Array.isArray(value)) return value.map(redactValue);
-  if (value !== null && typeof value === 'object') {
-    const out: Record<string, unknown> = {};
-    for (const [k, v] of Object.entries(value)) out[k] = redactValue(v);
-    return out;
+export function redact(text: string): string {
+  let out = text;
+  for (const s of secrets) out = out.split(s).join('[REDACTED]');
+  return out
+    .replace(/([?&;\s"']key=)[^&\s"';]+/gi, '$1[REDACTED]')
+    .replace(/^key=[^&\s"';]+/i, 'key=[REDACTED]')
+    .replace(/AIza[0-9A-Za-z_-]{20,}/g, '[REDACTED]');
+}
+
+function format(tag: string, msg: string, fields?: Fields): string {
+  const extra = fields && Object.keys(fields).length > 0 ? ' ' + safeJson(fields) : '';
+  return redact(`[${tag}] ${msg}${extra}`);
+}
+
+function safeJson(v: unknown): string {
+  try {
+    return JSON.stringify(v);
+  } catch {
+    return '[unserializable]';
   }
-  return value;
-}
-
-function emit(level: 'info' | 'warn' | 'error', event: string, fields?: LogFields): void {
-  const safeFields = (fields ? redactValue(fields) : {}) as LogFields;
-  const line = JSON.stringify({
-    ts: new Date().toISOString(),
-    level,
-    event: redact(event),
-    ...safeFields,
-  });
-  const stream = level === 'info' ? process.stdout : process.stderr;
-  stream.write(line + '\n');
 }
 
 export const log = {
-  info(event: string, fields?: LogFields): void {
-    emit('info', event, fields);
-  },
-  warn(event: string, fields?: LogFields): void {
-    emit('warn', event, fields);
-  },
-  error(event: string, fields?: LogFields): void {
-    emit('error', event, fields);
-  },
+  info: (tag: string, msg: string, fields?: Fields) => console.log(format(tag, msg, fields)),
+  warn: (tag: string, msg: string, fields?: Fields) => console.warn(format(tag, msg, fields)),
+  error: (tag: string, msg: string, fields?: Fields) => console.error(format(tag, msg, fields)),
 };
 
-/** Best-effort message extraction that never leaks raw objects (or URLs). */
-export function errMessage(err: unknown): string {
-  if (err instanceof Error) return redact(err.message);
-  if (typeof err === 'string') return redact(err);
-  return 'unknown';
+export function errorMessage(err: unknown): string {
+  return redact(err instanceof Error ? err.message : String(err));
 }

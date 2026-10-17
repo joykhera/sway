@@ -1,349 +1,265 @@
-import { describe, expect, it } from 'vitest';
-import { MusicSession } from './session.ts';
-import type { SessionDeps } from './session.ts';
-import type {
-  AudioFormat,
-  ServerMessage,
-  StreamConfig,
-  WeightedPrompt,
-} from '../src/shared/protocol.ts';
-import type {
-  MusicUpstream,
-  UpstreamCallbacks,
-  UpstreamStartArgs,
-} from './upstream/types.ts';
-
-const AUDIO: AudioFormat = {
-  format: 'pcm_s16le',
-  sampleRateHz: 48000,
-  channels: 2,
-};
-const P = (text: string): WeightedPrompt[] => [{ text, weight: 1 }];
-const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import type { ServerMessage, StreamConfig, WeightedPrompt } from '../src/shared/protocol.ts';
+import { createStreamSlots } from './limits.ts';
+import type { StreamSlots } from './limits.ts';
+import { Session } from './session.ts';
+import type { ClientSocket } from './session.ts';
+import type { MusicUpstream, UpstreamEvents, UpstreamFactory } from './upstream/types.ts';
 
 class FakeUpstream implements MusicUpstream {
-  cb: UpstreamCallbacks | null = null;
-  startArgs: UpstreamStartArgs | null = null;
+  started: { prompts: WeightedPrompt[]; config: StreamConfig } | undefined;
   steers: { prompts: WeightedPrompt[]; config?: StreamConfig }[] = [];
   closed = false;
-  gateStart = false;
-  failStart: Error | null = null;
-  private gate: (() => void) | null = null;
-
-  start(args: UpstreamStartArgs, cb: UpstreamCallbacks) {
-    this.startArgs = args;
-    this.cb = cb;
-    return new Promise<{ audio: AudioFormat }>((resolve, reject) => {
-      if (this.failStart) {
-        reject(this.failStart);
-        return;
-      }
-      if (this.gateStart) {
-        this.gate = () => resolve({ audio: AUDIO });
-        return;
-      }
-      resolve({ audio: AUDIO });
-    });
+  failStart = false;
+  constructor(readonly events: UpstreamEvents) {}
+  async start(prompts: WeightedPrompt[], config: StreamConfig) {
+    this.started = { prompts, config };
+    if (this.failStart) throw new Error('nope');
   }
-  releaseStart(): void {
-    this.gate?.();
+  async steer(prompts: WeightedPrompt[], config?: StreamConfig) {
+    this.steers.push(config ? { prompts, config } : { prompts });
   }
-  steer(prompts: WeightedPrompt[], config?: StreamConfig): void {
-    this.steers.push({ prompts, config });
-  }
-  async close(): Promise<void> {
+  close() {
     this.closed = true;
   }
-}
-
-function makeSession(overrides: Partial<SessionDeps> = {}) {
-  const sent: ServerMessage[] = [];
-  const binary: Buffer[] = [];
-  const created: FakeUpstream[] = [];
-  let disposed = 0;
-  const session = new MusicSession({
-    send: (m) => sent.push(m),
-    sendBinary: (c) => binary.push(c),
-    createUpstream: () => {
-      const u = new FakeUpstream();
-      created.push(u);
-      return u;
-    },
-    onDispose: () => {
-      disposed += 1;
-    },
-    steerIntervalMs: 15,
-    reconnectBaseDelayMs: 5,
-    ...overrides,
-  });
-  return {
-    session,
-    sent,
-    binary,
-    created,
-    disposed: () => disposed,
-    start: (prompts = P('pad'), config?: StreamConfig) =>
-      session.handleMessage(
-        JSON.stringify({ type: 'start', prompts, ...(config ? { config } : {}) }),
-      ),
-    steer: (revision: number, prompts = P('steer'), config?: StreamConfig) =>
-      session.handleMessage(
-        JSON.stringify({
-          type: 'steer',
-          revision,
-          prompts,
-          ...(config ? { config } : {}),
-        }),
-      ),
-    types: () => sent.map((m) => m.type),
-    states: () =>
-      sent.filter((m) => m.type === 'status').map((m) => (m as { state: string }).state),
-  };
-}
-
-async function until(cond: () => boolean, ms = 2000): Promise<void> {
-  const deadline = Date.now() + ms;
-  while (!cond()) {
-    if (Date.now() > deadline) throw new Error('timed out waiting for condition');
-    await sleep(2);
+  audio(channels = 2) {
+    this.events.onAudio(Buffer.alloc(16), { sampleRateHz: 48000, channels });
   }
 }
 
-describe('MusicSession', () => {
-  it('start: idle → connecting → ready → playing', async () => {
-    const s = makeSession();
-    s.start();
-    expect(s.sent[0]).toEqual({ type: 'status', state: 'connecting' });
-    await until(() => s.session.state === 'playing');
-    expect(s.types()).toEqual(['status', 'ready', 'status']);
-    expect(s.states()).toEqual(['connecting', 'playing']);
-    expect(s.sent[1]).toEqual({ type: 'ready', audio: AUDIO });
-    expect(s.created[0]?.startArgs?.prompts).toEqual(P('pad'));
+class FakeSocket implements ClientSocket {
+  readyState = 1;
+  json: ServerMessage[] = [];
+  binary: Buffer[] = [];
+  send(data: string | Buffer, opts?: { binary?: boolean }) {
+    if (typeof data === 'string') this.json.push(JSON.parse(data) as ServerMessage);
+    else {
+      expect(opts?.binary).toBe(true);
+      this.binary.push(data);
+    }
+  }
+  types() {
+    return this.json.map((m) => (m.type === 'status' ? `status:${m.state}` : m.type === 'error' ? `error:${m.code}` : m.type));
+  }
+}
+
+const P = (text: string, weight = 1): WeightedPrompt[] => [{ text, weight }];
+
+let ups: FakeUpstream[];
+let failNext: number;
+let slots: StreamSlots;
+const factory: UpstreamFactory = (events) => {
+  const up = new FakeUpstream(events);
+  if (failNext > 0) {
+    failNext--;
+    up.failStart = true;
+  }
+  ups.push(up);
+  return up;
+};
+const last = () => ups[ups.length - 1]!;
+
+function setup() {
+  const socket = new FakeSocket();
+  const session = new Session(socket, factory, slots);
+  return { socket, session };
+}
+
+function playing() {
+  const s = setup();
+  s.session.handle({ type: 'start', prompts: P('a') });
+  last().audio();
+  return s;
+}
+
+beforeEach(() => {
+  vi.useFakeTimers();
+  vi.spyOn(console, 'log').mockImplementation(() => {});
+  vi.spyOn(console, 'warn').mockImplementation(() => {});
+  vi.spyOn(console, 'error').mockImplementation(() => {});
+  ups = [];
+  failNext = 0;
+  slots = createStreamSlots(5);
+});
+
+afterEach(() => {
+  vi.useRealTimers();
+  vi.restoreAllMocks();
+});
+
+describe('session', () => {
+  it('start → connecting, ready + playing on first audio, then forwards binary', () => {
+    const { socket, session } = setup();
+    session.handle({ type: 'start', prompts: P('a'), config: { density: 0.4 } });
+    expect(socket.types()).toEqual(['status:connecting']);
+    expect(last().started).toEqual({ prompts: P('a'), config: { density: 0.4 } });
+    last().audio();
+    last().audio();
+    expect(socket.types()).toEqual(['status:connecting', 'ready', 'status:playing']);
+    expect(socket.json[1]).toEqual({ type: 'ready', audio: { format: 'pcm_s16le', sampleRateHz: 48000, channels: 2 } });
+    expect(socket.binary).toHaveLength(2);
+    expect(session.state).toBe('playing');
   });
 
-  it('start from non-idle → bad_state', async () => {
-    const s = makeSession();
-    s.start();
-    await until(() => s.session.state === 'playing');
-    s.start();
-    const err = s.sent.find((m) => m.type === 'error');
-    expect(err).toMatchObject({ code: 'bad_state', retryable: false });
+  it('rejects steer before start and a second start', () => {
+    const { socket, session } = setup();
+    session.handle({ type: 'steer', revision: 1, prompts: P('b') });
+    expect(socket.types()).toEqual(['error:bad_state']);
+    session.handle({ type: 'start', prompts: P('a') });
+    session.handle({ type: 'start', prompts: P('a') });
+    expect(socket.types()).toEqual(['error:bad_state', 'status:connecting', 'error:bad_state']);
+    expect(ups).toHaveLength(1);
   });
 
-  it('steer before start → bad_state', () => {
-    const s = makeSession();
-    s.steer(1);
-    expect(s.sent[0]).toMatchObject({ type: 'error', code: 'bad_state' });
+  it('drops stale revisions', () => {
+    const { session } = playing();
+    session.handle({ type: 'steer', revision: 5, prompts: P('five') });
+    vi.advanceTimersByTime(1000);
+    session.handle({ type: 'steer', revision: 5, prompts: P('dup') });
+    session.handle({ type: 'steer', revision: 3, prompts: P('old') });
+    vi.advanceTimersByTime(1000);
+    expect(last().steers).toEqual([{ prompts: P('five') }]);
   });
 
-  it('malformed message → bad_message', () => {
-    const s = makeSession();
-    s.session.handleMessage('this is not json');
-    s.session.handleMessage(JSON.stringify({ type: 'bogus' }));
-    s.session.handleMessage(
-      JSON.stringify({ type: 'start', prompts: [{ text: 'x', weight: 0 }] }),
-    );
-    expect(s.sent.map((m) => (m as { code?: string }).code)).toEqual([
-      'bad_message',
-      'bad_message',
-      'bad_message',
-    ]);
-    expect(s.session.state).toBe('idle');
+  it('coalesces steers to one per 200 ms, newest wins', () => {
+    const { session } = playing();
+    session.handle({ type: 'steer', revision: 1, prompts: P('r1') });
+    session.handle({ type: 'steer', revision: 2, prompts: P('r2') });
+    session.handle({ type: 'steer', revision: 3, prompts: P('r3'), config: { brightness: 0.9 } });
+    expect(last().steers).toEqual([{ prompts: P('r1') }]);
+    vi.advanceTimersByTime(199);
+    expect(last().steers).toHaveLength(1);
+    vi.advanceTimersByTime(1);
+    expect(last().steers).toEqual([{ prompts: P('r1') }, { prompts: P('r3'), config: { brightness: 0.9 } }]);
   });
 
-  it('upstream start() rejection → upstream_unavailable, back to idle, retry ok', async () => {
-    const s = makeSession();
-    const failThenOk = () => {
-      const u = new FakeUpstream();
-      if (s.created.length === 0) u.failStart = new Error('quota exceeded');
-      s.created.push(u);
-      return u;
-    };
-    const session = new MusicSession({
-      send: (m) => s.sent.push(m),
-      sendBinary: (c) => s.binary.push(c),
-      createUpstream: failThenOk,
-      steerIntervalMs: 15,
-      reconnectBaseDelayMs: 5,
-    });
-    session.handleMessage(JSON.stringify({ type: 'start', prompts: P('x') }));
-    await until(() => s.session.state === 'idle' || session.state === 'idle');
-    const err = s.sent.find((m) => m.type === 'error');
-    expect(err).toMatchObject({ code: 'upstream_unavailable', retryable: true });
-    // retry works from idle
-    session.handleMessage(JSON.stringify({ type: 'start', prompts: P('y') }));
-    await until(() => session.state === 'playing');
-    expect(s.created[1]?.startArgs?.prompts).toEqual(P('y'));
+  it('keeps only the latest pending steer while connecting and applies it after ready', () => {
+    const { session } = setup();
+    session.handle({ type: 'start', prompts: P('a') });
+    session.handle({ type: 'steer', revision: 1, prompts: P('r1') });
+    session.handle({ type: 'steer', revision: 2, prompts: P('r2') });
+    vi.advanceTimersByTime(1000);
+    expect(last().steers).toEqual([]);
+    last().audio();
+    expect(last().steers).toEqual([{ prompts: P('r2') }]);
   });
 
-  it('drops stale steer revisions silently, applies newest only', async () => {
-    const s = makeSession();
-    s.start();
-    await until(() => s.session.state === 'playing');
-    s.steer(5, P('five'));
-    await until(() => s.created[0]!.steers.length === 1);
-    s.steer(5, P('again'));
-    s.steer(3, P('three'));
-    await sleep(60);
-    expect(s.created[0]?.steers).toHaveLength(1);
-    expect(s.created[0]?.steers[0]?.prompts).toEqual(P('five'));
-    expect(s.sent.filter((m) => m.type === 'error')).toHaveLength(0);
+  it('sends the full merged config on config steers', () => {
+    const { session } = setup();
+    session.handle({ type: 'start', prompts: P('a'), config: { density: 0.2 } });
+    last().audio();
+    session.handle({ type: 'steer', revision: 1, prompts: P('a'), config: { brightness: 0.7 } });
+    expect(last().steers).toEqual([{ prompts: P('a'), config: { density: 0.2, brightness: 0.7 } }]);
   });
 
-  it('coalesces a burst of steers: one send, newest wins', async () => {
-    const s = makeSession();
-    s.start();
-    await until(() => s.session.state === 'playing');
-    s.steer(1, P('one'));
-    s.steer(2, P('two'));
-    s.steer(3, P('three'));
-    await until(() => s.created[0]!.steers.length === 1, 1000);
-    expect(s.created[0]?.steers[0]?.prompts).toEqual(P('three'));
-    await sleep(50);
-    expect(s.created[0]?.steers).toHaveLength(1);
+  it('reconnects after an upstream drop with the latest prompts and sends a fresh ready', () => {
+    const { socket, session } = playing();
+    session.handle({ type: 'steer', revision: 1, prompts: P('latest') });
+    const first = last();
+    first.events.onClosed('code=1000');
+    expect(first.closed).toBe(true);
+    expect(socket.types().at(-1)).toBe('status:reconnecting');
+    expect(session.state).toBe('reconnecting');
+    session.handle({ type: 'steer', revision: 2, prompts: P('during') });
+    vi.advanceTimersByTime(500);
+    expect(ups).toHaveLength(2);
+    expect(last().started?.prompts).toEqual(P('during'));
+    first.audio(); // stale upstream is ignored
+    expect(socket.binary).toHaveLength(1);
+    last().audio();
+    expect(socket.types().slice(-2)).toEqual(['ready', 'status:playing']);
+    expect(session.state).toBe('playing');
+    expect(slots.inUse).toBe(1);
   });
 
-  it('applies a pending steer sent during connecting after setup', async () => {
-    const s = makeSession();
-    const gateAll = (): FakeUpstream => {
-      const u = new FakeUpstream();
-      u.gateStart = true;
-      s.created.push(u);
-      return u;
-    };
-    const session = new MusicSession({
-      send: (m) => s.sent.push(m),
-      sendBinary: (c) => s.binary.push(c),
-      createUpstream: gateAll,
-      steerIntervalMs: 15,
-      reconnectBaseDelayMs: 5,
-    });
-    session.handleMessage(JSON.stringify({ type: 'start', prompts: P('first') }));
-    session.handleMessage(
-      JSON.stringify({ type: 'steer', revision: 1, prompts: P('queued') }),
-    );
+  it('gives up after 3 failed reconnects with upstream_lost', async () => {
+    const { socket, session } = playing();
+    failNext = 3;
+    last().events.onClosed('dropped');
+    await vi.advanceTimersByTimeAsync(500 + 1000 + 2000);
+    expect(ups).toHaveLength(4);
+    expect(socket.types().at(-1)).toBe('error:upstream_lost');
+    const err = socket.json.at(-1);
+    expect(err?.type === 'error' && err.retryable).toBe(true);
+    expect(session.state).toBe('idle');
+    expect(slots.inUse).toBe(0);
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(ups).toHaveLength(4);
+    session.handle({ type: 'start', prompts: P('again') });
     expect(session.state).toBe('connecting');
-    s.created[0]!.releaseStart();
-    await until(() => session.state === 'playing');
-    await until(() => s.created[0]!.steers.length === 1);
-    expect(s.created[0]?.steers[0]?.prompts).toEqual(P('queued'));
   });
 
-  it('upstream drop → reconnecting → fresh ready + playing, latest prompts', async () => {
-    const s = makeSession();
-    s.start();
-    await until(() => s.session.state === 'playing');
-    s.steer(7, P('latest'));
-    await until(() => s.created[0]!.steers.length === 1);
-    s.created[0]!.cb!.onClosed('10 minute cap');
-    expect(s.session.state).toBe('reconnecting');
-    await until(() => s.session.state === 'playing');
-    expect(s.created).toHaveLength(2);
-    // restarted with the latest APPLIED prompts (the steer, not the start)
-    expect(s.created[1]?.startArgs?.prompts).toEqual(P('latest'));
-    // fresh ready re-sent after reconnecting
-    expect(s.types()).toEqual([
-      'status',
-      'ready',
-      'status',
-      'status',
-      'ready',
-      'status',
-    ]);
-    expect(s.states()).toEqual([
-      'connecting',
-      'playing',
-      'reconnecting',
-      'playing',
-    ]);
+  it('reports upstream_unavailable when the first connect fails', async () => {
+    failNext = 1;
+    const { socket, session } = setup();
+    session.handle({ type: 'start', prompts: P('a') });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(socket.types()).toEqual(['status:connecting', 'error:upstream_unavailable']);
+    expect(session.state).toBe('idle');
+    expect(slots.inUse).toBe(0);
   });
 
-  it('reconnect exhaustion → upstream_lost + dispose', async () => {
-    const s = makeSession({ maxReconnectAttempts: 3 });
-    s.start();
-    await until(() => s.session.state === 'playing');
-    // every reconnect attempt fails
-    let calls = 0;
-    const factory = () => {
-      calls += 1;
-      const u = new FakeUpstream();
-      if (calls > 1) u.failStart = new Error('still down');
-      s.created.push(u);
-      return u;
-    };
-    const session2 = new MusicSession({
-      send: (m) => s.sent.push(m),
-      sendBinary: (c) => s.binary.push(c),
-      createUpstream: factory,
-      steerIntervalMs: 15,
-      reconnectBaseDelayMs: 2,
-      maxReconnectAttempts: 3,
-    });
-    const sent2 = s.sent;
-    sent2.length = 0;
-    session2.handleMessage(JSON.stringify({ type: 'start', prompts: P('x') }));
-    await until(() => session2.state === 'playing');
-    s.created[s.created.length - 1]!.cb!.onClosed('cap');
-    await until(() => session2.state === 'closed', 4000);
-    const err = sent2.find((m) => m.type === 'error');
-    expect(err).toMatchObject({ code: 'upstream_lost', retryable: true });
-    expect(calls).toBe(4); // 1 original + 3 reconnect attempts
+  it('turns filtered prompts into a retryable error and keeps streaming', () => {
+    const { socket, session } = playing();
+    last().events.onFiltered({ text: 'bad', reason: 'x' });
+    expect(socket.json.at(-1)).toMatchObject({ type: 'error', code: 'prompt_filtered', retryable: true });
+    expect(session.state).toBe('playing');
+    expect(last().closed).toBe(false);
   });
 
-  it('onAudio → binary frame straight through', async () => {
-    const s = makeSession();
-    s.start();
-    await until(() => s.session.state === 'playing');
-    const chunk = Buffer.from([1, 2, 3, 4]);
-    s.created[0]!.cb!.onAudio(chunk);
-    expect(s.binary).toEqual([chunk]);
+  it('rejects non-stereo audio with internal', () => {
+    const { socket, session } = setup();
+    session.handle({ type: 'start', prompts: P('a') });
+    last().audio(1);
+    expect(socket.types()).toContain('error:internal');
+    expect(socket.binary).toHaveLength(0);
+    expect(last().closed).toBe(true);
+    expect(session.state).toBe('idle');
   });
 
-  it('filtered prompt → prompt_filtered error (retryable)', async () => {
-    const s = makeSession();
-    s.start();
-    await until(() => s.session.state === 'playing');
-    s.created[0]!.cb!.onFiltered?.(['bad words']);
-    const err = s.sent.find((m) => m.type === 'error');
-    expect(err).toMatchObject({ code: 'prompt_filtered', retryable: true });
+  it('stop closes upstream, reports stopped, and allows a new start', () => {
+    const { socket, session } = playing();
+    session.handle({ type: 'stop' });
+    expect(ups[0]!.closed).toBe(true);
+    expect(socket.types().at(-1)).toBe('status:stopped');
+    expect(slots.inUse).toBe(0);
+    session.handle({ type: 'start', prompts: P('b') });
+    expect(ups).toHaveLength(2);
   });
 
-  it('stop → status stopped, upstream closed, slot released, idempotent', async () => {
-    const s = makeSession();
-    s.start();
-    await until(() => s.session.state === 'playing');
-    s.session.handleMessage(JSON.stringify({ type: 'stop' }));
-    expect(s.session.state).toBe('closed');
-    expect(s.sent[s.sent.length - 1]).toEqual({ type: 'status', state: 'stopped' });
-    expect(s.created[0]?.closed).toBe(true);
-    expect(s.disposed()).toBe(1);
-    s.session.dispose();
-    s.session.dispose();
-    expect(s.disposed()).toBe(1);
-  });
-
-  it('dispose during connecting cancels pending start cleanly', async () => {
-    const s = makeSession();
-    const session = new MusicSession({
-      send: (m) => s.sent.push(m),
-      sendBinary: (c) => s.binary.push(c),
-      createUpstream: () => {
-        const u = new FakeUpstream();
-        u.gateStart = true;
-        s.created.push(u);
-        return u;
-      },
-      steerIntervalMs: 15,
-      reconnectBaseDelayMs: 5,
-    });
-    session.handleMessage(JSON.stringify({ type: 'start', prompts: P('x') }));
+  it('dispose closes upstream, clears timers and releases the slot (idempotent)', () => {
+    const { session } = playing();
+    session.handle({ type: 'steer', revision: 1, prompts: P('r1') });
+    session.handle({ type: 'steer', revision: 2, prompts: P('r2') }); // pending timer
     session.dispose();
-    expect(session.state).toBe('closed');
-    expect(s.disposed()).toBe(0); // this session had no onDispose → just checking no throw
-    expect(s.created[0]?.closed).toBe(true);
-    s.created[0]!.releaseStart();
-    await sleep(10); // late resolution must not resurrect the session
-    expect(session.state).toBe('closed');
-    expect(s.types()).not.toContain('ready');
+    session.dispose();
+    expect(last().closed).toBe(true);
+    expect(slots.inUse).toBe(0);
+    expect(vi.getTimerCount()).toBe(0);
+    session.handle({ type: 'start', prompts: P('x') });
+    expect(ups).toHaveLength(1);
+  });
+
+  it('dispose during reconnect backoff cancels the retry', () => {
+    const { session } = playing();
+    last().events.onClosed('dropped');
+    session.dispose();
+    vi.advanceTimersByTime(10_000);
+    expect(ups).toHaveLength(1);
+    expect(slots.inUse).toBe(0);
+  });
+
+  it('returns capacity once MAX_STREAMS are in use', () => {
+    slots = createStreamSlots(5);
+    const sessions = Array.from({ length: 5 }, () => playing());
+    const extra = setup();
+    extra.session.handle({ type: 'start', prompts: P('a') });
+    expect(extra.socket.json).toEqual([
+      { type: 'error', code: 'capacity', message: expect.any(String), retryable: true },
+    ]);
+    expect(extra.session.state).toBe('idle');
+    sessions[0]!.session.dispose();
+    extra.session.handle({ type: 'start', prompts: P('a') });
+    expect(extra.session.state).toBe('connecting');
   });
 });

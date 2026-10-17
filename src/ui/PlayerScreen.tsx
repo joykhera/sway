@@ -1,0 +1,102 @@
+import { useCallback, useEffect, useState } from 'react';
+import type { MusicSessionController, Vote } from './contracts.ts';
+import { useSessionState } from './use-session-state.ts';
+import { StatusChip } from './StatusChip.tsx';
+import { ThumbsControls } from './ThumbsControls.tsx';
+import { Visualizer } from './Visualizer.tsx';
+import './ui.css';
+
+export type PlayerScreenProps = {
+  controller: MusicSessionController;
+};
+
+const VOTE_FLASH_MS = 700;
+
+/**
+ * The whole visible app: a centered pre-start view, or the live session view
+ * (status chip · breathing ring · thumbs · end session). Start, like, and dislike
+ * are the only controls.
+ */
+export function PlayerScreen({ controller }: PlayerScreenProps) {
+  const state = useSessionState(controller);
+  const [lastVote, setLastVote] = useState<{ v: Vote; at: number } | null>(null);
+
+  const active = state.status !== 'idle' && state.status !== 'stopped';
+
+  // Brief visual pulse on the voted side; auto-clears.
+  useEffect(() => {
+    if (!lastVote) return;
+    const timer = setTimeout(() => setLastVote(null), VOTE_FLASH_MS);
+    return () => clearTimeout(timer);
+  }, [lastVote]);
+
+  const handleVote = useCallback(
+    (v: Vote) => {
+      controller.vote(v); // synchronous, never blocks the button
+      setLastVote({ v, at: Date.now() });
+    },
+    [controller],
+  );
+
+  // Arrow keys steer only while a session is active.
+  useEffect(() => {
+    if (!active) return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'ArrowUp') {
+        e.preventDefault();
+        handleVote('up');
+      } else if (e.key === 'ArrowDown') {
+        e.preventDefault();
+        handleVote('down');
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [active, handleVote]);
+
+  if (!active) {
+    return (
+      <main className="app app--prestart">
+        <section className="prestart">
+          <h1 className="wordmark">sway</h1>
+          <p className="tagline">infinite instrumental stream — it learns what you like</p>
+          {state.status === 'stopped' ? <p className="prestart__hint">session ended</p> : null}
+          <button
+            type="button"
+            className="start-button"
+            aria-label="start listening"
+            onClick={() => {
+              // Called synchronously inside the gesture (autoplay policy). Never awaited —
+              // errors surface through session state, not this promise.
+              controller.start().catch(() => {});
+            }}
+          >
+            start listening
+          </button>
+        </section>
+      </main>
+    );
+  }
+
+  return (
+    <main className="app app--live">
+      <header className="app__top">
+        <StatusChip status={state.status} lastError={state.lastError} />
+      </header>
+      <div className="app__stage">
+        <Visualizer active={active} lastVote={lastVote} />
+      </div>
+      <footer className="app__controls">
+        <ThumbsControls onVote={handleVote} lastVote={lastVote} />
+        <button
+          type="button"
+          className="end-session"
+          aria-label="end session"
+          onClick={() => controller.stop()}
+        >
+          end session
+        </button>
+      </footer>
+    </main>
+  );
+}

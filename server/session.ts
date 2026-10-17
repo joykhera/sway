@@ -1,348 +1,231 @@
-// One MusicSession per browser WebSocket connection.
-//
-// State machine (part-a-plan):
-//   idle → connecting → playing ⇄ reconnecting → closed
-//
-// - `start` only from `idle`; any other state → error{bad_state}.
-// - `steer` with revision <= lastApplied → dropped silently. While connecting
-//   or reconnecting, keep only the newest pending steer; applied once playing.
-// - Upstream sends coalesced ≤1 per ~200 ms (newest wins) — Lyria itself also
-//   coalesces latest-wins internally; this keeps wire traffic polite (R11).
-// - Upstream close while playing → status:reconnecting → reopen ≤3 times with
-//   backoff using the latest APPLIED prompts → fresh `ready` + status:playing;
-//   exhausted → error{upstream_lost, retryable:true} + dispose.
-// - filteredPrompt → error{prompt_filtered, retryable:true} + log.
-// - upstream start() rejection → error{upstream_unavailable, retryable:true}
-//   and the session returns to `idle` so the client may retry `start`.
-// - `stop` / client close / ws error → dispose(): close upstream, clear ALL
-//   timers, release the stream slot. Idempotent.
-
-import { parseClientMessage, ProtocolError } from './guard.ts';
-import { errMessage, log } from './log.ts';
 import type {
-  AudioFormat,
   ClientMessage,
   ErrorCode,
   ServerMessage,
   StreamConfig,
   WeightedPrompt,
 } from '../src/shared/protocol.ts';
-import type {
-  MusicUpstream,
-  UpstreamCallbacks,
-} from './upstream/types.ts';
+import type { StreamSlots } from './limits.ts';
+import { errorMessage, log } from './log.ts';
+import type { MusicUpstream, UpstreamFactory, UpstreamFormat } from './upstream/types.ts';
 
-export type SessionState =
-  | 'idle'
-  | 'connecting'
-  | 'playing'
-  | 'reconnecting'
-  | 'closed';
-
-export type SessionDeps = {
-  /** JSON ServerMessage to the browser. */
-  send(msg: ServerMessage): void;
-  /** Binary audio frame to the browser. */
-  sendBinary(chunk: Buffer): void;
-  /** Factory for a fresh upstream (index.ts picks Lyria vs Mock by mode). */
-  createUpstream(): MusicUpstream;
-  /** Release the stream slot (index.ts frees capacity). */
-  onDispose?(): void;
-  /** Steer coalescing window. Default 200 ms. */
-  steerIntervalMs?: number;
-  /** Reconnect attempts before upstream_lost. Default 3. */
-  maxReconnectAttempts?: number;
-  /** Backoff base; attempt n waits base * 2^(n-1). Default 400 ms. */
-  reconnectBaseDelayMs?: number;
+export type ClientSocket = {
+  readonly readyState: number;
+  send(data: string | Buffer, opts?: { binary?: boolean }): void;
 };
 
-const DEFAULT_STEER_INTERVAL_MS = 200;
-const DEFAULT_MAX_RECONNECT = 3;
-const DEFAULT_RECONNECT_BASE_MS = 400;
+export type SessionState = 'idle' | 'connecting' | 'playing' | 'reconnecting' | 'closed';
 
-type AppliedInput = { prompts: WeightedPrompt[]; config?: StreamConfig };
+export const STEER_INTERVAL_MS = 200;
+export const RECONNECT_BACKOFF_MS = [500, 1000, 2000];
+const WS_OPEN = 1;
 
-export class MusicSession {
-  private readonly deps: SessionDeps;
-  private readonly steerIntervalMs: number;
-  private readonly maxReconnectAttempts: number;
-  private readonly reconnectBaseDelayMs: number;
+type Target = { prompts: WeightedPrompt[]; config: StreamConfig };
 
-  private _state: SessionState = 'idle';
-  private disposed = false;
+export class Session {
+  state: SessionState = 'idle';
+  private upstream: MusicUpstream | undefined;
+  private target: Target = { prompts: [], config: {} };
+  private lastRevision = -1;
+  private dirty = false;
+  private configDirty = false;
+  private lastSteerAt = -Infinity;
+  private steerTimer: ReturnType<typeof setTimeout> | undefined;
+  private retryTimer: ReturnType<typeof setTimeout> | undefined;
+  private attempts = 0;
+  private awaitingReady = false;
+  private hasSlot = false;
 
-  private upstream: MusicUpstream | null = null;
+  constructor(
+    private readonly socket: ClientSocket,
+    private readonly createUpstream: UpstreamFactory,
+    private readonly slots: StreamSlots,
+    readonly id = 'session',
+  ) {}
 
-  /** Latest input actually sent upstream (start or applied steer). */
-  private applied: AppliedInput | null = null;
-  /** Highest revision applied upstream; start() resets the gate. */
-  private lastAppliedRevision = -1;
-  /** Newest steer awaiting the coalescing window or `playing` state. */
-  private pendingSteer: (AppliedInput & { revision: number }) | null = null;
-
-  private steerTimer: NodeJS.Timeout | null = null;
-  private lastSteerSentAt = -Infinity;
-
-  private reconnectTimer: NodeJS.Timeout | null = null;
-  private wakeReconnect: (() => void) | null = null;
-
-  constructor(deps: SessionDeps) {
-    this.deps = deps;
-    this.steerIntervalMs = deps.steerIntervalMs ?? DEFAULT_STEER_INTERVAL_MS;
-    this.maxReconnectAttempts = deps.maxReconnectAttempts ?? DEFAULT_MAX_RECONNECT;
-    this.reconnectBaseDelayMs = deps.reconnectBaseDelayMs ?? DEFAULT_RECONNECT_BASE_MS;
-  }
-
-  get state(): SessionState {
-    return this._state;
-  }
-
-  handleMessage(raw: Buffer | string): void {
-    if (this.disposed) return;
-    let msg: ClientMessage;
-    try {
-      msg = parseClientMessage(raw);
-    } catch (err) {
-      if (err instanceof ProtocolError) {
-        this.sendError(err.code, err.message, false);
-      } else {
-        log.error('client message parse failed', { error: errMessage(err) });
-        this.sendError('internal', 'internal error parsing message', false);
-      }
-      return;
-    }
-    try {
-      switch (msg.type) {
-        case 'start':
-          this.handleStart(msg);
-          return;
-        case 'steer':
-          this.handleSteer(msg);
-          return;
-        case 'stop':
-          this.send({ type: 'status', state: 'stopped' });
-          this.dispose();
-          return;
-      }
-    } catch (err) {
-      log.error('client message handling failed', { error: errMessage(err) });
-      this.sendError('internal', 'internal error handling message', false);
+  handle(msg: ClientMessage): void {
+    if (this.state === 'closed') return;
+    switch (msg.type) {
+      case 'start':
+        return this.start(msg.prompts, msg.config ?? {});
+      case 'steer':
+        return this.steer(msg.revision, msg.prompts, msg.config);
+      case 'stop':
+        return this.stop();
     }
   }
 
-  /** Idempotent teardown: upstream closed, timers cleared, slot released. */
-  dispose(): void {
-    if (this.disposed) return;
-    this.disposed = true;
-    this._state = 'closed';
-    if (this.steerTimer) {
-      clearTimeout(this.steerTimer);
-      this.steerTimer = null;
-    }
-    if (this.reconnectTimer) {
-      clearTimeout(this.reconnectTimer);
-      this.reconnectTimer = null;
-    }
-    // Unblock a sleeping reconnectLoop so it can observe `disposed` and exit.
-    this.wakeReconnect?.();
-    this.wakeReconnect = null;
-    this.pendingSteer = null;
-    const upstream = this.upstream;
-    this.upstream = null;
-    if (upstream) void upstream.close().catch(() => {});
-    this.deps.onDispose?.();
-  }
-
-  // ---- message handlers ---------------------------------------------------
-
-  private handleStart(msg: { prompts: WeightedPrompt[]; config?: StreamConfig }): void {
-    if (this._state !== 'idle') {
-      this.sendError('bad_state', `cannot start while ${this._state}`, false);
-      return;
-    }
-    this._state = 'connecting';
-    this.send({ type: 'status', state: 'connecting' });
-    this.applied = { prompts: msg.prompts, config: msg.config };
-    this.lastAppliedRevision = -1;
-    log.info('stream start requested', {
-      promptCount: msg.prompts.length,
-      shares: msg.prompts.map((p) => ({
-        text: p.text,
-        share: +(p.weight / msg.prompts.reduce((s, x) => s + x.weight, 0)).toFixed(3),
-      })),
-    });
-    void this.openUpstream();
-  }
-
-  private handleSteer(msg: {
-    revision: number;
-    prompts: WeightedPrompt[];
-    config?: StreamConfig;
-  }): void {
-    if (
-      this._state !== 'connecting' &&
-      this._state !== 'playing' &&
-      this._state !== 'reconnecting'
-    ) {
-      this.sendError('bad_state', `cannot steer while ${this._state}`, false);
-      return;
-    }
-    // Stale revisions drop silently; also never go backwards vs a queued steer.
-    const floor = Math.max(this.lastAppliedRevision, this.pendingSteer?.revision ?? -1);
-    if (msg.revision <= floor) return;
-    this.pendingSteer = {
-      revision: msg.revision,
-      prompts: msg.prompts,
-      config: msg.config,
-    };
-    this.scheduleSteerFlush();
-  }
-
-  // ---- upstream lifecycle -------------------------------------------------
-
-  /**
-   * Open a fresh upstream with the latest applied input. Used by both initial
-   * start (state `connecting`) and reconnect attempts (state `reconnecting`).
-   */
-  private async openUpstream(): Promise<boolean> {
-    const upstream = this.deps.createUpstream();
-    this.upstream = upstream;
-    const applied = this.applied;
-    if (!applied) {
-      this.upstream = null;
-      return false;
-    }
-    let audio: AudioFormat;
-    try {
-      ({ audio } = await upstream.start(
-        { prompts: applied.prompts, config: applied.config },
-        this.makeCallbacks(upstream),
-      ));
-    } catch (err) {
-      if (this.upstream === upstream) this.upstream = null;
-      if (this.disposed) return false;
-      if (this._state === 'connecting') {
-        log.warn('upstream start failed', { error: errMessage(err) });
-        this._state = 'idle';
-        this.sendError('upstream_unavailable', errMessage(err), true);
-      } else {
-        // reconnectLoop counts attempts and decides whether to retry.
-        log.warn('upstream reconnect attempt failed', { error: errMessage(err) });
-      }
-      return false;
-    }
-    if (this.upstream !== upstream || this.disposed) {
-      // Superseded or disposed while connecting — don't leak the stream.
-      void upstream.close().catch(() => {});
-      return false;
-    }
-    this.send({ type: 'ready', audio });
-    this._state = 'playing';
-    this.send({ type: 'status', state: 'playing' });
-    this.scheduleSteerFlush();
-    return true;
-  }
-
-  private makeCallbacks(upstream: MusicUpstream): UpstreamCallbacks {
-    const current = () => this.upstream === upstream && !this.disposed;
-    return {
-      onAudio: (chunk) => {
-        if (current()) this.sendBinary(chunk);
-      },
-      onFiltered: (prompts) => {
-        if (!current()) return;
-        log.warn('upstream filtered prompt(s)', { prompts });
-        this.sendError(
-          'prompt_filtered',
-          `filtered prompt(s): ${prompts.join(', ')}`,
-          true,
-        );
-      },
-      onWarning: (message) => log.warn('upstream warning', { message }),
-      onClosed: (reason) => {
-        if (!current()) return;
-        this.upstream = null;
-        // While `connecting` the pending start() rejection already reports the
-        // failure (upstream_unavailable); while `reconnecting` the in-flight
-        // attempt's rejection drives the retry loop. Only a drop from `playing`
-        // starts a reconnect here.
-        if (this._state === 'playing') {
-          this._state = 'reconnecting';
-          this.send({ type: 'status', state: 'reconnecting' });
-          log.warn('upstream closed; reconnecting', { reason: reason ?? '' });
-          void this.reconnectLoop();
-        }
-      },
-    };
-  }
-
-  private async reconnectLoop(): Promise<void> {
-    for (let attempt = 1; attempt <= this.maxReconnectAttempts; attempt++) {
-      if (this.disposed || this._state !== 'reconnecting') return;
-      await this.sleep(this.reconnectBaseDelayMs * 2 ** (attempt - 1));
-      if (this.disposed || this._state !== 'reconnecting') return;
-      if (await this.openUpstream()) return; // fresh ready + playing
-    }
-    if (this.disposed || this._state !== 'reconnecting') return;
-    log.error('upstream reconnect exhausted', { attempts: this.maxReconnectAttempts });
-    this.sendError('upstream_lost', 'upstream stream lost after retries', true);
-    this.dispose();
-  }
-
-  private sleep(ms: number): Promise<void> {
-    return new Promise<void>((resolve) => {
-      this.wakeReconnect = resolve;
-      this.reconnectTimer = setTimeout(() => {
-        this.reconnectTimer = null;
-        this.wakeReconnect = null;
-        resolve();
-      }, ms);
-    });
-  }
-
-  // ---- steer coalescing ---------------------------------------------------
-
-  private scheduleSteerFlush(): void {
-    if (this.steerTimer || !this.pendingSteer) return;
-    const wait = Math.max(0, this.steerIntervalMs - (Date.now() - this.lastSteerSentAt));
-    this.steerTimer = setTimeout(() => {
-      this.steerTimer = null;
-      this.flushSteer();
-    }, wait);
-  }
-
-  private flushSteer(): void {
-    if (this._state !== 'playing' || !this.upstream || !this.pendingSteer) return;
-    const steer = this.pendingSteer;
-    this.pendingSteer = null;
-    this.lastAppliedRevision = steer.revision;
-    this.applied = {
-      prompts: steer.prompts,
-      config: steer.config ?? this.applied?.config,
-    };
-    this.lastSteerSentAt = Date.now();
-    this.upstream.steer(steer.prompts, steer.config);
-  }
-
-  // ---- send helpers -------------------------------------------------------
-
-  private sendError(code: ErrorCode, message: string, retryable: boolean): void {
+  sendError(code: ErrorCode, message: string, retryable: boolean): void {
     this.send({ type: 'error', code, message, retryable });
   }
 
-  private send(msg: ServerMessage): void {
-    try {
-      this.deps.send(msg);
-    } catch (err) {
-      log.warn('failed to send to client', { error: errMessage(err) });
-    }
+  dispose(): void {
+    if (this.state === 'closed') return;
+    this.teardown();
+    this.state = 'closed';
+    log.info(this.id, 'disposed');
   }
 
-  private sendBinary(chunk: Buffer): void {
-    try {
-      this.deps.sendBinary(chunk);
-    } catch (err) {
-      log.warn('failed to send audio to client', { error: errMessage(err) });
+  private start(prompts: WeightedPrompt[], config: StreamConfig): void {
+    if (this.state !== 'idle') return this.sendError('bad_state', `cannot start while ${this.state}`, false);
+    if (!this.slots.tryAcquire()) {
+      log.warn(this.id, 'stream capacity reached', { inUse: this.slots.inUse });
+      return this.sendError('capacity', 'Too many active streams, try again shortly', true);
     }
+    this.hasSlot = true;
+    this.target = { prompts, config };
+    this.lastRevision = -1;
+    this.state = 'connecting';
+    this.send({ type: 'status', state: 'connecting' });
+    log.info(this.id, 'start', { prompts: shares(prompts), config });
+    this.connect();
   }
+
+  private steer(revision: number, prompts: WeightedPrompt[], config: StreamConfig | undefined): void {
+    if (this.state === 'idle') return this.sendError('bad_state', 'steer before start', false);
+    if (revision <= this.lastRevision) {
+      log.info(this.id, 'stale steer dropped', { revision, lastRevision: this.lastRevision });
+      return;
+    }
+    this.lastRevision = revision;
+    this.target = { prompts, config: config ? { ...this.target.config, ...config } : this.target.config };
+    this.dirty = true;
+    if (config) this.configDirty = true;
+    if (this.state === 'playing') this.scheduleFlush();
+  }
+
+  private stop(): void {
+    if (this.state !== 'idle') log.info(this.id, 'stop');
+    this.teardown();
+    this.state = 'idle';
+    this.send({ type: 'status', state: 'stopped' });
+  }
+
+  private connect(): void {
+    const up: MusicUpstream = this.createUpstream({
+      onAudio: (chunk, format) => {
+        if (up === this.upstream) this.onAudio(chunk, format);
+      },
+      onFiltered: (info) => {
+        if (up !== this.upstream) return;
+        log.warn(this.id, 'prompt filtered', info);
+        this.sendError('prompt_filtered', `Prompt was filtered${info.text ? `: ${info.text}` : ''}`, true);
+      },
+      onWarning: (message) => {
+        if (up === this.upstream) log.warn(this.id, 'upstream message', { message });
+      },
+      onClosed: (reason) => this.upstreamFailed(up, reason),
+    });
+    this.upstream = up;
+    this.awaitingReady = true;
+    this.dirty = false;
+    this.configDirty = false;
+    this.lastSteerAt = -Infinity;
+    up.start(this.target.prompts, this.target.config).catch((err) => this.upstreamFailed(up, errorMessage(err)));
+  }
+
+  private onAudio(chunk: Buffer, format: UpstreamFormat): void {
+    if (this.awaitingReady) {
+      if (format.channels !== 2) {
+        log.error(this.id, 'unsupported channel count', { ...format });
+        this.sendError('internal', 'Unsupported audio format from provider', false);
+        return this.stop();
+      }
+      this.awaitingReady = false;
+      this.attempts = 0;
+      this.state = 'playing';
+      this.send({ type: 'ready', audio: { format: 'pcm_s16le', sampleRateHz: format.sampleRateHz, channels: 2 } });
+      this.send({ type: 'status', state: 'playing' });
+      log.info(this.id, 'ready', { ...format });
+      if (this.dirty) this.scheduleFlush();
+    }
+    if (this.socket.readyState === WS_OPEN) this.socket.send(chunk, { binary: true });
+  }
+
+  private upstreamFailed(up: MusicUpstream, reason: string): void {
+    if (up !== this.upstream) return;
+    this.upstream = undefined;
+    up.close();
+    log.warn(this.id, 'upstream lost', { state: this.state, reason });
+    if (this.state === 'connecting') {
+      this.teardown();
+      this.state = 'idle';
+      return this.sendError('upstream_unavailable', 'Could not start the music stream', true);
+    }
+    if (this.state === 'playing') {
+      clearTimeout(this.steerTimer);
+      this.steerTimer = undefined;
+      this.state = 'reconnecting';
+      this.attempts = 0;
+      this.send({ type: 'status', state: 'reconnecting' });
+    }
+    this.scheduleRetry();
+  }
+
+  private scheduleRetry(): void {
+    const delay = RECONNECT_BACKOFF_MS[this.attempts];
+    if (delay === undefined) {
+      log.error(this.id, 'reconnect attempts exhausted');
+      this.teardown();
+      this.state = 'idle';
+      return this.sendError('upstream_lost', 'Lost the music stream', true);
+    }
+    this.attempts++;
+    log.info(this.id, 'reconnecting', { attempt: this.attempts, delayMs: delay });
+    this.retryTimer = setTimeout(() => {
+      this.retryTimer = undefined;
+      this.connect();
+    }, delay);
+  }
+
+  private scheduleFlush(): void {
+    if (this.steerTimer) return;
+    const wait = this.lastSteerAt + STEER_INTERVAL_MS - Date.now();
+    if (wait <= 0) return this.flush();
+    this.steerTimer = setTimeout(() => {
+      this.steerTimer = undefined;
+      this.flush();
+    }, wait);
+  }
+
+  private flush(): void {
+    const up = this.upstream;
+    if (this.state !== 'playing' || !up || !this.dirty) return;
+    const config = this.configDirty ? this.target.config : undefined;
+    this.dirty = false;
+    this.configDirty = false;
+    this.lastSteerAt = Date.now();
+    log.info(this.id, 'steer', { revision: this.lastRevision, prompts: shares(this.target.prompts), config });
+    up.steer(this.target.prompts, config).catch((err) =>
+      log.warn(this.id, 'steer failed', { error: errorMessage(err) }),
+    );
+  }
+
+  private teardown(): void {
+    clearTimeout(this.steerTimer);
+    clearTimeout(this.retryTimer);
+    this.steerTimer = undefined;
+    this.retryTimer = undefined;
+    const up = this.upstream;
+    this.upstream = undefined;
+    up?.close();
+    if (this.hasSlot) {
+      this.hasSlot = false;
+      this.slots.release();
+    }
+    this.awaitingReady = false;
+    this.dirty = false;
+    this.configDirty = false;
+    this.attempts = 0;
+  }
+
+  private send(msg: ServerMessage): void {
+    if (this.socket.readyState === WS_OPEN) this.socket.send(JSON.stringify(msg));
+  }
+}
+
+// Lyria normalizes weights to sum to 1, so log the effective shares.
+function shares(prompts: WeightedPrompt[]): Record<string, number> {
+  const total = prompts.reduce((s, p) => s + p.weight, 0);
+  return Object.fromEntries(prompts.map((p) => [p.text, Math.round((p.weight / total) * 1000) / 1000]));
 }

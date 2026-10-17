@@ -1,78 +1,48 @@
-# Lyria realtime smoke report
+# Lyria RealTime smoke report
 
-Smoke harness: `pnpm smoke` → `scripts/smoke-lyria.ts` → `models/lyria-realtime-exp`
-via `@google/genai`'s `ai.live.music.connect`.
+Status: **complete except perceived steer latency** (needs someone to listen to the 12 min WAV). Fill this in from `smoke-out/<timestamp>/report.md`. Each run writes `smoke.wav`, `events.jsonl` and `report.md`.
 
-Artifacts land in `smoke-out/` (gitignored):
+## How to run
 
-- `*.pcm` — raw decoded audio (s16le stereo; rate per run, headerless)
-- `*.wav` — same audio wrapped in a 44-byte RIFF/WAVE header, playable
-- `*.log` — per-chunk timing log (byte size, decoded duration, mimeType,
-  cumulative audio-seconds vs wall-seconds = burst ratio, steer timestamps)
+```sh
+cp .env.example .env               # set GEMINI_API_KEY
+pnpm smoke                         # 12 min, no sampleRateHz (small steer at +60 s, large at +120 s)
+pnpm smoke -- --rate 44100 --duration 90
+pnpm smoke -- --parallel 2         # then 3, then 5: concurrency probe, ~20 s each, no WAV
+```
 
-Flags: `--duration S` · `--minutes M` · `--cap-probe` (750 s, ~10-min cap probe) ·
-`--both` (with then without `sampleRateHz` pass-through) · `--rate HZ` ·
-`--sessions N` (parallel concurrency probe).
-
-**NEVER paste the API key or any `key=` URL into this file or any log.**
-
-## Fixed fields — the script fills this table per run/session
-
-| Field | Value |
-|---|---|
-| Access verified? | — |
-| Output format/rate observed | — |
-| Setup latency | — |
-| First-audio latency | — |
-| Burst ratio over first 10 s | — |
-| Steer observed at | — |
-| Session cap behavior | — |
-| Parallel sessions | — |
-| Notes | — |
-
-## Subjective notes (human listener fills after each run)
-
-- Did steer#1 (weight bump at ~t=60 s: `soft piano` 0.4→0.7) audibly change the mix? At what time?
-- Did steer#2 (prompt swap at ~t=120 s → `jazz brushed drums`/`upright bass`) land? How long until audible?
-- Gaps, glitches, or stalls anywhere in the .wav?
-- `--cap-probe`: clean close or abrupt cutoff? Any `goAway` warning first?
-
-## Aggregate findings (fill in after enough runs — feeds the relay)
-
-- Sample rate / format to hardcode in the relay: _TBD_
-- Does the untyped `sampleRateHz` pass-through error? (R2): _TBD_
-- Burst ratio → does the relay need pacing? (plan §17): _TBD_
-- Upstream cap: observed close code/reason + timing → reconnect cadence (R6): _TBD_
-- Max parallel sessions observed (R10): _TBD_
-- Filtered prompts / warnings seen: _TBD_
-
----
+Ctrl-C still finalizes the WAV and writes the report.
 
 ## Runs
 
-<!-- `pnpm smoke` appends "## Run <ISO timestamp>" sections below -->
+| Date | Who | Command | Out dir | Notes |
+|---|---|---|---|---|
+| 2026-10-17 | A | `pnpm smoke --duration 40` (rate 48000) | smoke-out/2026-10-17T19-52-10-837Z | Closed 1007 at 1.1 s: `Unknown name "sampleRateHz"` |
+| 2026-10-17 | A | `pnpm smoke --rate none --duration 40` | smoke-out/2026-10-17T19-52-17-336Z | 36 s of clean audio, 18 chunks |
+| 2026-10-17 | A | `pnpm smoke` (12 min) | smoke-out/2026-10-17T19-54-24-234Z | Server closed at **10:00.7** with 1011; small steer at WAV 58.0 s, large at 118.0 s |
+| 2026-10-17 | A | `pnpm smoke --parallel 5` | smoke-out/2026-10-17T20-04-37-179Z | 5/5 sessions got setupComplete + audio |
+| 2026-10-17 | A | relay live mode + ws client, start/steer/stop | — | `ready` 48000/2 at 5.8 s, steer forwarded, clean dispose, key absent from logs |
 
-## Run 2026-10-17T20:42:16.788Z
+## Questions this must answer
 
-Command: `pnpm smoke --duration 25` · model `models/lyria-realtime-exp` · @google/genai 2.30.0 · target 25s/session
+| # | Question | Answer | Evidence |
+|---|---|---|---|
+| 1 | **Verified sample rate / channels.** What `mimeType` arrives, and does the WAV play at the correct pitch and speed? | `audio/l16;rate=48000;channels=2` on every chunk. **48 kHz stereo.** | run 19-52-17 |
+| 2 | **Does `sampleRateHz: 44100` work?** Is it accepted, rejected or ignored? Does the mimeType or pitch change? | **Rejected.** Upstream closes with 1007 `Unknown name "sampleRateHz"`. Never send it (the relay doesn't). | run 19-52-10 |
+| 3 | **Burst ratio.** Cumulative audio s ÷ wall s, the max lead, and whether it stays above 1.1 (which means relay pacing is needed). | **~1.0x, no run-ahead.** Cumulative 0.93, 10 s windows 1.00, steady lead 1.8 s. Relay pacing not needed. | run 19-52-17 |
+| 4 | **Time to first audio** after `play()`, plus the time to `setupComplete`. | setupComplete 0.9 s after connect; first audio **3.8–5.3 s after play()** across runs. Relay `ready` at 5.8 s. | both |
+| 5 | **Perceived change latency, small steer** (piano 0.6→0.9). Measure from "WAV pos at send" to the perceived change. | Steer sent at WAV pos **58.0 s**; perceived change: ____ (listen). | run 19-54-24 |
+| 6 | **Perceived change latency, large steer** (→ jazz trio). | Steer sent at WAV pos **118.0 s**; perceived change: ____ (listen). | run 19-54-24 |
+| 7 | **Session cap observed?** y/n, at what time after setupComplete, close code and reason. | **Yes: hard cap at 10:00** after setup. Close code **1011** `"The service is currently unavailable."` (misleading: it's the cap, not an outage). No warning beforehand. | run 19-54-24 |
+| 8 | **Max concurrent sessions** per key/project (try 2, 3, 5), and how a refused session fails. | **≥5**: 5/5 concurrent sessions on one key got audio (higher not tried). | run 20-04-37 |
+| 9 | **Warnings / filtered prompts / unknown fields seen.** | None in any run. | all runs |
+| 10 | Chunk size and duration (min/median/max), and arrival gaps. | Every chunk **384000 B = exactly 2.0 s**; arrivals every ~2.0 s (1.4–2.7 s). | run 19-52-17 |
+| 11 | Byte order. The report checks it automatically; confirm by ear. | Little-endian (auto-check LE=1328 vs BE=21511). | run 19-52-17 |
 
-### run — no rate field
+## Decisions (fill in after the runs)
 
-| Field | Value |
-|---|---|
-| Access verified? | yes — setupComplete at +603 ms |
-| Output format/rate observed | `audio/l16;rate=48000;channels=2` → using 48000 Hz (assumed default 48000); s16le stereo assumed |
-| Setup latency | socket open 286 ms; setupComplete 603 ms |
-| First-audio latency | 2888 ms after play() |
-| Burst ratio over first 10 s | 0.80x |
-| Steer observed at | #1 sent t=+10.0s; #2 sent t=+20.0s — audible? see LISTEN notes below |
-| Session cap behavior | ran 25.0s; code=1000 reason='' clean=true |
-| Parallel sessions | n/a — sequential (1 session(s), 1 streamed) |
-| Notes | chunks=12; bytes=4.61MB; audio 24.0s vs wall 25.0s (0.96x overall); filteredPrompts: none; warnings: none |
-
-Artifacts: `smoke-out\smoke-2026-10-17T20-42-16-788Z-run.pcm`, `smoke-out\smoke-2026-10-17T20-42-16-788Z-run.wav`, `smoke-out\smoke-2026-10-17T20-42-16-788Z-run.log`
-
-**LISTEN (human fills):**
-- steer#1 (weight bump) audible at ≈ t=___ s? ___
-- steer#2 (prompt swap) audible at ≈ t=___ s? ___
-- gaps/glitches in the .wav? ___
+- Relay sample rate: **48000 from mimeType; never send `sampleRateHz`** (it's rejected)
+- Relay pacing: **not needed** (Lyria delivers at ~1x with ~1.8 s lead)
+- **For B:** audio arrives in 2 s blocks every ~2 s, so a 0.5–1.5 s jitter buffer will underrun. Start playback at ≥2.5–3 s buffered (or prove a smaller buffer works).
+- Reconnect before the cap: **reactive reconnect is in place** (relay treats the 1011 close as a drop and reopens with the latest prompts, ~5 s gap). Proactive overlap rotation (~9:30) only if the gap bothers testers.
+- Relay concurrency limit (`capacity` error): **5 sessions** (matches the observed ≥5)
