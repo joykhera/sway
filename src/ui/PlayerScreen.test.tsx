@@ -200,6 +200,22 @@ describe('PlayerScreen — optional music requests', () => {
     expect(screen.queryByRole('link', { name: 'unsafe reference' })).toBeNull();
     expect(screen.queryByText('internal prompt')).toBeNull();
   });
+
+  it('shows readable enforced constraints before Start and in the collapsed live request', () => {
+    const intent = requestIntent({ requiredFeatures: ['lofi', 'synth'], excludedFeatures: ['percussion'] });
+    const f = makeFake({ status: 'idle', intentStatus: 'ready', intent });
+    f.controller.interpretText = vi.fn();
+    render(<PlayerScreen controller={f.controller} />);
+    expect(screen.getByText('Keep: lo-fi, synthesizer · Avoid: percussion')).toBeTruthy();
+    act(() => { f.emit({ status: 'playing', intentStatus: 'ready', intent }); });
+    expect(screen.queryByRole('textbox')).toBeNull();
+    expect(screen.getByText('Keep: lo-fi, synthesizer · Avoid: percussion')).toBeTruthy();
+    act(() => { f.emit({ status: 'playing', intent: requestIntent({ excludedFeatures: ['synth'] }) }); });
+    expect(screen.getByText('Avoid: synthesizer')).toBeTruthy();
+    expect(screen.queryByText(/^Keep:/)).toBeNull();
+    act(() => { f.emit({ status: 'playing', intent: requestIntent({ featureHints: ['jazz'] }) }); });
+    expect(screen.queryByText(/^(Keep|Avoid):/)).toBeNull();
+  });
 });
 
 describe('PlayerScreen — pre-start view', () => {

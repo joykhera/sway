@@ -494,7 +494,8 @@ body {
 }
 
 .music-request__message,
-.music-request__summary {
+.music-request__summary,
+.music-request__constraints {
   margin: 8px 0 0;
   overflow-wrap: anywhere;
   color: var(--muted);
@@ -502,6 +503,11 @@ body {
 
 .music-request__summary {
   color: var(--fg);
+}
+
+.music-request__constraints {
+  margin-top: 4px;
+  font-size: 10px;
 }
 
 .music-request__message--error {

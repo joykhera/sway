@@ -1,6 +1,7 @@
 import { useEffect, useId, useRef, useState } from 'react';
 import type { MusicSessionController, SessionUiState } from './contracts.ts';
 import { INTENT_LIMITS } from '../shared/intent.ts';
+import type { FeatureId } from '../learner/vocabulary.ts';
 
 type Props = {
   controller: MusicSessionController;
@@ -15,6 +16,10 @@ function sourceUrl(value: string): string | undefined {
     const url = new URL(value);
     return url.protocol === 'https:' && !url.username && !url.password ? url.href : undefined;
   } catch { return undefined; }
+}
+
+function featureLabel(feature: FeatureId): string {
+  return feature === 'lofi' ? 'lo-fi' : feature === 'synth' ? 'synthesizer' : feature;
 }
 
 /** A request changes musical direction; it never starts playback on its own. */
@@ -52,6 +57,10 @@ export function MusicRequest({ controller, state, compact = false, disabled = fa
           : state.intentStatus === 'unsupported' ? 'Try describing a mood, instrument, or scene.'
             : state.intentStatus === 'error' ? 'Could not apply your request. Please try again.' : undefined));
   const showForm = !compact || expanded;
+  const constraints = [
+    state.intent?.requiredFeatures.length ? `Keep: ${state.intent.requiredFeatures.map(featureLabel).join(', ')}` : '',
+    state.intent?.excludedFeatures.length ? `Avoid: ${state.intent.excludedFeatures.map(featureLabel).join(', ')}` : '',
+  ].filter(Boolean).join(' · ');
   const references = state.intent?.references?.flatMap(reference => {
     const url = sourceUrl(reference.url);
     return url ? [{ ...reference, url }] : [];
@@ -120,6 +129,7 @@ export function MusicRequest({ controller, state, compact = false, disabled = fa
       {message ? <p id={`${id}-message`} className={`music-request__message${alert ? ' music-request__message--error' : ''}`}
         role={alert ? 'alert' : 'status'}>{message}</p> : null}
       {state.intent?.summary ? <p className="music-request__summary">{state.intent.summary}</p> : null}
+      {constraints ? <p className="music-request__constraints">{constraints}</p> : null}
       {showForm && references.length > 0 ? (
         <ul className="music-request__sources" aria-label="request sources">
           {references.map(reference => <li key={reference.id}>
