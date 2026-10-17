@@ -26,7 +26,7 @@ export type ServerMessage =
 
 export type AudioFormat = { format: 'pcm_s16le'; sampleRateHz: number; channels: 2 };
 
-// Proposed by A; pending D's review.
+// Accepted by D. Retryable: capacity, upstream_unavailable, upstream_lost, prompt_filtered (stream keeps playing).
 export type ErrorCode =
   | 'bad_message'
   | 'bad_state'
@@ -41,3 +41,56 @@ export type ErrorCode =
 export const MUSIC_WS_PATH = '/api/music';
 export const WEIGHT_MIN = 0.1;
 export const WEIGHT_MAX = 2.0;
+
+// ---- Learner contract (implemented by C in src/learner, consumed by D) ----
+
+export type FeatureId = string; // concrete union lives in learner/vocabulary.ts
+export type FeatureBlend = Record<FeatureId, number>; // missing feature = 0
+
+export type LearnerState = {
+  scores: Record<FeatureId, number>;
+  votes: number;
+  seed: number;
+};
+
+export type Target = {
+  features: FeatureBlend;
+  prompts: WeightedPrompt[];
+};
+
+export interface Learner {
+  createLearner(seed: number): LearnerState;
+  initialTarget(state: LearnerState): Target;
+  processVote(args: {
+    state: LearnerState;
+    audible: FeatureBlend;
+    currentTarget: Target;
+    vote: Vote;
+  }): { state: LearnerState; target: Target };
+  // Must not change state.scores. Silence is not feedback.
+  evolveNoVote(args: { state: LearnerState; target: Target }): Target;
+}
+
+// ---- Playback contract (implemented by B in src/audio, consumed by D) ----
+
+export interface PCMPlayer {
+  // Call synchronously inside the user's tap handler (autoplay policy).
+  initializeFromUserGesture(): Promise<void>;
+  configure(audio: AudioFormat): void;
+  enqueuePcm(bytes: ArrayBuffer): void;
+  getBufferedDurationMs(): number;
+  close(): Promise<void>;
+}
+
+// ---- Controller contract (implemented by D in src/controller, consumed by UI) ----
+
+export type SessionStatus = 'idle' | 'connecting' | 'playing' | 'reconnecting' | 'stopped' | 'error';
+
+export type SessionState = { status: SessionStatus; lastError?: string };
+
+export interface MusicSessionController {
+  start(): Promise<void>;
+  vote(v: Vote): void; // synchronous, never locked out
+  stop(): void;
+  subscribe(listener: (state: SessionState) => void): () => void;
+}
