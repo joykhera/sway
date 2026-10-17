@@ -18,7 +18,7 @@
 | Repo scaffold | Single pnpm package: Vite + React + TS, Node relay run by `tsx`, Vitest. Owner stubs in `src/{ui,audio,learner,controller,transport}`. `pnpm dev` runs Vite and the relay; Vite proxies `/api/music` to the relay on `127.0.0.1:8787`. |
 | `src/shared/protocol.ts` | Copied from §5 plus an `ErrorCode` union, an `AudioFormat` type, and constants `MUSIC_WS_PATH`, `WEIGHT_MIN`, `WEIGHT_MAX`. **D owns it from here; please review.** |
 | A: relay (`server/**`) | Done and **verified against live Lyria**: start → `ready` → binary PCM → steer → stop. MUSIC_MODE=mock gives a paced tone for keyless dev and tests. 69 tests pass. |
-| A: smoke test (`pnpm smoke`) | Works live. Results are in `docs/lyria-smoke-report.md`. The 12-minute run (session cap, steer latency) and the concurrency probe are still pending. |
+| A: smoke test (`pnpm smoke`) | Works live. Results are in `docs/lyria-smoke-report.md`. All questions are answered except how long a steer takes to be heard, which needs a listening pass. |
 | A's plan / decisions | `docs/part-a-plan.md` |
 
 **Setup for everyone:** `pnpm install`, `cp .env.example .env`, add your **own** `GEMINI_API_KEY` from aistudio.google.com/apikey (each key belongs to a separate project, so each gets its own quota). Without a key, set `MUSIC_MODE=mock`.
@@ -30,7 +30,9 @@
 - **Weights are normalized server-side to sum to 1** (SDK docs), so only *ratios* matter. Scaling every weight up together does nothing.
 - Ephemeral tokens don't work for Lyria (Google staff, Aug 2025), so the relay is required.
 - The SDK puts the API key in the upstream URL. The relay redacts it from all logs.
-- **Unverified:** a reported **~10 min session cap** with no warning (the 12-minute run will confirm), free-tier quota and concurrency (Google publishes neither; check aistudio.google.com/rate-limit), and how long until a steer is audible.
+- **Sessions are hard-capped at 10:00** with no warning. The server closes with code **1011** "The service is currently unavailable." (misleading). The relay already reconnects on it, which costs ~5 s of silence and a musical re-settle every 10 minutes.
+- **At least 5 concurrent sessions** work on one free key (5/5 tested). First audio comes 3.8–5.3 s after `play()`.
+- **Unverified:** free-tier quota (Google publishes none; check aistudio.google.com/rate-limit), and how long until a steer is *audible* (needs a listening pass on the 12-minute WAV).
 
 **Decisions made since the original handoff:**
 - **Localhost only** for the MVP: no deploy and no access gate. The relay binds `127.0.0.1`.
@@ -451,7 +453,7 @@ Potential later research metric: compare blind, equal-duration clips sampled nea
 2. **Musical steering is probabilistic:** Requested weighted prompts may not correspond exactly to audible output. A text-only learner cannot verify what the user heard.
 3. **Response time:** A 5–15-second perceptible change is a product target, not guaranteed by prompt weights or time to API acknowledgement.
 4. ~~**Sample-rate ambiguity**~~ **Resolved:** 48 kHz stereo s16le, and `sampleRateHz` is rejected. The remaining latency budget is ~2 s chunking plus ≤2 s control latency plus the browser buffer (≥2.5 s), so expect ≥5 s before a steer can be heard.
-4b. **Session cap (unverified):** reportedly ~10 min with no warning. The relay reconnects automatically, but the music re-settles over ~5–10 s.
+4b. **Session cap (confirmed):** a hard 10-minute cap, closing with 1011 and no warning. The relay reconnects automatically, but every 10 minutes there's a ~5 s gap and the music re-settles.
 5. **Security:** Hosted service still needs a secure minimal relay unless a *verified* safe client authentication mechanism for Lyria is available. Don't expose long-lived keys.
 6. **Reliability:** Lost WebSocket / upstream termination can interrupt the soundscape. Reconnect with current in-tab preferences; seamless reconnection is not guaranteed for v1.
 7. **Preference attribution:** One negative vote offers ambiguous evidence; avoid overinterpreting it. Overly aggressive reinforcement can trap user in a narrow style.
