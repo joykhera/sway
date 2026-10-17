@@ -83,7 +83,8 @@ function sharedTarget(target: Target): SharedTarget {
 /** Stateless adapter: no model is retained anywhere except the returned state. */
 export const adaptiveLearner: Learner = {
   createLearner: adaptive.createLearner,
-  initialTarget: (state) => sharedTarget(adaptive.initialTarget(requireState(state))),
+  initialTarget: (state, intent) => sharedTarget(adaptive.initialTarget(requireState(state), intent)),
+  applyIntent: (args) => sharedTarget(adaptive.applyIntent({ ...args, state: requireState(args.state) })),
   processVote: (args) => {
     const result = adaptive.processVote({ ...args, state: requireState(args.state) });
     return { state: result.state, target: sharedTarget(result.target) };

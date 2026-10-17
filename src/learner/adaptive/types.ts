@@ -24,7 +24,7 @@ export type LearnerState = {
   lastRecoveryVote: number | null;
 };
 export type Decision = {
-  kind: 'initial' | 'hold' | 'redirect' | 'variation' | 'probe';
+  kind: 'initial' | 'hold' | 'redirect' | 'variation' | 'probe' | 'intent';
   styleEscape?: boolean;
   reason: string;
   phase: string;

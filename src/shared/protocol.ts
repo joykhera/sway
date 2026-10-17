@@ -64,7 +64,9 @@ export type Target = {
 
 export interface Learner {
   createLearner(seed: number, purpose?: ListeningPurpose): LearnerState;
-  initialTarget(state: LearnerState): Target;
+  initialTarget(state: LearnerState, intent?: import('./intent').MusicIntent): Target;
+  // Apply or clear session context; this must not create preference evidence.
+  applyIntent?(args: { state: LearnerState; currentTarget: Target; intent?: import('./intent').MusicIntent }): Target;
   processVote(args: {
     state: LearnerState;
     audible: FeatureBlend;
@@ -74,9 +76,10 @@ export interface Learner {
     evidenceWeight?: number;
     // A recent explicitly rejected audible blend; a later Like can prefer the change.
     comparison?: { previous: FeatureBlend };
+    intent?: import('./intent').MusicIntent;
   }): { state: LearnerState; target: Target };
   // Must not change state.scores. Silence is not feedback.
-  evolveNoVote(args: { state: LearnerState; target: Target; step?: number }): Target;
+  evolveNoVote(args: { state: LearnerState; target: Target; step?: number; intent?: import('./intent').MusicIntent }): Target;
 }
 
 // ---- Playback contract (implemented by B in src/audio, consumed by D) ----
