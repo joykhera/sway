@@ -1,11 +1,48 @@
 # Personalized Infinite Music — MVP Build Handoff
 
-**Status:** Ready to implement, subject to one Lyria RealTime connectivity/audio smoke test  
-**Prepared:** 2026-10-17  
+**Status:** In progress. Lyria RealTime access is verified live and A's relay is on `main` (see §0)  
+**Prepared:** 2026-10-17 · **Updated:** 2026-10-17 (after A's research, grilling and first live runs)  
 **Audience:** Four developers working in parallel  
 **Product goal:** Test whether an infinite instrumental music stream can learn a listener's taste using only thumbs-up and thumbs-down, and change the music in response without interrupting playback.
 
 > **Read this first:** This is intentionally a *small experimental MVP*, not a production streaming service or a full reinforcement-learning training pipeline. Ship the complete real-time feedback loop before considering LLM-based personalization, cross-user music sharing, accounts, databases, or sophisticated ML.
+
+---
+
+## 0. Status update — 2026-10-17 (read this before the rest)
+
+**What's on `main`:**
+
+| Item | State |
+|---|---|
+| Repo scaffold | Single pnpm package: Vite + React + TS, Node relay run by `tsx`, Vitest. Owner stubs in `src/{ui,audio,learner,controller,transport}`. `pnpm dev` runs Vite and the relay; Vite proxies `/api/music` to the relay on `127.0.0.1:8787`. |
+| `src/shared/protocol.ts` | Copied from §5 plus an `ErrorCode` union, an `AudioFormat` type, and constants `MUSIC_WS_PATH`, `WEIGHT_MIN`, `WEIGHT_MAX`. **D owns it from here; please review.** |
+| A: relay (`server/**`) | Done and **verified against live Lyria**: start → `ready` → binary PCM → steer → stop. MUSIC_MODE=mock gives a paced tone for keyless dev and tests. 69 tests pass. |
+| A: smoke test (`pnpm smoke`) | Works live. Results are in `docs/lyria-smoke-report.md`. The 12-minute run (session cap, steer latency) and the concurrency probe are still pending. |
+| A's plan / decisions | `docs/part-a-plan.md` |
+
+**Setup for everyone:** `pnpm install`, `cp .env.example .env`, add your **own** `GEMINI_API_KEY` from aistudio.google.com/apikey (each key belongs to a separate project, so each gets its own quota). Without a key, set `MUSIC_MODE=mock`.
+
+**Verified live facts (they override older text below):**
+- Lyria **rejects `sampleRateHz`**: the session closes with code 1007 `Unknown name "sampleRateHz"`. Output is fixed at **48 kHz stereo s16le**, and every chunk carries mimeType `audio/l16;rate=48000;channels=2`.
+- Audio arrives in **exactly 2.0 s chunks (384,000 B) about every 2 s, at ~1.0x realtime**, with a steady ~1.8 s lead. There is no run-ahead, so no relay pacing is needed.
+- `setupComplete` comes ~0.9 s after connect. First audio comes **~3.8 s after `play()`**. The relay sends `ready` ~5.8 s after the browser's `start`.
+- **Weights are normalized server-side to sum to 1** (SDK docs), so only *ratios* matter. Scaling every weight up together does nothing.
+- Ephemeral tokens don't work for Lyria (Google staff, Aug 2025), so the relay is required.
+- The SDK puts the API key in the upstream URL. The relay redacts it from all logs.
+- **Unverified:** a reported **~10 min session cap** with no warning (the 12-minute run will confirm), free-tier quota and concurrency (Google publishes neither; check aistudio.google.com/rate-limit), and how long until a steer is audible.
+
+**Decisions made since the original handoff:**
+- **Localhost only** for the MVP: no deploy and no access gate. The relay binds `127.0.0.1`.
+- **Mobile is out of scope** for the MVP. AudioWorklet needs https or localhost, so phones would need a tunnel.
+- **Everyone works on `main`** (pull with rebase, then push). No `feat/*` branches.
+- **10-min cap:** on an upstream drop the relay sends `status:'reconnecting'`, reopens with the latest prompts and sends a **fresh `ready`**. The browser socket stays open, with a 5–10 s re-settle. Seamless rotation comes later, only if testers complain.
+- **Guards trimmed:** validation, a 5-stream cap and cleanup only. No byte caps or rate limits until there's a public URL.
+
+**Action items by owner:**
+- **B:** (1) The jitter buffer must hold **≥2.5–3 s** before playback starts. Audio arrives in 2 s blocks, so 0.5–1.5 s will underrun. (2) `ready` can arrive **again** after `reconnecting`; reconfigure without double-playing. (3) Drop the mobile checks.
+- **C:** Only weight ratios matter. "Amplify" a liked feature by raising it *relative to the others*. Keep 2–3+ prompts and separate instrument prompts from mood prompts (Google's prompt guide).
+- **D:** Review the `protocol.ts` additions. Handle a repeated `ready`, `error.code` values from `ErrorCode`, and `upstream_lost` (the socket stays open, so you can send `start` again). Revisions reset on each `start`. Expect ~6 s from `start` to first sound, and plan the start UI around it.
 
 ---
 
@@ -15,7 +52,7 @@
 | --- | --- |
 | Experience | Infinite, continuously evolving instrumental music; not a playlist of discrete songs |
 | Audience | 1–5 simultaneous testers, a few hours of usage |
-| Access | Responsive web app for desktop and mobile browsers |
+| Access | Web app for desktop browsers on localhost (~~mobile~~ out of scope for MVP, see §0) |
 | UI | Music playback plus **👍** and **👎**. A necessary initial tap to enable audio is acceptable due to browser autoplay restrictions; error/reconnect notices may appear |
 | Feedback signals | **Explicit thumbs only**. No skip button, surveys, sliders, behavioral inference, or implicit preference updates |
 | Thumbs up | Reinforce the *currently audible* characteristics and gradually amplify those qualities, within safe limits |
@@ -26,7 +63,7 @@
 | Musical scope | Broad instrumental space: ambient, lo-fi, jazz, electronic, classical; instruments, moods, textures |
 | Exploration | Mostly change one or two characteristics; occasionally try a much different combination; stay close to positively rated styles |
 | Persistence | **Session only**; refresh/exit resets preferences. No user accounts or DB |
-| Deployment | **Hosted music API**, no self-hosted music model or GPUs; minimal hosted relay permitted solely to protect the API key and stream audio |
+| Deployment | **Hosted music API**, no self-hosted music model or GPUs. The relay runs **locally** (`127.0.0.1`) and each dev uses their own key. No hosted deploy for the MVP |
 | Multiuser sharing | Defer cross-user reuse/caching. For MVP, one Lyria session per tester is simpler |
 | Runtime general-purpose LLM | **Not required for baseline**. Treat LLM-guided exploration as an optional controlled experiment, not a launch dependency |
 | Core question | Does explicit binary feedback improve the *perceived* relevance of the ongoing soundscape over repeated iterations? |
@@ -62,9 +99,9 @@ Lyria generates audio. Our application chooses **music directions** (weighted pr
 4. [Google Gemini cookbook: Lyria RealTime quickstart](https://github.com/google-gemini/cookbook/blob/main/quickstarts/Get_started_LyriaRealTime.ipynb)
 5. [Google Live API ephemeral token documentation](https://ai.google.dev/gemini-api/docs/live-api/ephemeral-tokens) — **not proof** that ephemeral tokens work for the separate Live Music endpoint.
 
-**Known documentation inconsistency:** The Lyria reference describes raw **PCM 16-bit, stereo, 48 kHz** output while its JavaScript example shows an explicitly configured **44.1 kHz** stream. In the smoke test, configure a supported rate explicitly, inspect the actual audio behavior, and pass the verified rate in the relay's `ready` message. **Never assume the playback sample rate silently.**
+**Known documentation inconsistency (resolved 2026-10-17):** The JS example's `sampleRateHz: 44100` is **rejected** by the API (close 1007). Output is **48 kHz stereo s16le**, confirmed by each chunk's mimeType. The relay reads the rate from the mimeType and passes it in `ready`.
 
-**Integration risk:** A browser must not contain an unrestricted Gemini API key. Because ephemeral-token support for Lyria-specific WebSockets is not established by the referenced docs, build a tiny backend WebSocket relay holding `GEMINI_API_KEY`. This is not AI infrastructure or GPU hosting; it is ordinary minimal app hosting.
+**Integration risk:** A browser must not contain an unrestricted Gemini API key. Ephemeral tokens are confirmed **not** to work for Lyria (Google staff, Aug 2025), so build a tiny backend WebSocket relay holding `GEMINI_API_KEY`. This is not AI infrastructure or GPU hosting; it is ordinary minimal app hosting.
 
 ---
 
@@ -107,6 +144,8 @@ Recommended project: **pnpm monorepo or a single Vite/Node TypeScript repository
 
 ### Developer A: Backend / Lyria integration
 
+> **Status 2026-10-17:** Tasks 1–7, 9 and 10 (partly) are done and verified live. Task 8 is trimmed for localhost (5-stream cap and validation only). Remaining: the 12-minute cap run, the concurrency probe, and steer-latency listening notes.
+
 **Tasks**
 
 1. Stand up a Node HTTPS-capable host or local HTTP dev server with an upgraded WebSocket path `/api/music`.
@@ -129,10 +168,10 @@ Recommended project: **pnpm monorepo or a single Vite/Node TypeScript repository
 1. Build single-page responsive interface with a centered waveform/now-playing indication and two obvious thumbs controls.
 2. Start audio from first user tap; expose a clear start state to accommodate browser autoplay policy. No complex player controls.
 3. Implement an `AudioWorklet` or equivalent streaming PCM player: interleaved stereo signed 16-bit little-endian bytes → float buffers; preserve stereo; handle browser `AudioContext` sample-rate mismatch by resampling.
-4. Keep short jitter buffer (initial hypothesis 0.5–1.5 seconds; tune based on dropouts vs response time). Track buffered milliseconds.
+4. Keep a jitter buffer and track buffered milliseconds. ~~0.5–1.5 s~~ **Lyria sends 2 s blocks every ~2 s, so start playback at ≥2.5–3 s buffered** and tune down only if no dropouts occur.
 5. Expose functions/event listeners per interfaces below so D can attach the real controller; develop initially against mock stream and mock click handlers.
 6. Show only minimal non-intrusive status: connecting, playing, reconnecting, API unavailable. Thumb buttons must stay responsive during transitions.
-7. Verify Chrome desktop, Safari iPhone, Chrome Android where available. Audio must not double-play after remounts or reconnections.
+7. Verify Chrome desktop (plus Safari/Firefox desktop if time allows; mobile is out of scope). Audio must not double-play after remounts, reconnections or a repeated `ready`.
 
 **Definition of done:** A mock PCM stream plays continuously; visible thumbs invoke callbacks without blocking; mobile playback starts on a gesture; player is robust to irregular audio chunk sizes.
 
@@ -198,8 +237,10 @@ export type ServerMessage =
 
 **Contract details:**
 
-- `start` must precede `steer`. `ready` identifies the actual audio format.
-- `steer` represents an entire desired prompt set, not a delta; revisions increase monotonically per browser session. Server ignores old revisions.
+- `start` must precede `steer`. `ready` identifies the actual audio format (48 kHz stereo in practice). **`ready` may be sent again after `status:'reconnecting'`.**
+- `steer` represents an entire desired prompt set, not a delta. Revisions increase monotonically **within one stream and reset on each `start`**. The server ignores old revisions and coalesces steers to at most one upstream update per 200 ms (newest wins).
+- `error.code` is one of `bad_message | bad_state | capacity | upstream_unavailable | upstream_lost | prompt_filtered | internal`. After `upstream_lost` (3 failed reconnects), the socket stays open and the client may send `start` again.
+- Lyria normalizes weights to sum to 1, so **only ratios between prompts matter**.
 - Server validates each prompt (`text` nonempty, finite numeric `weight` **not 0**); clamp to an agreed safe range, initially 0.1–2.0; omit rather than send weight 0.
 - Browser `vote` is a local event consumed by D, **not a direct backend message**. Browser computes the target via C before sending `steer`.
 - Prompts should not include arbitrary user text; they're drawn from the fixed vocabulary for v1.
@@ -296,7 +337,7 @@ score[i] = clamp(score[i] + 0.15 * r * x[i], -2, +2)
 - After `down`: prefer a different candidate, but protect continuity by transitioning prompt weights over time.
 - After `up`: reinforce current active features; gradually increase their influence (subject to max weight), retaining subtle ongoing variation.
 - Every ~45 seconds without feedback: a **small within-style variation**, no score update.
-- Normalize prompt weights to a reasonable range (e.g., 0.2–1.2, upper cap 2.0). **Omit** features with weight 0, because the provider disallows zero prompt weights.
+- Normalize prompt weights to a reasonable range (e.g., 0.2–1.2, upper cap 2.0). **Omit** features with weight 0, because the provider disallows zero prompt weights. Lyria rescales weights to sum to 1, so "amplify" means raising a feature *relative to the others*. The relay drops ≤0/NaN weights and clamps the rest to 0.1–2.0.
 - Retain a random seed for repeatable tests. It only needs to live in tab memory.
 
 These are **hypotheses**, not empirically tuned values. Keep constants in one file for easy iteration.
@@ -367,7 +408,7 @@ Useful research context:
 
 ### Branch / PR convention
 
-`feat/lyria-relay` (A), `feat/browser-player` (B), `feat/preference-learner` (C), `feat/session-controller` (D). No shared-file edits except protocol review. Merge small PRs early; use mock interfaces until a dependency is live.
+~~Feature branches~~ **Updated: everyone commits to `main`** (`git pull --rebase --autostash` before pushing). Only touch your own lane's files. No shared-file edits except protocol review. Push small commits early; use mock interfaces until a dependency is live.
 
 ---
 
@@ -392,7 +433,7 @@ Useful research context:
 3. **Upvote:** Current music gradually emphasizes liked characteristics without a restart.
 4. **Rapid votes:** Press 👎 three times rapidly while a transition is in progress; no stalls or ignored clicks, and final target reflects newest feedback.
 5. **Passive listening:** Leave music on for at least 10 minutes; slow variation occurs without explicit reward updates.
-6. **Mobile:** Works in mobile browser after initial user tap; audio resumes/reconnects gracefully after a network interruption (browser background audio may have platform restrictions).
+6. ~~**Mobile**~~ Out of scope for the MVP. Instead, **Reconnect:** after an upstream drop (or the ~10 min cap), audio resumes within ~10 s without a page refresh and without double-playing.
 7. **Refresh:** Clears scores and returns to randomized state.
 8. **Security:** API key is absent from bundled JS, browser requests and error text; excessive unauthenticated streaming is blocked.
 
@@ -409,7 +450,8 @@ Potential later research metric: compare blind, equal-duration clips sampled nea
 1. **Provider availability:** Lyria RealTime is experimental; account access, price, quota and limits are not guaranteed by this handoff. Confirm before engineering effort.
 2. **Musical steering is probabilistic:** Requested weighted prompts may not correspond exactly to audible output. A text-only learner cannot verify what the user heard.
 3. **Response time:** A 5–15-second perceptible change is a product target, not guaranteed by prompt weights or time to API acknowledgement.
-4. **Sample-rate ambiguity:** SDK examples and reference specifications differ; validate actual PCM output. Browser audio buffer size influences perceptual latency.
+4. ~~**Sample-rate ambiguity**~~ **Resolved:** 48 kHz stereo s16le, and `sampleRateHz` is rejected. The remaining latency budget is ~2 s chunking plus ≤2 s control latency plus the browser buffer (≥2.5 s), so expect ≥5 s before a steer can be heard.
+4b. **Session cap (unverified):** reportedly ~10 min with no warning. The relay reconnects automatically, but the music re-settles over ~5–10 s.
 5. **Security:** Hosted service still needs a secure minimal relay unless a *verified* safe client authentication mechanism for Lyria is available. Don't expose long-lived keys.
 6. **Reliability:** Lost WebSocket / upstream termination can interrupt the soundscape. Reconnect with current in-tab preferences; seamless reconnection is not guaranteed for v1.
 7. **Preference attribution:** One negative vote offers ambiguous evidence; avoid overinterpreting it. Overly aggressive reinforcement can trap user in a narrow style.
