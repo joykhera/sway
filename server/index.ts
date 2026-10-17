@@ -21,7 +21,7 @@ registerSecret(config.intentApiKey);
 const relay = createRelay({
   createUpstream: config.mode === 'live' && config.apiKey ? createLyriaFactory(config.apiKey) : createMockFactory(),
   slots: createStreamSlots(config.maxStreams),
-  interpretIntent: createIntentInterpreter({ apiKey: config.intentApiKey }),
+  interpretIntent: createIntentInterpreter({ apiKey: config.intentApiKey, outputMode: config.intentOutputMode }),
   staticDir: config.production ? path.resolve('dist') : undefined,
 });
 

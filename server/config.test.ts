@@ -12,6 +12,9 @@ describe('config', () => {
 
   it('keeps optional text-provider credentials separate from music mode', () => {
     expect(loadConfig({ MUSIC_MODE: 'mock' }).intentApiKey).toBeUndefined();
+    expect(loadConfig({ MUSIC_MODE: 'mock' }).intentOutputMode).toBe('json_object');
+    expect(loadConfig({ MUSIC_MODE: 'mock', INTENT_OUTPUT_MODE: 'json_object' }).intentOutputMode).toBe('json_object');
+    expect(() => loadConfig({ MUSIC_MODE: 'mock', INTENT_OUTPUT_MODE: 'arbitrary' })).toThrow(/INTENT_OUTPUT_MODE/);
     expect(loadConfig({ MUSIC_MODE: 'mock', CRUSOE_API_KEY: '  text-provider-test-key  ' }).intentApiKey).toBe('text-provider-test-key');
     expect(loadConfig({ GEMINI_API_KEY: 'music-test-key' }).intentApiKey).toBeUndefined();
   });

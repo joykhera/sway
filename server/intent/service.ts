@@ -5,7 +5,7 @@ import { InfeasibleIntent, InvalidPlan, parsePlan, PLAN_SCHEMA, SYSTEM_PROMPT, t
 export const INTENT_MODEL = 'nvidia/Nemotron-3.5-Lightning-30B-A3B';
 export const INTENT_PROVIDER_URL = 'https://api.inference.crusoecloud.com/v1/chat/completions';
 export type IntentInterpreter = (input: InterpretRequest, signal: AbortSignal) => Promise<InterpretResponse>;
-export type InterpreterOptions = { apiKey?: string; fetcher?: Fetch; lookup?: SongLookup; deadlineMs?: number };
+export type InterpreterOptions = { apiKey?: string; fetcher?: Fetch; lookup?: SongLookup; deadlineMs?: number; outputMode?: 'json_schema' | 'json_object' };
 class ProviderUnavailable extends Error {
   constructor(readonly publicMessage: string) { super('Intent provider unavailable'); }
 }
@@ -26,7 +26,9 @@ export function createIntentInterpreter(options: InterpreterOptions): IntentInte
     const signal = AbortSignal.any([externalSignal, timer.signal]);
     let repaired = false;
     let sources: LookupSource[] = [];
-    const messages: Message[] = [{ role: 'system', content: SYSTEM_PROMPT }, { role: 'user', content: JSON.stringify({ listenerRequest: input }) }];
+    const outputMode = options.outputMode ?? 'json_object';
+    const systemPrompt = outputMode === 'json_object' ? `${SYSTEM_PROMPT}\nExact JSON schema to follow: ${JSON.stringify(PLAN_SCHEMA)}` : SYSTEM_PROMPT;
+    const messages: Message[] = [{ role: 'system', content: systemPrompt }, { role: 'user', content: JSON.stringify({ listenerRequest: input }) }];
     const completion = async (): Promise<string> => {
       signal.throwIfAborted();
       const response = await fetcher(INTENT_PROVIDER_URL, {
@@ -34,7 +36,8 @@ export function createIntentInterpreter(options: InterpreterOptions): IntentInte
         headers: { 'content-type': 'application/json', authorization: `Bearer ${options.apiKey}` },
         body: JSON.stringify({ model: INTENT_MODEL, messages, temperature: 0, max_tokens: 900, stream: false,
           chat_template_kwargs: { enable_thinking: false },
-          response_format: { type: 'json_schema', json_schema: { name: 'music_intent_plan', strict: true, schema: PLAN_SCHEMA } } }),
+          response_format: outputMode === 'json_object' ? { type: 'json_object' }
+            : { type: 'json_schema', json_schema: { name: 'music_intent_plan', strict: true, schema: PLAN_SCHEMA } } }),
       });
       if (!response.ok) {
         await response.body?.cancel();

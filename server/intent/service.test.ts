@@ -14,7 +14,7 @@ const signal = () => new AbortController().signal;
 describe('bounded intent interpreter', () => {
   it('uses fixed endpoint/model, strict schema and disabled reasoning; returns detached intent', async () => {
     const fetcher = fetchSequence(completion(ready()));
-    const result = await createIntentInterpreter({ apiKey: 'secret-test-key', fetcher })(input, signal());
+    const result = await createIntentInterpreter({ apiKey: 'secret-test-key', fetcher, outputMode: 'json_schema' })(input, signal());
     expect(result).toEqual({ status: 'ready', intent });
     const [url, init] = fetcher.mock.calls[0]!;
     expect(url).toBe(INTENT_PROVIDER_URL);
@@ -22,6 +22,16 @@ describe('bounded intent interpreter', () => {
     const body = JSON.parse(init!.body as string);
     expect(body).toMatchObject({ model: INTENT_MODEL, max_tokens: 900, chat_template_kwargs: { enable_thinking: false }, response_format: { type: 'json_schema', json_schema: { strict: true } } });
     expect(body.response_format.json_schema.schema.additionalProperties).toBe(false);
+  });
+  it('defaults to verified JSON-object mode with unchanged validation', async () => {
+    const fetcher = fetchSequence(completion(ready({ contextPrompt: 'piano forever' })), completion(ready()));
+    expect((await createIntentInterpreter({ apiKey: 'key', fetcher })(input, signal())).status).toBe('ready');
+    expect(fetcher).toHaveBeenCalledTimes(2);
+    const body = JSON.parse(fetcher.mock.calls[0]![1]!.body as string);
+    expect(body.response_format).toEqual({ type: 'json_object' });
+    expect(body.messages[0].content).toContain('Exact JSON schema to follow:');
+    expect(body.messages[0].content).toContain('additionalProperties');
+    expect(body.chat_template_kwargs).toEqual({ enable_thinking: false });
   });
   it('does not call provider without configured key', async () => {
     const fetcher = fetchSequence();
