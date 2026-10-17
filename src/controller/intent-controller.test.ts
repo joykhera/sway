@@ -141,4 +141,16 @@ describe('text intent controller', () => {
     r.controller.stop();
   });
 
+
+  it('a relay reconnect cannot relabel old queued audio with a newer intent', async () => {
+    const r = rig(); await r.start(); r.player.bufferedMs = 10_000;
+    await r.controller.interpretText('jazz'); await vi.advanceTimersByTimeAsync(2500);
+    r.controller.vote('up'); expect(r.vote.mock.calls.at(-1)![0].evidenceWeight).toBe(0);
+    r.relay.last.serverMessage({ type: 'status', state: 'reconnecting' }); r.relay.last.ready();
+    r.controller.vote('up'); expect(r.vote.mock.calls.at(-1)![0].evidenceWeight).toBe(0);
+    r.player.bufferedMs = 0; await vi.advanceTimersByTimeAsync(100);
+    r.controller.vote('up'); expect(r.vote.mock.calls.at(-1)![0].evidenceWeight).toBe(1);
+    r.controller.stop();
+  });
+
 });

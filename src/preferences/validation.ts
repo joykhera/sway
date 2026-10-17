@@ -107,6 +107,8 @@ export function readProfile(value: unknown): SavedProfile | undefined {
   try {
     if (!record(value) || value.schemaVersion !== SCHEMA_VERSION) return undefined;
     const { schemaVersion: _, ...profile } = value;
+    // An obsolete/corrupt optional brief must not erase an otherwise valid learned model.
+    if (!intentFields(profile)) { delete profile.intent; delete profile.intentText; }
     return snapshotProfile(profile);
   } catch { return undefined; }
 }

@@ -1,6 +1,6 @@
 import { afterEach, expect, it, vi } from 'vitest';
 import { interpretMusicIntent } from './intent-client.ts';
-import { snapshotProfile, snapshotFeedback } from '../preferences/validation.ts';
+import { snapshotProfile, snapshotFeedback, readProfile } from '../preferences/validation.ts';
 import type { MusicIntent } from '../shared/intent.ts';
 
 const intent: MusicIntent = { schemaVersion: 1, summary: 'Jazz', purposeHint: null, requiredFeatures: ['jazz'],
@@ -34,6 +34,8 @@ it('detaches and validates optional persisted brief and feedback attribution', (
   const profile = { purpose: 'focus', state: { scores: {}, votes: 0, seed: 3 }, updatedAt: 1, intent, intentText: 'jazz' };
   const saved = snapshotProfile(profile); expect(saved.intent).toEqual(intent); expect(saved.intent).not.toBe(intent);
   expect(() => snapshotProfile({ ...profile, intent: { ...intent, excludedFeatures: ['jazz'] } })).toThrow();
+  expect(readProfile({ ...profile, schemaVersion: 1, intent: { obsolete: true } })).toMatchObject({ state: profile.state });
+  expect(readProfile({ ...profile, schemaVersion: 1, intent: { obsolete: true } })?.intent).toBeUndefined();
   const target = { features: { jazz: 1 }, prompts: [{ text: 'Jazz', weight: 1 }] };
   const feedback = { id: 's:1', sessionId: 's', at: 2, purpose: 'focus', vote: 'up', audible: { jazz: 1 },
     evidenceWeight: 0, targetBefore: target, targetAfter: target, intent, intentText: 'jazz', intentAppliedToAudible: false };

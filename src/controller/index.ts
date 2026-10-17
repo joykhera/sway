@@ -62,7 +62,7 @@ export class SessionController implements MusicSessionController {
   private readonly now: () => number;
   private readonly log: (event: string, data?: Record<string, unknown>) => void;
   private readonly listeners = new Set<(s: SessionState) => void>();
-  private state: SessionState = { status: 'idle' };
+  private state: SessionState = { status: 'idle', intentAvailable: false };
   private readonly seed: number;
   private purpose: ListeningPurpose;
   private intent: MusicIntent | undefined;
@@ -643,8 +643,11 @@ export class SessionController implements MusicSessionController {
   }
 
   private resetHearing(features: FeatureBlend, intentRevision = this.sentIntentRevision): void {
+    // configure/reconnect does not flush queued PCM. Keep its last heard context
+    // until the new timeline has cleared the measured buffer and generation delay.
+    const buffered = this.deps.player.getBufferedDurationMs() > 0 ? this.heard : undefined;
     this.history = [{ at: this.now(), features, intentRevision }];
-    this.heard = this.history[0];
+    this.heard = buffered ?? this.history[0];
     this.audibleCursor = -Infinity;
     this.evidenceHistory = [];
     this.rejected = undefined;

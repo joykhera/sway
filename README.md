@@ -7,11 +7,13 @@ Infinite instrumental music (Google Lyria RealTime) that adapts to 👍 / 👎. 
 ```sh
 pnpm install --frozen-lockfile
 cp .env.example .env     # GEMINI_API_KEY for live mode; or set MUSIC_MODE=mock for a test tone
-pnpm dev                 # vite + relay (the dev server proxies /api/music)
+pnpm dev                 # vite + relay (proxies /api/music and /api/intent)
 pnpm test                # unit + integration (includes the relay e2e, mock mode, no Google calls)
 pnpm typecheck
 pnpm smoke               # live Lyria smoke test (A), see docs/lyria-smoke-report.md
 ```
+
+Optional text requests use Crusoe Nemotron to translate styles, activities and grounded song references into a validated brief. Set server-only `CRUSOE_API_KEY` to enable interpretation. Requests combine with saved taste and remain active through thumbs and freshness. See [text intent design and configuration](docs/text-music-intent.md).
 
 ## How the pieces connect
 
