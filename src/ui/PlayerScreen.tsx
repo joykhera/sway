@@ -21,7 +21,10 @@ export function PlayerScreen({ controller }: PlayerScreenProps) {
   const state = useSessionState(controller);
   const [lastVote, setLastVote] = useState<{ v: Vote; at: number } | null>(null);
 
-  const active = state.status !== 'idle' && state.status !== 'stopped';
+  // 'error' is terminal-but-recoverable: the pre-start view offers the way back
+  // (start() accepts 'error'), with lastError shown for context.
+  const active =
+    state.status !== 'idle' && state.status !== 'stopped' && state.status !== 'error';
 
   // Brief visual pulse on the voted side; auto-clears.
   useEffect(() => {
@@ -61,6 +64,11 @@ export function PlayerScreen({ controller }: PlayerScreenProps) {
           <h1 className="wordmark">sway</h1>
           <p className="tagline">infinite instrumental stream — it learns what you like</p>
           {state.status === 'stopped' ? <p className="prestart__hint">session ended</p> : null}
+          {state.status === 'error' ? (
+            <p className="prestart__hint prestart__hint--error">
+              {state.lastError ?? 'something went wrong'}
+            </p>
+          ) : null}
           <button
             type="button"
             className="start-button"
@@ -68,7 +76,7 @@ export function PlayerScreen({ controller }: PlayerScreenProps) {
             onClick={() => {
               // Called synchronously inside the gesture (autoplay policy). Never awaited —
               // errors surface through session state, not this promise.
-              controller.start().catch(() => {});
+              controller.start().catch(() => { });
             }}
           >
             start listening

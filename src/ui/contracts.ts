@@ -9,7 +9,14 @@ export type { Vote };
 /** `status` is intentionally an open string; the UI labels known values and shows unknown ones verbatim. */
 export type SessionUiState = { status: string; lastError?: string };
 
-export type KnownStatus = 'idle' | 'connecting' | 'playing' | 'reconnecting' | 'unavailable' | 'stopped';
+export type KnownStatus =
+  | 'idle'
+  | 'connecting'
+  | 'playing'
+  | 'reconnecting'
+  | 'unavailable'
+  | 'stopped'
+  | 'error';
 
 export interface MusicSessionController {
   /** Call synchronously inside the user's Start gesture (autoplay policy). Idempotent while a session is active. */

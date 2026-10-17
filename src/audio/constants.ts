@@ -1,4 +1,5 @@
-// Tunables for the browser PCM player. Hypotheses, not measured values (handoff §6).
+// Tunables for the browser PCM player. PREROLL_MS/REPRIME_MS are set from A's
+// measured smoke report (docs/lyria-smoke-report.md); the rest remain tunables.
 // Keep every magic number here so integration can iterate in one place.
 
 /** Assumed Lyria output rate until Developer A's smoke test says otherwise. */
@@ -9,11 +10,12 @@ export const BYTES_PER_SAMPLE = 2;
 export const BYTES_PER_FRAME = CHANNELS * BYTES_PER_SAMPLE;
 
 /** Output stays silent until this much audio is buffered at start. Lyria delivers
- *  ~2 s chunks every ~2 s (A's smoke report), so a 0.5–1.5 s preroll would underrun —
- *  start only once ≥ ~3 s is buffered. */
-export const PREROLL_MS = 3000;
-/** After an underrun, output stays silent until this much audio is buffered again. */
-export const REPRIME_MS = 1500;
+ *  ~2 s chunks every ~2 s at ~1× realtime (docs/lyria-smoke-report.md), so the
+ *  initial preroll must clear roughly one full block plus jitter. */
+export const PREROLL_MS = 2750;
+/** After an underrun, output stays silent until this much audio is buffered again.
+ *  A bit less than the initial preroll — recovering quickly beats deep padding. */
+export const REPRIME_MS = 1750;
 /** Ring capacity at the output rate. Lyria can burst ahead of realtime; oldest audio is dropped beyond this. */
 export const RING_CAPACITY_MS = 20_000;
 /** How often the worklet posts stats to the main thread. */

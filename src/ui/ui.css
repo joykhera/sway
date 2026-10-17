@@ -11,10 +11,12 @@
   --muted: #8d8478;
   --accent: #f0a860;
   --accent-cool: #7ec8e3;
+  --accent-warm: #e07a5f;
   --hairline: rgba(236, 229, 216, 0.14);
   --ring-ink: #ece5d8;
   --accent-glow: rgba(240, 168, 96, 0.16);
   --cool-glow: rgba(126, 200, 227, 0.16);
+  --warm-glow: rgba(224, 122, 95, 0.16);
   --font-serif: 'Instrument Serif', Georgia, 'Times New Roman', serif;
   --font-mono: 'JetBrains Mono', ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
 }
@@ -171,6 +173,17 @@ body {
   background: var(--accent-cool);
 }
 
+/* error sits between the two accents: a muted terracotta, distinct from both
+   amber (playing/connecting) and cool (unavailable) without shouting. */
+.status-chip--error .status-chip__dot {
+  background: var(--accent-warm);
+  box-shadow: 0 0 8px var(--warm-glow);
+}
+
+.status-chip--error .status-chip__label {
+  color: var(--accent-warm);
+}
+
 .status-chip__body {
   display: flex;
   flex-direction: column;
@@ -184,6 +197,9 @@ body {
   text-transform: none;
   color: var(--accent-cool);
   max-width: 46vw;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 @keyframes chip-pulse {
@@ -338,6 +354,10 @@ body {
   letter-spacing: 0.18em;
   text-transform: uppercase;
   color: var(--muted);
+}
+
+.prestart__hint--error {
+  color: var(--accent-warm);
 }
 
 .wordmark {
