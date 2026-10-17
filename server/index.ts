@@ -22,8 +22,8 @@ const relay = createRelay({
   staticDir: config.production ? path.resolve('dist') : undefined,
 });
 
-const port = await relay.listen(config.port);
-log.info('server', 'listening', { url: `http://127.0.0.1:${port}`, mode: config.mode, maxStreams: config.maxStreams });
+const port = await relay.listen(config.port, config.host);
+log.info('server', 'listening', { url: `http://${config.host}:${port}`, mode: config.mode, maxStreams: config.maxStreams });
 
 let shuttingDown = false;
 async function shutdown(signal: string): Promise<void> {

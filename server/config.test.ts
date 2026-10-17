@@ -10,6 +10,11 @@ describe('config', () => {
     expect(loadConfig({ MUSIC_MODE: 'mock' })).toMatchObject({ mode: 'mock', port: 8787, maxStreams: 5 });
   });
 
+  it('binds loopback unless HOST overrides', () => {
+    expect(loadConfig({ MUSIC_MODE: 'mock' }).host).toBe('127.0.0.1');
+    expect(loadConfig({ MUSIC_MODE: 'mock', HOST: '0.0.0.0' }).host).toBe('0.0.0.0');
+  });
+
   it('rejects bad values without echoing the key', () => {
     expect(() => loadConfig({ MUSIC_MODE: 'demo' })).toThrow(/MUSIC_MODE/);
     expect(() => loadConfig({ MUSIC_MODE: 'mock', PORT: 'abc' })).toThrow(/PORT/);
