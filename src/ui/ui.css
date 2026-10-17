@@ -291,54 +291,7 @@ body {
   }
 }
 
-/* ---- session portrait (after End Session) ---- */
 
-.portrait {
-  position: fixed;
-  inset: 0;
-  z-index: 40;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: 18px;
-  padding: 24px 16px;
-  background: rgba(5, 4, 4, 0.86);
-  backdrop-filter: blur(10px);
-  animation: flow-in 700ms ease-out both;
-}
-
-.portrait__image {
-  max-width: 100%;
-  max-height: calc(100dvh - 120px);
-  aspect-ratio: 1080 / 1350;
-  height: auto;
-  border-radius: 6px;
-  box-shadow: 0 30px 80px rgba(0, 0, 0, 0.6);
-}
-
-.portrait__actions {
-  display: flex;
-  gap: 24px;
-}
-
-.portrait__actions button {
-  appearance: none;
-  background: none;
-  border: 1px solid var(--hairline);
-  border-radius: 999px;
-  padding: 10px 20px;
-  font-size: 11px;
-  letter-spacing: 0.14em;
-  text-transform: uppercase;
-  color: var(--fg);
-  cursor: pointer;
-}
-
-.portrait__actions button:first-child {
-  border-color: var(--accent);
-  color: var(--accent);
-}
 /* ---- thumbs: two glass lenses floating at the bottom ---- */
 
 .app__controls {

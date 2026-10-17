@@ -16,6 +16,8 @@ export const LEARNER_PARAMETERS = Object.freeze({
   promptScale: 2,
   /** How far one click on a style word moves toward it (feature intensity). */
   nudgeStep: 0.15,
+  /** A picked style enters at this share of its group's leader, so the first click is audible. */
+  nudgeEntry: 0.75,
   initialJitter: 0.05,
 });
 

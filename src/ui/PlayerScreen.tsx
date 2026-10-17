@@ -1,39 +1,24 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { ListeningPurpose, MusicSessionController, SessionUiState, Vote } from './contracts.ts';
 import { useSessionState } from './use-session-state.ts';
-import { MetricsPanel } from './MetricsPanel.tsx';
-import { NowPlayingPanel } from './NowPlayingPanel.tsx';
 import { ThumbsControls } from './ThumbsControls.tsx';
 import { FlowVisualizer, Visualizer } from './Visualizer.tsx';
 import { supportsFlowRenderer } from './viz/flow-renderer.ts';
 import { TasteVerse } from './TasteVerse.tsx';
 import { MomentsTray } from './MomentsTray.tsx';
-import { SessionPortrait } from './SessionPortrait.tsx';
 import { describeBlend, FEATURE_IDS } from './viz/describe.ts';
 import { lookForBlend } from './viz/looks.ts';
-import { SessionRecorder, type SessionLog, type SessionMoment } from './viz/session-log.ts';
+import { SessionRecorder, type SessionMoment } from './viz/session-log.ts';
 import { createTasteField } from './viz/verse.ts';
 import './ui.css';
-import './hud.css';
 
 export type PlayerScreenProps = {
   controller: MusicSessionController;
 };
 
 const VOTE_FLASH_MS = 700;
-/** How often the session portrait samples what's playing. */
-const SAMPLE_MS = 1000;
 /** How long the "returning to…" caption stays up. */
 const RECALL_CAPTION_MS = 6000;
-
-/** Rough 0..1 loudness from the output spectrum, for the portrait's ring wobble. */
-function loudness(analyser: AnalyserNode | null | undefined): number {
-  if (!analyser) return 0.3;
-  const data = new Uint8Array(analyser.frequencyBinCount);
-  analyser.getByteFrequencyData(data);
-  const mean = data.reduce((sum, v) => sum + v, 0) / (data.length * 255);
-  return Math.min(1, Math.max(0, (mean - 0.1) / 0.4));
-}
 
 /** The full-screen piece needs WebGL2 and motion; `?ring` keeps the original ring for comparison. */
 function wantsFlow(): boolean {
@@ -42,6 +27,16 @@ function wantsFlow(): boolean {
   if (window.matchMedia?.('(prefers-reduced-motion: reduce)').matches) return false;
   return supportsFlowRenderer();
 }
+/** Visually-hidden status line — the only words the live view keeps, for screen readers. */
+const SR_LABELS: Record<string, string> = {
+  connecting: 'connecting…',
+  playing: 'playing',
+  reconnecting: 'reconnecting…',
+  unavailable: 'temporarily unavailable',
+  stopped: 'stopped',
+  error: 'something went wrong',
+};
+
 const PURPOSES: { value: ListeningPurpose; label: string }[] = [
   { value: 'focus', label: 'Focus' },
   { value: 'relax', label: 'Relax' },
@@ -82,7 +77,6 @@ export function PlayerScreen({ controller }: PlayerScreenProps) {
   const stageRef = useRef<HTMLDivElement | null>(null);
   const [moments, setMoments] = useState<SessionMoment[]>([]);
   const [recalling, setRecalling] = useState<SessionMoment | null>(null);
-  const [portrait, setPortrait] = useState<SessionLog | null>(null);
   const [localPurpose, setLocalPurpose] = useState<ListeningPurpose>('explore');
   const [memoryAction, setMemoryAction] = useState<'export' | 'reset' | null>(null);
   const [memoryNotice, setMemoryNotice] = useState<{ text: string; error: boolean } | null>(null);
@@ -152,7 +146,6 @@ export function PlayerScreen({ controller }: PlayerScreenProps) {
       controller.vote(v); // synchronous, never blocks the button
       const now = Date.now();
       setLastVote({ v, at: now });
-      recorder.vote(now, v);
       if (moment) {
         setMoments(recorder.moment(now, {
           label: describeBlend(moment.features),
@@ -178,35 +171,17 @@ export function PlayerScreen({ controller }: PlayerScreenProps) {
     return () => clearTimeout(timer);
   }, [recalling]);
 
-  // Sample what's playing once a second for the session portrait.
-  useEffect(() => {
-    if (!active) return;
-    const timer = setInterval(() => {
-      const features = controller.getAudibleFeatures?.() ?? {};
-      const look = lookForBlend(features);
-      recorder.sample(Date.now(), {
-        colorA: look.colorA,
-        colorB: look.colorB,
-        energy: loudness(controller.getAnalyser?.()),
-        label: describeBlend(features),
-      });
-    }, SAMPLE_MS);
-    return () => clearInterval(timer);
-  }, [active, controller, recorder]);
-
-  // Record each session from when it becomes active; when it ends, turn the
-  // record into a portrait (errors just discard it).
+  // Moments belong to one session: start a fresh list when it becomes active, clear it when it ends.
   useEffect(() => {
     if (active) {
       if (!recorder.active) recorder.start(Date.now());
       return;
     }
     if (!recorder.active) return;
-    const log = recorder.finish(Date.now(), controller.getTaste?.() ?? {});
-    if (state.status === 'stopped') setPortrait(log);
+    recorder.finish();
     setMoments([]);
     setRecalling(null);
-  }, [active, state.status, controller, recorder]);
+  }, [active, recorder]);
 
   // Arrow keys steer only while a session is active.
   useEffect(() => {
@@ -276,7 +251,6 @@ export function PlayerScreen({ controller }: PlayerScreenProps) {
               // errors surface through session state, not this promise.
               controller.start().catch(() => { });
               setMemoryNotice(null);
-              setPortrait(null);
             }}
           >
             start listening
@@ -306,13 +280,16 @@ export function PlayerScreen({ controller }: PlayerScreenProps) {
             </div>
           ) : null}
         </section>
-        {portrait ? <SessionPortrait log={portrait} onClose={() => setPortrait(null)} /> : null}
       </main>
     );
   }
 
   return (
     <main className="app app--live">
+      <p className="sr-only" role="status">
+        <span>{SR_LABELS[state.status] ?? state.status}</span>
+        {state.lastError ? <span>{state.lastError}</span> : null}
+      </p>
       <div className="app__stage" ref={stageRef}>
         {flow ? (
           <FlowVisualizer active={active} lastVote={lastVote} source={controller} field={field} onUnavailable={() => setFlow(false)} />
@@ -338,11 +315,7 @@ export function PlayerScreen({ controller }: PlayerScreenProps) {
           ))}
         </div>
       ) : null}
-      <div className="app__scrim" aria-hidden="true" />
-      <div className="hud">
-        <NowPlayingPanel state={state} controller={controller} />
-        <MetricsPanel controller={controller} />
-      </div>
+
       <footer className="app__controls">
         <MomentsTray moments={moments} onRecall={handleRecall} recalling={recalling} />
         <ThumbsControls onVote={handleVote} lastVote={lastVote} controller={controller} />
