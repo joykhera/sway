@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
-import type { MusicSessionController, Vote } from './contracts.ts';
+import type { ListeningPurpose, MusicSessionController, Vote } from './contracts.ts';
 import { useSessionState } from './use-session-state.ts';
 import { StatusChip } from './StatusChip.tsx';
 import { ThumbsControls } from './ThumbsControls.tsx';
@@ -11,17 +11,24 @@ export type PlayerScreenProps = {
 };
 
 const VOTE_FLASH_MS = 700;
+const PURPOSES: { value: ListeningPurpose; label: string }[] = [
+  { value: 'focus', label: 'Focus' },
+  { value: 'relax', label: 'Relax' },
+  { value: 'energy', label: 'Energy' },
+  { value: 'explore', label: 'Explore' },
+];
 
 /**
  * The whole visible app: a centered pre-start view, or the live session view
- * (status chip · breathing ring · thumbs · end session). Start, like, and dislike
- * are the only controls.
+ * (status chip · breathing ring · thumbs · end session). Purpose is optional
+ * pre-session setup; the listening view stays focused on the music and feedback.
  */
 export function PlayerScreen({ controller }: PlayerScreenProps) {
   const state = useSessionState(controller);
   const [lastVote, setLastVote] = useState<{ v: Vote; at: number } | null>(null);
+  const [purpose, setPurpose] = useState<ListeningPurpose>('explore');
 
-  const active = state.status !== 'idle' && state.status !== 'stopped';
+  const active = state.status !== 'idle' && state.status !== 'stopped' && state.status !== 'error';
 
   // Brief visual pulse on the voted side; auto-clears.
   useEffect(() => {
@@ -61,6 +68,35 @@ export function PlayerScreen({ controller }: PlayerScreenProps) {
           <h1 className="wordmark">sway</h1>
           <p className="tagline">infinite instrumental stream — it learns what you like</p>
           {state.status === 'stopped' ? <p className="prestart__hint">session ended</p> : null}
+          {state.status === 'error' ? (
+            <p className="prestart__error" role="alert">
+              {state.lastError || 'Could not start listening. Try again.'}
+            </p>
+          ) : null}
+          {controller.setPurpose ? (
+            <fieldset className="purpose-choice">
+              <legend>start with</legend>
+              <div className="purpose-choice__options">
+                {PURPOSES.map((option) => (
+                  <button
+                    key={option.value}
+                    type="button"
+                    aria-pressed={purpose === option.value}
+                    onClick={() => {
+                      if (option.value === purpose) return;
+                      controller.setPurpose?.(option.value);
+                      setPurpose(option.value);
+                    }}
+                  >
+                    {option.label}
+                  </button>
+                ))}
+              </div>
+              {state.status === 'stopped' ? (
+                <p className="purpose-choice__hint">Changing this starts a fresh preference session.</p>
+              ) : null}
+            </fieldset>
+          ) : null}
           <button
             type="button"
             className="start-button"

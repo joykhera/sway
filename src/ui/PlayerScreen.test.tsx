@@ -74,6 +74,82 @@ describe('PlayerScreen — pre-start view', () => {
     fireEvent.keyDown(window, { key: 'ArrowDown' });
     expect(f.vote).not.toHaveBeenCalled();
   });
+
+  it('omits purpose setup when the controller does not support it', () => {
+    const f = makeFake();
+    render(<PlayerScreen controller={f.controller} />);
+    expect(screen.queryByRole('group', { name: 'start with' })).toBeNull();
+  });
+
+  it('defaults to Explore without resetting the controller', () => {
+    const f = makeFake();
+    const setPurpose = vi.fn();
+    f.controller.setPurpose = setPurpose;
+    render(<PlayerScreen controller={f.controller} />);
+    expect(screen.getByRole('group', { name: 'start with' })).toBeTruthy();
+    for (const label of ['Focus', 'Relax', 'Energy', 'Explore']) {
+      expect(screen.getByRole('button', { name: label }).getAttribute('aria-pressed'))
+        .toBe(label === 'Explore' ? 'true' : 'false');
+    }
+    fireEvent.click(screen.getByRole('button', { name: 'Explore' }));
+    expect(setPurpose).not.toHaveBeenCalled();
+  });
+
+  it('applies a changed purpose synchronously, ignores a repeat, and starts inside the click gesture', () => {
+    const f = makeFake();
+    const calls: string[] = [];
+    f.controller.setPurpose = vi.fn((purpose) => { calls.push(purpose); });
+    f.start.mockImplementation(() => {
+      calls.push('start');
+      return new Promise(() => {}); // audio initialization may remain pending
+    });
+    render(<PlayerScreen controller={f.controller} />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Focus' }));
+    expect(calls).toEqual(['focus']);
+    expect(screen.getByRole('button', { name: 'Focus' }).getAttribute('aria-pressed')).toBe('true');
+    fireEvent.click(screen.getByRole('button', { name: 'Focus' }));
+    expect(calls).toEqual(['focus']);
+
+    // This listener observes the same event after React's handler, before any
+    // microtask. A deferred start would lose the browser's autoplay gesture.
+    let callsDuringGesture: string[] | undefined;
+    window.addEventListener('click', () => { callsDuringGesture = [...calls]; }, { once: true });
+    fireEvent.click(screen.getByRole('button', { name: 'start listening' }));
+    expect(callsDuringGesture).toEqual(['focus', 'start']);
+  });
+
+  it('hides purpose setup while playing and retains the choice across Stop/Start', () => {
+    const f = makeFake();
+    const setPurpose = vi.fn();
+    f.controller.setPurpose = setPurpose;
+    render(<PlayerScreen controller={f.controller} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Relax' }));
+    fireEvent.click(screen.getByRole('button', { name: 'start listening' }));
+    act(() => { f.emit({ status: 'playing' }); });
+    expect(screen.queryByRole('group', { name: 'start with' })).toBeNull();
+
+    fireEvent.click(screen.getByRole('button', { name: 'end session' }));
+    expect(f.stop).toHaveBeenCalledTimes(1);
+    act(() => { f.emit({ status: 'stopped' }); });
+    expect(screen.getByRole('button', { name: 'Relax' }).getAttribute('aria-pressed')).toBe('true');
+    fireEvent.click(screen.getByRole('button', { name: 'Relax' }));
+    fireEvent.click(screen.getByRole('button', { name: 'start listening' }));
+    expect(setPurpose).toHaveBeenCalledExactlyOnceWith('relax');
+    expect(f.start).toHaveBeenCalledTimes(2);
+  });
+
+  it('returns a failed session to Start with its error and no voting shortcuts', () => {
+    const f = makeFake({ status: 'playing' });
+    render(<PlayerScreen controller={f.controller} />);
+    act(() => { f.emit({ status: 'error', lastError: 'Audio could not start' }); });
+    expect(screen.getByRole('alert').textContent).toBe('Audio could not start');
+    expect(screen.queryByLabelText(UP)).toBeNull();
+    fireEvent.keyDown(window, { key: 'ArrowUp' });
+    expect(f.vote).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('button', { name: 'start listening' }));
+    expect(f.start).toHaveBeenCalledTimes(1);
+  });
 });
 
 describe('PlayerScreen — active session view', () => {
