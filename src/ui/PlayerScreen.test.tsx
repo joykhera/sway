@@ -236,7 +236,7 @@ describe('PlayerScreen — browser preferences', () => {
     render(<PlayerScreen controller={f.controller} />);
     expect(screen.getByText('Saving Crazy feedback on this browser…')).toBeTruthy();
     act(() => { f.emit({ status: 'idle', purpose: 'crazy', memory: 'unavailable', savedVotes: 0 }); });
-    expect(screen.getByText('Local saving unavailable. Preferences are not being saved.')).toBeTruthy();
+    expect(screen.getByText('Some changes may not be saved on this browser.')).toBeTruthy();
     expect(screen.queryByText(/saved vote/)).toBeNull();
     expect((screen.getByRole('button', { name: 'start listening' }) as HTMLButtonElement).disabled).toBe(false);
   });

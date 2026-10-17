@@ -23,7 +23,7 @@ function memoryStatus(state: SessionUiState, purposeLabel: string): string | nul
   switch (state.memory) {
     case 'loading': return 'Loading this browser’s preferences…';
     case 'saving': return `Saving ${purposeLabel} feedback on this browser…`;
-    case 'unavailable': return 'Local saving unavailable. Preferences are not being saved.';
+    case 'unavailable': return 'Some changes may not be saved on this browser.';
     case 'ready': {
       const votes = state.savedVotes;
       if (votes === undefined) return 'Local memory ready.';
