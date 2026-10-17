@@ -31,6 +31,8 @@ export type PCMPlayerState = 'idle' | 'initializing' | 'ready' | 'closed';
 /** Diagnostics for D's audible-blend estimate and for tuning the jitter buffer. */
 export interface PCMPlayerStats {
   state: PCMPlayerState;
+  /** Live Web Audio execution state; lifecycle `ready` alone does not mean audible. */
+  audioContextState?: string;
   /** Decoded audio buffered in the worklet but not yet rendered, at the output rate. */
   bufferedMs: number;
   /** Render callbacks that ran out of audio since the last reset. */

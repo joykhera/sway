@@ -83,7 +83,7 @@ export interface PCMPlayer {
   enqueuePcm(bytes: ArrayBuffer): void;
   getBufferedDurationMs(): number;
   // Existing worklet readiness, optional for test/alternative players.
-  getStats?(): { state: string; priming: boolean };
+  getStats?(): { state: string; priming: boolean; audioContextState?: string };
   close(): Promise<void>;
 }
 

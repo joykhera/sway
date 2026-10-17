@@ -190,6 +190,7 @@ export class WorkletPCMPlayer implements PCMPlayer {
     const ws = this.workletStats;
     return {
       state: this.state,
+      audioContextState: this.ctx?.state,
       bufferedMs: ws?.bufferedMs ?? 0,
       underruns: ws?.underruns ?? 0,
       droppedFrames: ws?.droppedFrames ?? 0,
