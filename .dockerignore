@@ -1,0 +1,8 @@
+node_modules
+dist
+.env*
+.git
+smoke-out/
+*.wav
+docs/
+tests/

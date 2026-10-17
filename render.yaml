@@ -1,0 +1,23 @@
+# Render Blueprint — https://render.com/docs/blueprint-spec
+# One Docker web service driven by ./Dockerfile.
+# GEMINI_API_KEY is `sync: false` — paste it in the Render dashboard when
+# prompted, NEVER in this file or anywhere in git.
+services:
+  - type: web
+    name: sway-relay
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    plan: free
+    branch: main
+    healthCheckPath: /healthz
+    autoDeploy: true
+    envVars:
+      - key: MUSIC_MODE
+        value: live
+      - key: HOST
+        value: "0.0.0.0"
+      - key: NODE_ENV
+        value: production
+      - key: GEMINI_API_KEY
+        sync: false
+    # PORT is intentionally NOT set — Render injects it (usually 10000).
