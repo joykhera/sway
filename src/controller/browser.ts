@@ -14,6 +14,7 @@ export type BrowserControllerOptions = {
   purpose?: ListeningPurpose;
   config?: Partial<ControllerConfig>;
   preferences?: PreferencesStore | false;
+  lookahead?: boolean;
 };
 
 export function createBrowserController(opts: BrowserControllerOptions = {}): SessionController {
@@ -25,6 +26,7 @@ export function createBrowserController(opts: BrowserControllerOptions = {}): Se
     seed: opts.seed,
     purpose: opts.purpose,
     config: opts.config,
+    lookahead: opts.lookahead ?? true,
     preferences: opts.preferences === false ? undefined : opts.preferences ?? createBrowserPreferencesStore(),
     restoreState: (value, purpose) => isAdaptiveState(value) && value.purpose === purpose ? value : undefined,
     // Dev-only: every vote logs the audible-blend estimate, useful when measuring downvote response time.
