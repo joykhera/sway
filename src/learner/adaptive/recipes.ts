@@ -28,6 +28,7 @@ const PURPOSE_FEATURES: Record<Purpose, FeatureBlend> = {
   relax: { calm: 0.6, dreamy: 0.6, sparse: 0.45, layered: 0.15 },
   energy: { energetic: 0.8, hopeful: 0.35, rhythmic: 0.6, layered: 0.15 },
   explore: {},
+  crazy: { electronic: 1.2, synth: 1, percussion: 0.75, energetic: 1.4, rhythmic: 1.3, layered: 0.4 },
 };
 
 export function purposePrior(purpose: Purpose, target: Target): number {

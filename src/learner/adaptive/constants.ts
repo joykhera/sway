@@ -2,6 +2,12 @@
 export const PARAMETERS = Object.freeze({
   ridge: 0.35,
   forgetting: 0.995,
+  // A comparison divides one Like budget; it never creates an extra vote.
+  comparisonShare: 0.5,
+  comparisonMargin: 2, // Like (+1) minus the rejected reference (-1).
+  comparisonMinDistance: 1e-6,
+  styleEscapeRejections: 3,
+  styleEscapeBlendDistance: 0.15,
   uncertaintyBonus: 0.42,
   supportedUncertaintyBonus: 0.2,
   purposePrior: 0.16,
