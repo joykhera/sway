@@ -4,7 +4,7 @@ import { SessionController } from './index.ts';
 import { adaptiveLearner, isAdaptiveState } from '../learner/adaptive/adapter.ts';
 import { FakePlayer, fakeRelay } from '../../tests/e2e/harness.ts';
 import type { MusicIntent, InterpretResponse } from '../shared/intent.ts';
-import type { SessionState } from '../shared/protocol.ts';
+import type { SessionState, StreamLevels } from '../shared/protocol.ts';
 import type { FeedbackRecord, PreferencesStore, SavedProfile } from '../preferences/types.ts';
 import type { IntentInterpreter } from './intent-client.ts';
 
@@ -154,4 +154,48 @@ describe('text intent controller', () => {
     r.controller.stop();
   });
 
+});
+
+
+describe('request changes and vote progress', () => {
+  it.each(['apply', 'clear'] as const)('%s cancels superseded vote progress without marking it complete', async action => {
+    let intent = jazz;
+    const r = rig(async () => ready(intent));
+    await r.controller.interpretText('jazz'); await r.start();
+    const stats: StreamLevels[] = []; r.controller.subscribeStats(s => stats.push(s));
+    r.controller.vote('down');
+    expect(stats.at(-1)?.steerVote).toBe('down');
+    await vi.advanceTimersByTimeAsync(100);
+    if (action === 'apply') { intent = electronic; await r.controller.interpretText('electronic'); }
+    else r.controller.clearIntent();
+    expect(stats.at(-1)).toMatchObject({ steerCanceled: true, steerProgress: null, steerVote: null });
+    await vi.advanceTimersByTimeAsync(1200);
+    expect(stats.at(-1)?.steerProgress).toBeNull();
+    r.controller.vote('up');
+    expect(stats.at(-1)).toMatchObject({ steerVote: 'up', steerProgress: 0 });
+    r.controller.stop();
+  });
+
+  it.each(['clarify', 'error'] as const)('%s leaves the current vote transition in place', async status => {
+    const r = rig(async () => ({ status, message: 'Try another description.' })); await r.start();
+    const stats: StreamLevels[] = []; r.controller.subscribeStats(s => stats.push(s));
+    r.controller.vote('down'); await r.controller.interpretText('something');
+    await vi.advanceTimersByTimeAsync(100);
+    expect(stats.some(s => s.steerCanceled)).toBe(false);
+    expect(stats.at(-1)?.steerVote).toBe('down');
+    r.controller.stop();
+  });
+
+  it('does not finish a vote while the upstream reconnects and awaits ready', async () => {
+    const r = rig(); await r.start();
+    const stats: StreamLevels[] = []; r.controller.subscribeStats(s => stats.push(s));
+    r.controller.vote('down'); r.relay.last.audio();
+    r.relay.last.serverMessage({ type: 'status', state: 'reconnecting' });
+    expect(stats.at(-1)).toMatchObject({ steerCanceled: true, steerProgress: null });
+    await vi.advanceTimersByTimeAsync(3000);
+    expect(stats.at(-1)?.steerProgress).toBeNull();
+    r.relay.last.ready(); r.controller.vote('up');
+    expect(stats.at(-1)?.steerVote).toBe('up');
+    r.controller.stop();
+  });
 });

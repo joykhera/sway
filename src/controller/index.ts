@@ -334,7 +334,8 @@ export class SessionController implements MusicSessionController {
     this.rejected = undefined;
     this.evidenceHistory = [];
     this.clearLookahead();
-    this.retarget(target);
+    this.cancelVoteProgress();
+    this.retarget(target, true, this.cfg.voteRampMs);
     this.publishIntent();
     this.savePreferences(); // A request is context, never a fabricated vote.
   }
@@ -576,7 +577,15 @@ export class SessionController implements MusicSessionController {
     }
   }
 
-  private emitStats(): void {
+  private cancelVoteProgress(): void {
+    const pending = this.pendingSteer !== undefined;
+    this.pendingSteer = undefined;
+    this.decision = undefined;
+    if (this.state.decision) this.setState({ ...this.state, decision: undefined });
+    if (pending) this.emitStats(true);
+  }
+
+  private emitStats(steerCanceled = false): void {
     // Keep `heard` — and the `nowPlaying` words derived from it — advancing on the
     // stats cadence: issue #9's "what you're actually hearing" line.
     if (this.canHear()) {
@@ -588,6 +597,7 @@ export class SessionController implements MusicSessionController {
       }
     }
     const snapshot = this.statsSnapshot();
+    if (steerCanceled) snapshot.steerCanceled = true;
     for (const l of this.statsListeners) l(snapshot);
   }
 
@@ -697,6 +707,7 @@ export class SessionController implements MusicSessionController {
         return;
       case 'status':
         if (msg.state === 'reconnecting') {
+          this.cancelVoteProgress();
           this.clearLookahead();
           if (!this.awaitingReady) this.started ??= { features: this.sentFeatures, prompts: this.sentPrompts, intentRevision: this.sentIntentRevision };
           this.awaitingReady = true;
@@ -754,7 +765,7 @@ export class SessionController implements MusicSessionController {
     this.ready = false;
     this.awaitingReady = false;
     this.started = undefined;
-    this.pendingSteer = undefined;
+    this.cancelVoteProgress();
     this.blocksLanded = 0;
     this.ramp = undefined;
     clearTimeout(this.rampTimer);

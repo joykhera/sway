@@ -166,6 +166,8 @@ export type StreamLevels = {
   steerProgress?: number | null;
   /** Which vote the pending steer belongs to. */
   steerVote?: Vote | null;
+  /** A non-vote action superseded the pending vote; reset rather than mark it complete. */
+  steerCanceled?: boolean;
 };
 
 /** How the learner responded to the latest vote (from `Target.lastDecision`). */

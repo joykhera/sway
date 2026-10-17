@@ -57,6 +57,8 @@ export type StreamLevels = {
   steerProgress?: number | null;
   /** Which vote the pending steer belongs to; null/absent when none. */
   steerVote?: Vote | null;
+  /** A non-vote action superseded the pending vote; reset rather than mark it complete. */
+  steerCanceled?: boolean;
 
 };
 
