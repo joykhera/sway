@@ -20,11 +20,22 @@ Sway generates music live with **Google Lyria RealTime**. A small in-memory lear
 | What | How we used it |
 |---|---|
 | **Google Lyria RealTime** | Live instrumental generation; steered by weighted prompts |
-| **NVIDIA Nemotron** (`nemotron-3-nano-4b`, via Ollama) | Explored as a local LLM advisor that maps free-text vibes onto our feature vocabulary — private, commercial-OK license |
-| **Crusoe Cloud** | GPU compute for experiments and workloads during the build |
+| **NVIDIA Nemotron** | Our language layer at a larger scope: interprets listener intent — free-text vibes, word taps and vote context — and maps it onto the musical feature vocabulary that steers Lyria |
+| **Crusoe Cloud** | GPU inference serving Nemotron — the LLM stays a hosted model, not a per-user download |
 | **TypeScript + Vite + React** | Browser app, session controller, learner, visualizer |
 | **WebSocket relay (Node)** | Keeps the API key server-side; guards the wire protocol |
 | **Render** | Hosts the relay + built app (`render.yaml`, auto-deploys `main`) |
+
+## System improvement: recursive learning
+
+The agent doesn't just react to votes — each vote recursively updates a persistent taste model, and every later decision is made *through* that model. A like strengthens the audible blend's features; a dislike redirects using accumulated preference + uncertainty; directional likes learn from the *difference* between the rejected and approved blend; three rejections widen the search space entirely.
+
+Why it produces better outcomes:
+
+- **Faster convergence** — each session needs fewer votes to reach "yours," because the model starts where the last one ended (per-purpose profiles in IndexedDB).
+- **Audible responsiveness** — a 👎 is hearable in ~2.5 s, and the honest fill indicator waits for the real generated block, so listeners learn to trust the control.
+- **Graceful recovery** — probes and wide-search escapes keep the stream out of local minima instead of circling the same sound.
+- **Better for every listener, not the average** — taste lives per-user, per-purpose, on-device: Focus-you and Crazy-you are separate models.
 
 ## Architecture
 
