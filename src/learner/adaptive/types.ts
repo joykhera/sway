@@ -27,5 +27,9 @@ export type Decision = {
   prediction: number;
   uncertainty: number;
 };
-export type Target = BaseTarget & { lastDecision?: Decision };
+export type Target = BaseTarget & {
+  lastDecision?: Decision;
+  /** Stable per-session renderer seed, retained when features leave and return. */
+  phrasingSalt?: number;
+};
 export type { FeatureBlend, FeatureId };

@@ -18,6 +18,7 @@ describe('adaptive learner through the shared controller contract', () => {
   it('preserves the complete immutable model through two weighted votes', () => {
     let state: LearnerState = learner.createLearner(42, 'focus');
     let target: Target = learner.initialTarget(state);
+    expect(target).toHaveProperty('phrasingSalt', 42);
     let directState = core.createLearner(42, 'focus');
     let directTarget = core.initialTarget(directState);
     for (const [vote, evidenceWeight] of [['up', 1], ['down', 0.5]] as const) {
@@ -27,6 +28,8 @@ describe('adaptive learner through the shared controller contract', () => {
       const direct = core.processVote({ state: directState, audible: directTarget.features, currentTarget: directTarget, vote, evidenceWeight });
       expect(state).toEqual(before);
       expect(result).toEqual(direct);
+      expect(result.target).toHaveProperty('phrasingSalt', 42);
+      expect(result.target).toHaveProperty('lastDecision.reason');
       expect(isAdaptiveState(result.state)).toBe(true);
       ({ state, target } = result);
       directState = direct.state; directTarget = direct.target;

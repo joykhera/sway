@@ -1,4 +1,5 @@
 import { FEATURE_IDS } from '../vocabulary';
+import type { WeightedPrompt } from '../../shared/protocol';
 import { createRng, hashText, normalizeSeed } from '../rng';
 import type { Rng } from '../rng';
 import { fingerprint, signature, toTarget } from '../targets';
@@ -39,10 +40,15 @@ function context(state: LearnerState, features: FeatureBlend) {
   return { L, theta, x, predicted, uncertain, information, supported: supported && !reopening, reopening, phase };
 }
 
-function withDecision(target: Target, kind: Decision['kind'], reason: string, state: LearnerState, step: number): Target {
+function phrasingSalt(target: Target, state: LearnerState): number {
+  return Number.isFinite(target.phrasingSalt) ? normalizeSeed(target.phrasingSalt!) : state.seed;
+}
+
+function withDecision(target: Target, kind: Decision['kind'], reason: string, state: LearnerState, step: number, salt: number, keep: readonly WeightedPrompt[] = target.prompts): Target {
   const current = context(state, target.features);
   return {
-    ...toTarget(target.features),
+    ...toTarget(target.features, {}, { keep, salt }),
+    phrasingSalt: salt,
     lastDecision: {
       kind,
       reason: kind === 'redirect' && state.lastRecoveryVote === state.votes
@@ -86,7 +92,7 @@ function choose(state: LearnerState, base: Target, pending: Target, mode: 'initi
       : 'Trying another direction after a dislike; preference evidence is still uncertain.'
       : broad ? 'Testing a plausible alternative while keeping room for discovery; silence adds no preference evidence.'
         : 'Adding a nearby variation after exposure; likes guide the family without freezing the music.';
-  return withDecision(best.target, kind, reason, state, step);
+  return withDecision(best.target, kind, reason, state, step, phrasingSalt(pending, state), mode === 'initial' ? [] : pending.prompts);
 }
 
 export function initialTarget(state: LearnerState): Target {
@@ -150,10 +156,13 @@ export function processVote(args: {
   };
   const rng = createRng(state.seed);
   rng.next();
-  const base = toTarget(args.audible, args.currentTarget.features);
+  const salt = phrasingSalt(args.currentTarget, state);
+  // A stable salt restores an outgoing feature's wording even when a mid-ramp
+  // like brings it back after it disappeared from the pending destination.
+  const base = toTarget(args.audible, args.currentTarget.features, { keep: args.currentTarget.prompts, salt });
   const step = args.currentTarget.lastDecision?.step ?? 0;
   const target = args.vote === 'up'
-    ? withDecision(base, 'hold', 'Keeping the liked heard blend now; scheduled variations will continue without inventing more votes.', state, step)
+    ? withDecision(base, 'hold', 'Keeping the liked heard blend now; scheduled variations will continue without inventing more votes.', state, step, salt)
     : choose(state, base, args.currentTarget, 'down', step, rng);
   return { state: { ...state, seed: rng.seed }, target };
 }
