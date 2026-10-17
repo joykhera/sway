@@ -50,11 +50,10 @@ function makeFake(initial: SessionUiState = { status: 'idle' }): Fake {
 }
 
 describe('PlayerScreen — pre-start view', () => {
-  it('idle shows the wordmark, tagline, and a start button that calls start() once', () => {
+  it('idle shows the wordmark and a start button that calls start() once', () => {
     const f = makeFake();
     render(<PlayerScreen controller={f.controller} />);
     expect(screen.getByText('sway')).toBeTruthy();
-    expect(screen.getByText(/infinite instrumental stream/)).toBeTruthy();
     fireEvent.click(screen.getByRole('button', { name: 'start listening' }));
     expect(f.start).toHaveBeenCalledTimes(1);
   });
@@ -133,7 +132,7 @@ describe('PlayerScreen — pre-start view', () => {
     f.controller.setPurpose = vi.fn((purpose) => { calls.push(purpose); });
     f.start.mockImplementation(() => {
       calls.push('start');
-      return new Promise(() => {}); // audio initialization may remain pending
+      return new Promise(() => { }); // audio initialization may remain pending
     });
     render(<PlayerScreen controller={f.controller} />);
 

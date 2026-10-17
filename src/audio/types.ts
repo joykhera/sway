@@ -62,6 +62,8 @@ export interface PCMPlayerStats {
    * when the signal is silent/too noisy for a stable reading.
    */
   pitchHz?: number | null;
+  /** PCM blocks pushed since reset — only meaningful on players that receive raw PCM. */
+  chunksReceived?: number;
 }
 
 /** Main thread -> worklet messages (via `AudioWorkletNode.port`). */
@@ -77,6 +79,8 @@ export type WorkletOutbound = {
   underruns: number;
   droppedFrames: number;
   priming: boolean;
+  /** PCM blocks pushed since the last reset — the real generation cadence. */
+  chunksReceived: number;
   energyRms: number;
   brightnessHz: number;
   pitchHz: number | null;

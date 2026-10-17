@@ -25,7 +25,7 @@ export { DEFAULT_CONTROLLER_CONFIG, type ControllerConfig } from './config.ts';
 const STATS_INTERVAL_MS = 100;
 /** Statuses during which the session is steering toward a target and stats flow. */
 const ACTIVE_STATUSES: ReadonlySet<SessionState['status']> = new Set(['connecting', 'playing', 'reconnecting']);
-const ZERO_LEVELS: StreamLevels = { energy: 0, brightnessHz: 0, pitchHz: null, bufferedMs: 0, underruns: 0 };
+const ZERO_LEVELS: StreamLevels = { energy: 0, brightnessHz: 0, pitchHz: null, bufferedMs: 0, underruns: 0, generation: 0 };
 
 /** Reverse lookup: bare feature id ('lofi') -> its group ('genre'). */
 const GROUP_OF_ID = new Map<string, FeatureGroup>();
@@ -251,6 +251,7 @@ export class SessionController implements MusicSessionController {
       pitchHz: stats.pitchHz ?? null,
       bufferedMs: stats.bufferedMs ?? this.deps.player.getBufferedDurationMs(),
       underruns: stats.underruns ?? 0,
+      generation: stats.chunksReceived ?? 0,
     };
   }
 

@@ -54,7 +54,7 @@ export type MockControllerOptions = {
 };
 
 const ACTIVE: ReadonlySet<string> = new Set(['connecting', 'playing']);
-const ZERO_LEVELS: StreamLevels = { energy: 0, brightnessHz: 0, pitchHz: null, bufferedMs: 0, underruns: 0 };
+const ZERO_LEVELS: StreamLevels = { energy: 0, brightnessHz: 0, pitchHz: null, bufferedMs: 0, underruns: 0, generation: 0 };
 
 /** Whisperable identity per preset — honest words for what each generator preset sounds like. */
 const PRESET_SIGNATURES: Readonly<Record<string, MusicSignature>> = {
@@ -92,6 +92,7 @@ export class MockMusicSessionController implements MusicSessionController {
   private runId = 0;
   private sessionStartMs = 0;
   private generatedMs = 0;
+  private generation = 0;
   private lastSteerMs = 0;
   /** Last known generator preset (from `preset`, `cyclePreset`'s return, or `setPreset`). */
   private activePreset: string | undefined;
@@ -191,6 +192,7 @@ export class MockMusicSessionController implements MusicSessionController {
     this.statsWindow = [];
     this.statsWindowMs = 0;
     this.statsPrevLeft = 0;
+    this.generation = 0;
     this.latestStats = ZERO_LEVELS;
     this.setStatus('playing');
     this.pump(); // first burst immediately, then on the interval
@@ -239,6 +241,7 @@ export class MockMusicSessionController implements MusicSessionController {
     this.statsWindow = [];
     this.statsWindowMs = 0;
     this.statsPrevLeft = 0;
+    this.generation = 0;
     this.latestStats = ZERO_LEVELS;
     if (player) void player.close();
     this.setStatus('stopped');
@@ -302,6 +305,7 @@ export class MockMusicSessionController implements MusicSessionController {
       if (!(chunk instanceof ArrayBuffer) || chunk.byteLength === 0) break;
       this.generatedMs += (chunk.byteLength / frameBytes / this.sampleRateHz) * 1000;
       this.accumulateStats(chunk);
+      this.generation++;
       try {
         player.enqueuePcm(chunk);
       } catch {
@@ -365,6 +369,7 @@ export class MockMusicSessionController implements MusicSessionController {
       pitchHz: energy > TELEMETRY_SILENCE_FLOOR && zcrHz > 0 ? zcrHz : null,
       bufferedMs: this.player?.getBufferedDurationMs?.() ?? 0,
       underruns: 0,
+      generation: this.generation,
     };
     if (this.statsListeners.size === 0) return;
     for (const l of [...this.statsListeners]) l(this.latestStats);

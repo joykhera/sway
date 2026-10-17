@@ -69,6 +69,7 @@ export class BufferedPCMPlayer implements PCMPlayer {
   private scheduledUntil = 0;
   private startsAt = 0;
   private underruns = 0;
+  private chunksReceived = 0;
   private droppedFrames = 0;
 
   constructor(opts: BufferedPCMPlayerOptions = {}) {
@@ -134,6 +135,7 @@ export class BufferedPCMPlayer implements PCMPlayer {
   }
 
   enqueuePcm(bytes: ArrayBuffer): void {
+    this.chunksReceived++;
     if (this.state === 'closed') return;
     this.refresh();
     const input = new Uint8Array(bytes);
@@ -259,6 +261,7 @@ export class BufferedPCMPlayer implements PCMPlayer {
       audioContextState: this.ctx?.state,
       bufferedMs: this.getBufferedDurationMs(),
       underruns: this.underruns,
+      chunksReceived: this.chunksReceived,
       droppedFrames: this.droppedFrames,
       priming: this.priming || (this.ctx !== null && this.ctx.currentTime < this.startsAt),
       outputSampleRateHz: this.ctx?.sampleRate ?? 0,

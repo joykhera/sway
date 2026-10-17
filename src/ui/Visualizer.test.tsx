@@ -16,7 +16,7 @@ const LEVELS: StreamLevels = {
   brightnessHz: 2400,
   pitchHz: 220,
   bufferedMs: 900,
-  underruns: 0,
+  underruns: 0, generation: 0,
 };
 
 const PLAYING: SessionUiState = {

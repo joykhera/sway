@@ -203,7 +203,7 @@ describe('WorkletPCMPlayer', () => {
     const { player, contexts, nodes } = makeRig();
     await player.initializeFromUserGesture();
     const ctx = contexts[0]!;
-    nodes[0]!.emitStats({ bufferedMs: 250, underruns: 0, droppedFrames: 0, priming: false, energyRms: 0.3, brightnessHz: 300, pitchHz: 330 });
+    nodes[0]!.emitStats({ bufferedMs: 250, underruns: 0, droppedFrames: 0, priming: false, energyRms: 0.3, brightnessHz: 300, pitchHz: 330, chunksReceived: 1 });
     expect(player.getStats()).toMatchObject({ state: 'ready', priming: false, audioContextState: 'running' });
 
     ctx.setState('suspended');
@@ -284,6 +284,7 @@ describe('WorkletPCMPlayer', () => {
       energyRms: 0.4,
       brightnessHz: 220.5,
       pitchHz: 440,
+      chunksReceived: 7,
     });
     expect(player.getBufferedDurationMs()).toBe(250);
     const stats = player.getStats();

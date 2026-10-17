@@ -1,7 +1,7 @@
 import { useCallback, useRef, useSyncExternalStore } from 'react';
 import type { MusicSessionController, StreamLevels } from './contracts.ts';
 
-const ZERO: StreamLevels = { energy: 0, brightnessHz: 0, pitchHz: null, bufferedMs: 0, underruns: 0 };
+const ZERO: StreamLevels = { energy: 0, brightnessHz: 0, pitchHz: null, bufferedMs: 0, underruns: 0, generation: 0 };
 
 /**
  * Subscribe to a controller's ~10 Hz rendered-signal telemetry.

@@ -195,6 +195,7 @@ export class WorkletPCMPlayer implements PCMPlayer {
       bufferedMs: ws?.bufferedMs ?? 0,
       underruns: ws?.underruns ?? 0,
       droppedFrames: ws?.droppedFrames ?? 0,
+      chunksReceived: ws?.chunksReceived ?? 0,
       // No stats yet means nothing has rendered: still effectively priming.
       priming: ws?.priming ?? true,
       outputSampleRateHz: this.ctx?.sampleRate ?? 0,

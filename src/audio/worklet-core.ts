@@ -45,6 +45,7 @@ export class PcmWorkletCore {
   /** False until the first successful prime; picks preroll vs reprime. */
   private hasPrimed = false;
   private underruns = 0;
+  private chunksReceived = 0;
 
   // --- Rendered-signal telemetry -------------------------------------------
   // Rolling ~TELEMETRY_WINDOW_MS window over the emitted signal, kept as a
@@ -106,6 +107,7 @@ export class PcmWorkletCore {
     }
     const decoded = decodeS16le(aligned, this.scratchDecoded);
     if (decoded === 0) return;
+    this.chunksReceived++;
     const estimate = this.resampler.pendingOutputFrames(decoded);
     if (this.scratchResampled.length < estimate * CHANNELS) {
       this.scratchResampled = new Float32Array(estimate * CHANNELS);
@@ -240,6 +242,7 @@ export class PcmWorkletCore {
       bufferedMs: (this.ring.availableFrames / this.outputRateHz) * 1000,
       underruns: this.underruns,
       droppedFrames: this.ring.droppedFrames,
+      chunksReceived: this.chunksReceived,
       priming: this.priming,
       energyRms,
       brightnessHz,
@@ -255,6 +258,7 @@ export class PcmWorkletCore {
     this.priming = true;
     this.hasPrimed = false;
     this.underruns = 0;
+    this.chunksReceived = 0;
     this.telemetryHead = 0;
     this.telemetryTail = 0;
     this.telemetryUsed = 0;

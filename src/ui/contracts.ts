@@ -35,6 +35,17 @@ export type StreamLevels = {
   /** Audio buffered but not yet rendered. */
   bufferedMs: number;
   underruns: number;
+  /** Generated audio blocks landed — bumps when a new part of the music exists. */
+  generation: number;
+  /**
+   * Progress (0..1, linear in real time) of the most recent vote's steer becoming
+   * audible: elapsed / (generation latency + buffer depth at vote time). Reaches
+   * exactly 1 only once the steered audio is actually playing. Null/absent when
+   * no steer is pending (no vote yet, or ~600 ms after completion).
+   */
+  steerProgress?: number | null;
+  /** Which vote the pending steer belongs to; null/absent when none. */
+  steerVote?: Vote | null;
 };
 
 export type KnownStatus =

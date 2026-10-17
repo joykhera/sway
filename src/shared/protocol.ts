@@ -107,6 +107,8 @@ export type PCMPlayerStats = {
   brightnessHz?: number;
   /** Dominant-partial pitch estimate in Hz, or null when silent/indeterminate. */
   pitchHz?: number | null;
+  /** PCM blocks pushed since reset — the real generation cadence. */
+  chunksReceived?: number;
 };
 
 // ---- Controller contract (implemented by D in src/controller, consumed by UI) ----
@@ -134,6 +136,12 @@ export type StreamLevels = {
   /** Audio buffered but not yet rendered. */
   bufferedMs: number;
   underruns: number;
+  /** Generated audio blocks landed since the session started — bumps when a new part of the music exists. */
+  generation: number;
+  /** 0..1 progress of the latest vote's steer becoming audible; 1 only once it plays. Null when none pending. */
+  steerProgress?: number | null;
+  /** Which vote the pending steer belongs to. */
+  steerVote?: Vote | null;
 };
 
 export type SessionState = { status: SessionStatus; lastError?: string; signature?: MusicSignature };

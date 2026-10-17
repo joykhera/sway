@@ -111,7 +111,6 @@ export function PlayerScreen({ controller }: PlayerScreenProps) {
         </div>
         <section className="prestart">
           <h1 className="wordmark">sway</h1>
-          <p className="tagline">infinite instrumental stream — it learns what you like</p>
           {state.status === 'stopped' ? (
             <p className="prestart__hint">session ended</p>
           ) : null}
@@ -122,7 +121,7 @@ export function PlayerScreen({ controller }: PlayerScreenProps) {
           ) : null}
           {controller.setPurpose ? (
             <fieldset className="purpose-choice">
-              <legend>start with</legend>
+              <legend className="sr-only">start with</legend>
               <div className="purpose-choice__options">
                 {PURPOSES.map((option) => (
                   <button
