@@ -3,6 +3,7 @@ export type MusicMode = 'live' | 'mock';
 export type Config = {
   mode: MusicMode;
   apiKey: string | undefined;
+  host: string;
   port: number;
   maxStreams: number;
   production: boolean;
@@ -20,6 +21,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   return {
     mode,
     apiKey,
+    // Loopback by default (local-only plan). Deploys set HOST=0.0.0.0.
+    host: env.HOST?.trim() || '127.0.0.1',
     port: intEnv(env, 'PORT', 8787, 0, 65535),
     maxStreams: intEnv(env, 'MAX_STREAMS', 5, 1, 1000),
     production: env.NODE_ENV === 'production',

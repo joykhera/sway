@@ -29,11 +29,18 @@ const h = vi.hoisted(() => ({
 }));
 
 vi.mock('./ui/index.ts', () => {
+  class MockMusicSessionController implements FakeController {
+    readonly start = vi.fn(() => Promise.resolve());
+    readonly vote = vi.fn((_v: unknown) => { });
+    readonly stop = vi.fn(() => { });
+    readonly subscribe = vi.fn((_listener: unknown) => () => { });
+  }
+
   function PlayerScreen(props: { controller: unknown }) {
     h.renderedControllers.push(props.controller);
     return <div data-testid="player-screen" />;
   }
-  return { PlayerScreen };
+  return { PlayerScreen, MockMusicSessionController };
 });
 
 // The real wiring (learner, worklet player, WebSocket transport) is covered by its own tests.
@@ -42,9 +49,9 @@ vi.mock('./controller/browser.ts', () => ({
     h.calls.createBrowserController += 1;
     const controller: FakeController = {
       start: vi.fn(() => Promise.resolve()),
-      vote: vi.fn((_v: unknown) => {}),
-      stop: vi.fn(() => {}),
-      subscribe: vi.fn((_listener: unknown) => () => {}),
+      vote: vi.fn((_v: unknown) => { }),
+      stop: vi.fn(() => { }),
+      subscribe: vi.fn((_listener: unknown) => () => { }),
     };
     h.controllerInstances.push(controller);
     return controller;

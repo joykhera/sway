@@ -8,10 +8,12 @@ export const BYTES_PER_SAMPLE = 2;
 /** One interleaved stereo s16le frame. */
 export const BYTES_PER_FRAME = CHANNELS * BYTES_PER_SAMPLE;
 
-/** Output stays silent until this much audio is buffered at start. Handoff hypothesis: 0.5–1.5 s. */
-export const PREROLL_MS = 750;
+/** Output stays silent until this much audio is buffered at start. Lyria delivers
+ *  ~2 s chunks every ~2 s (A's smoke report), so a 0.5–1.5 s preroll would underrun —
+ *  start only once ≥ ~3 s is buffered. */
+export const PREROLL_MS = 3000;
 /** After an underrun, output stays silent until this much audio is buffered again. */
-export const REPRIME_MS = 300;
+export const REPRIME_MS = 1500;
 /** Ring capacity at the output rate. Lyria can burst ahead of realtime; oldest audio is dropped beyond this. */
 export const RING_CAPACITY_MS = 20_000;
 /** How often the worklet posts stats to the main thread. */
