@@ -206,8 +206,8 @@ body {
   }
 }
 
-/* Taste constellation: the learner's picture of you, around the ring. */
-.constellation {
+/* Taste verse: the learner's picture of you, set in type around the ring. */
+.taste-verse {
   position: absolute;
   inset: 0;
   width: 100%;
