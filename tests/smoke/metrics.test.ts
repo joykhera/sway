@@ -58,7 +58,7 @@ describe('makeScrubber', () => {
 
 describe('parseArgs', () => {
   it('has the documented defaults', () => {
-    expect(parseArgs([])).toEqual({ ok: true, args: { durationSec: 720, rate: 48000, parallel: 1, outDir: undefined, help: false } });
+    expect(parseArgs([])).toEqual({ ok: true, args: { durationSec: 720, rate: 'none', parallel: 1, outDir: undefined, help: false } });
   });
 
   it('parses flags in both forms and skips a bare --', () => {

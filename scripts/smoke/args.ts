@@ -14,7 +14,7 @@ export const USAGE = `Usage: pnpm smoke [-- options]
 
 Options:
   --duration <sec>          Run length in seconds (default 720 = 12 min, past the ~10-min cap)
-  --rate <48000|44100|none> sampleRateHz sent in the config (default 48000; "none" omits it)
+  --rate <48000|44100|none> sampleRateHz sent in the config (default none; Lyria rejects the field with close 1007)
   --parallel <n>            n > 1: concurrency probe — open n sessions at once for ~20 s (no WAV)
   --out <dir>               Output directory (default smoke-out/<timestamp>)
   --help                    Show this help
@@ -24,7 +24,7 @@ Requires GEMINI_API_KEY (in .env or the environment).`;
 export type ParseResult = { ok: true; args: SmokeArgs } | { ok: false; error: string };
 
 export function parseArgs(argv: ReadonlyArray<string>): ParseResult {
-  const args: SmokeArgs = { durationSec: 720, rate: 48000, parallel: 1, outDir: undefined, help: false };
+  const args: SmokeArgs = { durationSec: 720, rate: 'none', parallel: 1, outDir: undefined, help: false };
   for (let i = 0; i < argv.length; i++) {
     const raw = argv[i] ?? '';
     if (raw === '--') continue; // pnpm may forward a bare separator
