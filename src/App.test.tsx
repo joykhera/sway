@@ -13,13 +13,7 @@ import App from './App.tsx';
 
 // ── Hoisted mock state ───────────────────────────────────────────────────────
 
-interface ControllerOptions {
-  playerFactory: () => unknown;
-  generatorFactory: () => unknown;
-}
-
 interface FakeController {
-  options: ControllerOptions;
   start: ReturnType<typeof vi.fn>;
   vote: ReturnType<typeof vi.fn>;
   stop: ReturnType<typeof vi.fn>;
@@ -27,8 +21,7 @@ interface FakeController {
 }
 
 const h = vi.hoisted(() => ({
-  fakePlayer: { kind: 'fake-PCMPlayer' },
-  calls: { createPCMPlayer: 0, constructPcmGenerator: 0 },
+  calls: { createBrowserController: 0 },
   /** Every `controller` prop the stub PlayerScreen rendered, in order. */
   renderedControllers: [] as unknown[],
   /** Every mock-controller construction, in order. */
@@ -37,32 +30,31 @@ const h = vi.hoisted(() => ({
 
 vi.mock('./ui/index.ts', () => {
   class MockMusicSessionController implements FakeController {
-    readonly options: ControllerOptions;
     readonly start = vi.fn(() => Promise.resolve());
     readonly vote = vi.fn((_v: unknown) => { });
     readonly stop = vi.fn(() => { });
     readonly subscribe = vi.fn((_listener: unknown) => () => { });
-    constructor(options: ControllerOptions) {
-      this.options = options;
-      h.controllerInstances.push(this);
-    }
   }
 
   function PlayerScreen(props: { controller: unknown }) {
     h.renderedControllers.push(props.controller);
     return <div data-testid="player-screen" />;
   }
-
   return { PlayerScreen, MockMusicSessionController };
 });
 
-vi.mock('./audio/index.ts', () => ({
-  createPCMPlayer: vi.fn(() => {
-    h.calls.createPCMPlayer += 1;
-    return h.fakePlayer;
-  }),
-  MockPcmGenerator: vi.fn(function MockPcmGenerator() {
-    h.calls.constructPcmGenerator += 1;
+// The real wiring (learner, worklet player, WebSocket transport) is covered by its own tests.
+vi.mock('./controller/browser.ts', () => ({
+  createBrowserController: vi.fn((): FakeController => {
+    h.calls.createBrowserController += 1;
+    const controller: FakeController = {
+      start: vi.fn(() => Promise.resolve()),
+      vote: vi.fn((_v: unknown) => { }),
+      stop: vi.fn(() => { }),
+      subscribe: vi.fn((_listener: unknown) => () => { }),
+    };
+    h.controllerInstances.push(controller);
+    return controller;
   }),
 }));
 
@@ -90,10 +82,7 @@ async function unmount(root: Root, container: HTMLDivElement): Promise<void> {
 }
 
 beforeEach(() => {
-  // App only builds the standalone MockMusicSessionController under `?mock`.
-  window.history.pushState({}, '', '/?mock');
-  h.calls.createPCMPlayer = 0;
-  h.calls.constructPcmGenerator = 0;
+  h.calls.createBrowserController = 0;
   h.renderedControllers.length = 0;
   h.controllerInstances.length = 0;
   document.body.replaceChildren();
@@ -102,7 +91,7 @@ beforeEach(() => {
 // ── Tests ────────────────────────────────────────────────────────────────────
 
 describe('App', () => {
-  it('renders PlayerScreen and passes a MockMusicSessionController instance as controller', async () => {
+  it('renders PlayerScreen and passes the browser controller instance to it', async () => {
     const { root, container } = await mount();
     try {
       expect(container.querySelectorAll('[data-testid="player-screen"]')).toHaveLength(1);
@@ -116,20 +105,10 @@ describe('App', () => {
     }
   });
 
-  it('supplies playerFactory and generatorFactory to the controller constructor', async () => {
+  it('builds the real browser controller exactly once per mount, even under StrictMode', async () => {
     const { root, container } = await mount();
     try {
-      const controller = h.controllerInstances[0]!;
-      const { playerFactory, generatorFactory } = controller.options;
-      expect(typeof playerFactory).toBe('function');
-      expect(typeof generatorFactory).toBe('function');
-
-      expect(playerFactory()).toBe(h.fakePlayer);
-      expect(h.calls.createPCMPlayer).toBe(1);
-
-      const generator = generatorFactory();
-      expect(generator).toBeTruthy();
-      expect(h.calls.constructPcmGenerator).toBe(1);
+      expect(h.calls.createBrowserController).toBe(1);
     } finally {
       await unmount(root, container);
     }

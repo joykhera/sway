@@ -13,7 +13,7 @@ async function boot(opts: { auto?: boolean } = {}) {
   const relay = fakeRelay(opts.auto ?? true);
   const player = new FakePlayer();
   const { learner, calls } = fakeLearner();
-  const controller = new SessionController({ learner, player, createTransport: relay.create, seed: 1 });
+  const controller = new SessionController({ learner, player, createTransport: relay.create, seed: 1, config: { generationLatencyMs: 0 } });
   const states: SessionState[] = [];
   controller.subscribe((s) => states.push(s));
   await controller.start();
@@ -268,6 +268,46 @@ describe('server errors', () => {
     expect(states.at(-1)!.status).toBe('reconnecting');
     relay.last.serverMessage({ type: 'status', state: 'playing' });
     expect(states.at(-1)!.status).toBe('playing');
+  });
+});
+
+describe('start/stop races', () => {
+  it('a start superseded by stop and a second start connects exactly once and ends playing', async () => {
+    const relay = fakeRelay();
+    const player = new FakePlayer();
+    const pending: (() => void)[] = [];
+    player.initializeFromUserGesture = () => new Promise<void>((resolve) => pending.push(resolve));
+    const c = new SessionController({ learner: fakeLearner().learner, player, createTransport: relay.create });
+    const states: string[] = [];
+    c.subscribe((s) => states.push(s.status));
+    void c.start();
+    c.stop();
+    void c.start();
+    pending.forEach((resolve) => resolve());
+    await flush();
+    expect(relay.transports).toHaveLength(1);
+    expect(states.at(-1)).toBe('playing');
+  });
+
+  it('a stale audio-init failure cannot overwrite the new session state', async () => {
+    const relay = fakeRelay();
+    const player = new FakePlayer();
+    const fails: ((e: Error) => void)[] = [];
+    const oks: (() => void)[] = [];
+    let n = 0;
+    player.initializeFromUserGesture = () => new Promise<void>((resolve, reject) => (n++ === 0 ? fails.push(reject) : oks.push(resolve)));
+    const c = new SessionController({ learner: fakeLearner().learner, player, createTransport: relay.create });
+    const states: string[] = [];
+    c.subscribe((s) => states.push(s.status));
+    void c.start();
+    c.stop();
+    void c.start();
+    fails[0]!(new Error('context closed'));
+    await flush();
+    expect(states.at(-1)).toBe('connecting'); // not 'error'
+    oks[0]!();
+    await flush();
+    expect(states.at(-1)).toBe('playing');
   });
 });
 
