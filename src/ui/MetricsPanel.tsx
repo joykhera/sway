@@ -13,7 +13,10 @@ import type { SignalSample } from './use-signal-metrics.ts';
 const DASH = '—';
 const SPARK_W = 72;
 const SPARK_H = 14;
-const HISTORY_MS = 5000;
+/** History kept for the tempo estimator — it needs ~10–12 s of energy samples. */
+const HISTORY_MS = 12000;
+/** How much of that history each sparkline actually displays. */
+const SPARK_SPAN_MS = 5000;
 /** Pitch sparkline spans A1..A6 on a log axis. */
 const SPARK_PITCH_LO = 55;
 const SPARK_PITCH_HI = 1760;
@@ -27,7 +30,7 @@ export function sparkSegments(
   value: (s: SignalSample) => number | null,
   lo: number,
   hi: number,
-  spanMs = HISTORY_MS,
+  spanMs = SPARK_SPAN_MS,
   w = SPARK_W,
   h = SPARK_H,
 ): string[] {
@@ -37,6 +40,7 @@ export function sparkSegments(
   const segments: string[] = [];
   let current: string[] = [];
   for (const s of history) {
+    if (s.t < start) continue; // older than the drawn window — skip, don't paint
     const v = value(s);
     if (v === null || !Number.isFinite(v)) {
       if (current.length > 1) segments.push(current.join(' '));
@@ -101,12 +105,12 @@ function Metric({
 
 /**
  * Top-right readout of measured signal quantities, ~10 Hz from `subscribeStats`:
- * pitch (Hz, nearest note, cents), RMS level (dBFS + meter), pitch jitter
- * (σ of successive Δcents; relative period jitter %), spectral brightness,
- * and buffer health. `—` whenever the measurement is silent or absent.
+ * pitch (Hz, nearest note, cents), RMS level (dBFS + meter), and tempo (BPM,
+ * autocorrelated from the energy envelope). `—` whenever the measurement is
+ * silent, absent, or — for tempo — has no clear periodicity.
  */
 export function MetricsPanel({ controller }: { controller: MusicSessionController }) {
-  const { levels, history, jitter } = useSignalMetrics(controller, { historyMs: HISTORY_MS });
+  const { levels, history, tempo } = useSignalMetrics(controller, { historyMs: HISTORY_MS });
 
   const hz = levels.pitchHz !== null && levels.pitchHz > MIN_PITCH_HZ ? levels.pitchHz : null;
   const note = hz !== null ? nearestNote(hz) : null;
@@ -145,19 +149,10 @@ export function MetricsPanel({ controller }: { controller: MusicSessionControlle
           }
         />
         <Metric
-          name="jitter"
-          value={jitter.cents !== null ? jitter.cents.toFixed(1) : DASH}
-          unit="¢"
-          sub={jitter.percent !== null ? `${jitter.percent.toFixed(2)} %` : undefined}
+          name="tempo"
+          value={tempo !== null ? String(Math.round(tempo)) : DASH}
+          unit="BPM"
         />
-        <Metric
-          name="brightness"
-          value={levels.brightnessHz > 0 ? (levels.brightnessHz / 1000).toFixed(2) : DASH}
-          unit="kHz"
-        />
-        <Metric name="buffer" value={(levels.bufferedMs / 1000).toFixed(2)} unit="s" />
-        <Metric name="dropouts" value={String(levels.underruns)} />
-        <Metric name="blocks" value={String(levels.generation)} />
       </dl>
     </section>
   );

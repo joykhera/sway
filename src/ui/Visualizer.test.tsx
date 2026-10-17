@@ -7,7 +7,7 @@ import type {
   StreamLevels,
   Vote,
 } from './contracts.ts';
-import { BASE_PARAMS, Visualizer, paramsForSignature } from './Visualizer.tsx';
+import { BASE_PARAMS, PALETTE, PUNCH, Visualizer, paramsForSignature, stepPunch } from './Visualizer.tsx';
 
 afterEach(cleanup);
 
@@ -141,5 +141,57 @@ describe('paramsForSignature', () => {
     expect(p.speed).toBeGreaterThanOrEqual(0.6);
     expect(p.speed).toBeLessThanOrEqual(3.4);
     expect(Math.abs(p.hueBias)).toBeLessThanOrEqual(160);
+  });
+});
+
+/** Relative luminance (sRGB luma) of a #rrggbb color, 0..1. */
+function luminance(hex: string): number {
+  const n = parseInt(hex.slice(1), 16);
+  return (0.2126 * ((n >> 16) & 255) + 0.7152 * ((n >> 8) & 255) + 0.0722 * (n & 255)) / 255;
+}
+
+describe('PALETTE', () => {
+  it('keeps the organism light — every swatch is high-luminance', () => {
+    expect(luminance(PALETTE.body)).toBeGreaterThan(0.85);
+    expect(luminance(PALETTE.orb)).toBeGreaterThan(0.8);
+    for (const form of [PALETTE.formTop, PALETTE.formLeft, PALETTE.formRight, PALETTE.formBottom]) {
+      expect(luminance(form)).toBeGreaterThan(0.75);
+    }
+  });
+});
+
+describe('vote punch spring', () => {
+  it('displaces continuously — no pop at trigger time', () => {
+    const s = { x: 0, v: 0 };
+    s.v += PUNCH.impulse; // a vote injects velocity only
+    const step = 1 / 60;
+    stepPunch(s, step);
+    // first frame moves a little, never snaps to full amplitude
+    expect(s.x).toBeGreaterThan(0);
+    expect(s.x).toBeLessThan(step * PUNCH.impulse * 1.5);
+  });
+
+  it('peaks fast, then settles back to rest in about a second', () => {
+    const s = { x: 0, v: PUNCH.impulse };
+    let peak = 0;
+    for (let i = 0; i < 240; i++) {
+      stepPunch(s, 1 / 60);
+      peak = Math.max(peak, Math.abs(s.x));
+    }
+    expect(peak).toBeGreaterThan(0.4); // a felt strike…
+    expect(peak).toBeLessThan(1.2); // …but bounded
+    expect(Math.abs(s.x)).toBeLessThan(0.01); // fully settled well before 4 s
+  });
+
+  it('a second vote mid-flight adds energy without snapping position', () => {
+    const s = { x: 0, v: PUNCH.impulse };
+    for (let i = 0; i < 10; i++) stepPunch(s, 1 / 60);
+    const xBefore = s.x;
+    s.v += PUNCH.impulse; // re-punch
+    expect(s.x).toBe(xBefore); // position untouched — only velocity changed
+    stepPunch(s, 1 / 60);
+    expect(Math.abs(s.x - xBefore)).toBeLessThan(0.4); // still a smooth step
+    for (let i = 0; i < 400; i++) stepPunch(s, 1 / 60);
+    expect(Math.abs(s.x)).toBeLessThan(0.01); // double-tap still settles
   });
 });

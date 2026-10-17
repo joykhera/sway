@@ -144,7 +144,9 @@ export class SessionController implements MusicSessionController {
   private evidenceHistory: Sent[] = [];
   // Issue #9: the latest vote's explanation + an ETA for when it reaches the ears.
   private decision: VoteDecision | undefined;
-  private pendingSteer: { vote: Vote; at: number; etaMs: number; doneAt?: number } | undefined;
+  private pendingSteer: { vote: Vote; at: number; etaMs: number; generationAtVote: number; doneAt?: number } | undefined;
+  // PCM blocks landed on the current socket — the real generation cadence behind steerProgress.
+  private blocksLanded = 0;
   private nowPlayingSig: MusicSignature | undefined;
   private noveltyStep = 0;
   private rejected: Sent | undefined;
@@ -391,6 +393,7 @@ export class SessionController implements MusicSessionController {
       vote: v,
       at: this.now(),
       etaMs: this.cfg.generationLatencyMs + buffered + this.cfg.voteRampMs * 0.5,
+      generationAtVote: this.blocksLanded,
     };
     if (evidenceWeight > 0) this.rejected = v === 'down' ? { at: this.now(), features: { ...audible } } : undefined;
     this.log('vote', { vote: v, audible, previous, evidenceWeight, bufferedMs: buffered, votes: result.state.votes });
@@ -458,34 +461,38 @@ export class SessionController implements MusicSessionController {
 
   private statsSnapshot(): StreamLevels {
     const steer = this.steerProgress();
-    if (!ACTIVE_STATUSES.has(this.state.status)) return { ...ZERO_LEVELS, steerProgress: steer.p, steerVote: steer.v };
+    if (!ACTIVE_STATUSES.has(this.state.status)) {
+      return { ...ZERO_LEVELS, generation: this.blocksLanded, steerProgress: steer.p, steerVote: steer.v };
+    }
     const stats: PCMPlayerStats | undefined = this.deps.player.getStats?.();
     // a torn-down player reports silence, not an exception — but the steer still ticks
-    if (!stats) return { ...ZERO_LEVELS, steerProgress: steer.p, steerVote: steer.v };
+    if (!stats) return { ...ZERO_LEVELS, generation: this.blocksLanded, steerProgress: steer.p, steerVote: steer.v };
     return {
       energy: stats.energyRms ?? 0,
       brightnessHz: stats.brightnessHz ?? 0,
       pitchHz: stats.pitchHz ?? null,
       bufferedMs: stats.bufferedMs ?? this.deps.player.getBufferedDurationMs(),
       underruns: stats.underruns ?? 0,
-      generation: stats.chunksReceived ?? 0,
+      generation: stats.chunksReceived ?? this.blocksLanded,
       steerProgress: steer.p,
       steerVote: steer.v,
     };
   }
 
   /**
-   * 0..1 — how close the latest vote's steer is to reaching the ears. Rises
-   * linearly against (generation latency + buffer at vote time + half the vote
-   * ramp), capped at 0.97; reports a full 1 only once the post-vote blend is
-   * actually estimated audible. Lingers ~600 ms, then clears to null.
+   * 0..1 — how close the latest vote's steer is to reaching the ears. Eases along
+   * the clock estimate (generation latency + buffer at vote time + half the vote
+   * ramp) but holds at 0.95 until BOTH the ETA has passed AND at least one new
+   * generated PCM block has landed since the vote — a fast upstream completes
+   * right at the ETA; a stalled one parks the fill just under full. Lingers
+   * ~600 ms at 1, then clears to null.
    */
   private steerProgress(): { p: number | null; v: Vote | null } {
     const s = this.pendingSteer;
     if (!s || !this.ready) return { p: null, v: null };
     const now = this.now();
-    const heardPostVote = this.heard !== undefined && this.heard.at >= s.at;
-    if (heardPostVote && now - s.at >= s.etaMs * 0.6) {
+    const landed = this.blocksLanded > s.generationAtVote;
+    if (landed && now - s.at >= s.etaMs) {
       s.doneAt ??= now;
       if (now - s.doneAt > 600) {
         this.pendingSteer = undefined;
@@ -493,7 +500,7 @@ export class SessionController implements MusicSessionController {
       }
       return { p: 1, v: s.vote };
     }
-    return { p: Math.min(0.97, Math.max(0, (now - s.at) / s.etaMs)), v: s.vote };
+    return { p: Math.min(0.95, Math.max(0, (now - s.at) / s.etaMs)), v: s.vote };
   }
 
   // ---- connection ----
@@ -505,6 +512,7 @@ export class SessionController implements MusicSessionController {
     this.resetHearing(this.sentFeatures, this.sentPrompts);
     this.ready = false;
     this.awaitingReady = false;
+    this.blocksLanded = 0; // a new socket restarts the generation count
     const transport = this.deps.createTransport();
     this.transport = transport;
     transport.connect({
@@ -515,7 +523,9 @@ export class SessionController implements MusicSessionController {
       },
       onMessage: (msg) => this.transport === transport && this.onServerMessage(msg),
       onAudio: (bytes) => {
-        if (this.transport === transport && this.ready && !this.awaitingReady) this.deps.player.enqueuePcm(bytes);
+        if (this.transport !== transport || !this.ready || this.awaitingReady) return;
+        this.deps.player.enqueuePcm(bytes);
+        this.blocksLanded++;
       },
       onClose: () => {
         if (this.transport === transport) this.connectionLost('connection closed');
@@ -599,6 +609,7 @@ export class SessionController implements MusicSessionController {
     this.awaitingReady = false;
     this.started = undefined;
     this.pendingSteer = undefined;
+    this.blocksLanded = 0;
     this.ramp = undefined;
     clearTimeout(this.rampTimer);
     clearTimeout(this.evolveTimer);

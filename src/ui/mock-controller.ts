@@ -97,7 +97,7 @@ export class MockMusicSessionController implements MusicSessionController {
   private lastSteerMs = 0;
   /** Issue #9 mirror: the latest vote's explanation + its ETA to the ears. */
   private decision: VoteDecision | undefined;
-  private pendingSteer: { vote: Vote; at: number; etaMs: number; doneAt?: number } | undefined;
+  private pendingSteer: { vote: Vote; at: number; etaMs: number; generationAtVote: number; doneAt?: number } | undefined;
   private nowPlayingSig: MusicSignature | undefined;
   /** Last known generator preset (from `preset`, `cyclePreset`'s return, or `setPreset`). */
   private activePreset: string | undefined;
@@ -223,7 +223,7 @@ export class MockMusicSessionController implements MusicSessionController {
       phase: 'listening',
       at: this.now(),
     };
-    this.pendingSteer = { vote: v, at: this.now(), etaMs: this.steerDelayMs + buffered };
+    this.pendingSteer = { vote: v, at: this.now(), etaMs: this.steerDelayMs + buffered, generationAtVote: this.generation };
     this.refreshSignature(); // re-emit so the decision reaches listeners now
     if (this.voteHandle !== null) {
       this.timers.clearTimeout(this.voteHandle); // debounce: latest vote wins
@@ -395,6 +395,7 @@ export class MockMusicSessionController implements MusicSessionController {
     // A periodic signal crosses zero twice per cycle → ZCR/2 tracks the dominant partial;
     // on a mixed pad it reads as spectral brightness. Both fields share that one estimator.
     const zcrHz = windowSec > 0 ? crossings / windowSec / 2 : 0;
+    const steer = this.steerProgress();
     this.latestStats = {
       energy,
       brightnessHz: zcrHz,
@@ -402,17 +403,24 @@ export class MockMusicSessionController implements MusicSessionController {
       bufferedMs: this.player?.getBufferedDurationMs?.() ?? 0,
       underruns: 0,
       generation: this.generation,
+      steerProgress: steer.steerProgress,
+      steerVote: steer.steerVote,
     };
     if (this.statsListeners.size === 0) return;
     for (const l of [...this.statsListeners]) l(this.latestStats);
   }
 
-  /** 0..1 ETA to the vote landing in the ears � mirrors the real controller's estimate. */
+  /**
+   * 0..1 ETA to the vote landing in the ears — mirrors the real controller's
+   * estimate: eases along the clock but holds at 0.95 until BOTH the ETA has
+   * passed AND a new chunk has been generated since the vote.
+   */
   private steerProgress(): { steerProgress: number | null; steerVote: Vote | null } {
     const p = this.pendingSteer;
     if (!p || this.state.status !== 'playing') return { steerProgress: null, steerVote: null };
     const now = this.now();
-    if (now - p.at >= p.etaMs) {
+    const landed = this.generation > p.generationAtVote;
+    if (landed && now - p.at >= p.etaMs) {
       p.doneAt ??= now;
       if (now - p.doneAt > 600) {
         this.pendingSteer = undefined;
@@ -420,7 +428,7 @@ export class MockMusicSessionController implements MusicSessionController {
       }
       return { steerProgress: 1, steerVote: p.vote };
     }
-    return { steerProgress: Math.min(0.97, Math.max(0, (now - p.at) / p.etaMs)), steerVote: p.vote };
+    return { steerProgress: Math.min(0.95, Math.max(0, (now - p.at) / p.etaMs)), steerVote: p.vote };
   }
 
   private async makeGenerator(): Promise<MockPcmGeneratorLike> {

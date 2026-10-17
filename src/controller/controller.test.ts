@@ -410,6 +410,7 @@ describe('vote responsiveness (issue #9)', () => {
     await c.start();
     await vi.advanceTimersByTimeAsync(0);
     c.vote('down');
+    relay.last.audio(); // a fresh generated block lands right after the vote
     // pending steer exists: progress > 0 for the voted side
     await vi.advanceTimersByTimeAsync(300);
     expect(levels.at(-1)!.steerVote).toBe('down');
@@ -421,6 +422,37 @@ describe('vote responsiveness (issue #9)', () => {
     // nowPlaying eventually names the voted target (jazz) once it's audible
     const np = states.filter((s) => s.nowPlaying).at(-1)!.nowPlaying;
     expect(np?.genre).toBe('jazz');
+    c.stop();
+  });
+
+  it('holds steerProgress under 1 past the ETA until a new generated block lands', async () => {
+    const relay = fakeRelay();
+    const player = new FakePlayer();
+    const { learner } = fakeLearner();
+    const c = new SessionController({
+      learner, player, createTransport: relay.create, seed: 1,
+      config: { generationLatencyMs: 100, voteRampMs: 2000, stepMs: 500, noVoteEvolveMs: 60000 },
+    });
+    const levels: StreamLevels[] = [];
+    c.subscribeStats((l) => levels.push(l));
+    await c.start();
+    await vi.advanceTimersByTimeAsync(0);
+    relay.last.audio(); // the pre-vote block already playing
+    c.vote('down');
+    // ETA = 100 latency + 0 buffer + 1000 half-ramp = 1100 ms; sail past it
+    // with no new generated block: the fill parks just under full.
+    await vi.advanceTimersByTimeAsync(2000);
+    expect(levels.at(-1)!.steerVote).toBe('down');
+    expect(levels.at(-1)!.steerProgress).toBeGreaterThanOrEqual(0.95);
+    expect(levels.at(-1)!.steerProgress).toBeLessThan(1);
+    // A fresh block lands — the next stats tick reports a full fill.
+    relay.last.audio();
+    await vi.advanceTimersByTimeAsync(150);
+    expect(levels.at(-1)!.steerProgress).toBe(1);
+    // ~600 ms hold, then it clears back to null.
+    await vi.advanceTimersByTimeAsync(700);
+    expect(levels.at(-1)!.steerProgress).toBeNull();
+    expect(levels.at(-1)!.steerVote).toBeNull();
     c.stop();
   });
 });

@@ -48,52 +48,111 @@ export function toDbfs(rms: number, floor = DBFS_FLOOR): number | null {
   return Math.max(floor, 20 * Math.log10(rms));
 }
 
-export type PitchJitter = {
-  /**
-   * σ (population standard deviation) of successive pitch differences in cents,
-   * Δᵢ = 1200·log2(fᵢ / fᵢ₋₁), over consecutive voiced estimate pairs.
-   */
-  cents: number | null;
-  /**
-   * Relative period jitter in %: mean |Tᵢ − Tᵢ₋₁| / mean T × 100, with T = 1/f,
-   * over the same consecutive voiced pairs.
-   */
-  percent: number | null;
+/** Slowest tempo the estimator will report. */
+export const TEMPO_MIN_BPM = 40;
+/** Fastest tempo the estimator will report. */
+export const TEMPO_MAX_BPM = 200;
+/** Seconds of energy history required before a tempo estimate is attempted. */
+export const TEMPO_MIN_SECONDS = 8;
+/**
+ * Normalized autocorrelation peak required to report a tempo. Below this the
+ * energy envelope has no clear periodicity and the honest answer is nothing.
+ */
+export const TEMPO_MIN_CONFIDENCE = 0.35;
+/** EMA weight applied to each new raw tempo estimate (per stats tick). */
+const TEMPO_EMA_ALPHA = 0.25;
+
+export type TempoOptions = {
+  minBpm?: number;
+  maxBpm?: number;
+  /** Seconds of history required before estimating. Default {@link TEMPO_MIN_SECONDS}. */
+  minSeconds?: number;
+  /** Autocorrelation peak required to report. Default {@link TEMPO_MIN_CONFIDENCE}. */
+  minConfidence?: number;
 };
 
-const voiced = (hz: number | null | undefined): hz is number =>
-  typeof hz === 'number' && Number.isFinite(hz) && hz > MIN_PITCH_HZ;
-
 /**
- * Pitch jitter of a pitch-estimate sequence (oldest first). Only pairs of
- * consecutive voiced estimates count — a silent/null sample breaks the chain,
- * so a phrase gap can't masquerade as a pitch jump. Needs ≥ 2 such pairs;
- * otherwise both values are null.
+ * Tempo estimate from the energy/RMS envelope via autocorrelation — the classic
+ * beat-periodicity approach. The envelope is mean-subtracted, then correlated
+ * against itself at every lag whose implied tempo falls in `minBpm..maxBpm`.
+ * A lag wins only if it is a *strict local maximum* of the correlation (so a
+ * slow swell or drift whose true period lies outside the range can't win by
+ * sitting at the nearest boundary) AND its normalized correlation clears
+ * `minConfidence`. A parabola through the peak and its neighbours then refines
+ * the lag to sub-sample resolution. Returns null for silence, a flat envelope,
+ * too little history, or no clear periodicity — never an invented number.
+ *
+ * `energies` is oldest-first, assumed ~uniformly sampled at `sampleRateHz`
+ * (the stats feed ticks ~10 Hz, so this is a coarse but honest estimate).
  */
-export function pitchJitter(pitches: readonly (number | null)[]): PitchJitter {
-  const diffsCents: number[] = [];
-  const periodDiffs: number[] = [];
-  const periods = new Set<number>(); // indices of voiced samples that belong to a pair
-  for (let i = 1; i < pitches.length; i++) {
-    const a = pitches[i - 1];
-    const b = pitches[i];
-    if (!voiced(a) || !voiced(b)) continue;
-    diffsCents.push(1200 * Math.log2(b / a));
-    periodDiffs.push(Math.abs(1 / b - 1 / a));
-    periods.add(i - 1);
-    periods.add(i);
+export function estimateTempoBpm(
+  energies: readonly number[],
+  sampleRateHz: number,
+  options: TempoOptions = {},
+): number | null {
+  const {
+    minBpm = TEMPO_MIN_BPM,
+    maxBpm = TEMPO_MAX_BPM,
+    minSeconds = TEMPO_MIN_SECONDS,
+    minConfidence = TEMPO_MIN_CONFIDENCE,
+  } = options;
+
+  const n = energies.length;
+  if (!Number.isFinite(sampleRateHz) || sampleRateHz <= 0) return null;
+  if (n < Math.ceil(sampleRateHz * minSeconds)) return null;
+
+  let mean = 0;
+  for (const e of energies) mean += e;
+  mean /= n;
+  const x = new Float64Array(n);
+  let varSum = 0;
+  for (let i = 0; i < n; i++) {
+    const v = energies[i]! - mean;
+    x[i] = v;
+    varSum += v * v;
   }
-  if (diffsCents.length < 2) return { cents: null, percent: null };
+  if (varSum < 1e-12) return null; // flat envelope → no beat information
 
-  const mean = diffsCents.reduce((s, d) => s + d, 0) / diffsCents.length;
-  const variance = diffsCents.reduce((s, d) => s + (d - mean) ** 2, 0) / diffsCents.length;
+  const acf = (lag: number): number => {
+    let s = 0;
+    for (let i = 0; i + lag < n; i++) s += x[i]! * x[i + lag]!;
+    return s / varSum;
+  };
 
-  let periodSum = 0;
-  for (const i of periods) periodSum += 1 / (pitches[i] as number);
-  const meanPeriod = periodSum / periods.size;
-  const meanAbsDelta = periodDiffs.reduce((s, d) => s + d, 0) / periodDiffs.length;
+  // ±1 slack on the lag bounds so neighbours always exist for the
+  // strict-local-max check and the parabolic refinement below.
+  const lagMin = Math.max(2, Math.round((60 * sampleRateHz) / maxBpm));
+  const lagMax = Math.min(n - 2, Math.floor((60 * sampleRateHz) / minBpm));
+  if (lagMax < lagMin) return null;
 
-  return { cents: Math.sqrt(variance), percent: (meanAbsDelta / meanPeriod) * 100 };
+  let bestLag = -1;
+  let best = -Infinity;
+  for (let lag = lagMin; lag <= lagMax; lag++) {
+    const v = acf(lag);
+    if (v > best) {
+      best = v;
+      bestLag = lag;
+    }
+  }
+  if (bestLag < 0 || best < minConfidence) return null;
+
+  // The peak must beat its immediate neighbours — proof of in-range
+  // periodicity, not the shoulder of an out-of-range period or drift.
+  const y0 = acf(bestLag - 1);
+  const y2 = acf(bestLag + 1);
+  if (!(best > y0 && best > y2)) return null;
+
+  // Sub-sample refinement: vertex of the parabola through the acf peak.
+  let lag = bestLag;
+  const denom = y0 - 2 * best + y2;
+  if (denom < 0) {
+    const shift = (0.5 * (y0 - y2)) / denom;
+    lag = bestLag + Math.max(-0.5, Math.min(0.5, shift));
+  }
+
+  const bpm = (60 * sampleRateHz) / lag;
+  if (!Number.isFinite(bpm) || bpm < minBpm || bpm > maxBpm) return null;
+  return bpm;
 }
 
 export type SignalSample = {
@@ -107,13 +166,18 @@ export type SignalMetrics = {
   levels: StreamLevels;
   /** Rolling sample history, oldest first, spanning ≤ `historyMs`. */
   history: readonly SignalSample[];
-  jitter: PitchJitter;
+  /**
+   * Smoothed tempo estimate in BPM from the energy envelope, or null until
+   * enough history exists / when no clear beat periodicity is present.
+   */
+  tempo: number | null;
 };
 
 export type SignalMetricsOptions = {
-  /** Window the jitter is computed over. Default 1500 ms. */
-  jitterWindowMs?: number;
-  /** How much history is kept (sparklines). Default 5000 ms. */
+  /**
+   * How much history is kept (sparklines + tempo estimation — tempo needs
+   * ~10–12 s of energy samples to see several bars). Default 5000 ms.
+   */
   historyMs?: number;
   now?: () => number;
 };
@@ -122,7 +186,7 @@ const ZERO_LEVELS: StreamLevels = {
   energy: 0, brightnessHz: 0, pitchHz: null, bufferedMs: 0, underruns: 0, generation: 0,
 };
 const EMPTY: SignalMetrics = {
-  levels: ZERO_LEVELS, history: [], jitter: { cents: null, percent: null },
+  levels: ZERO_LEVELS, history: [], tempo: null,
 };
 
 /** Append a sample and drop everything older than `historyMs` (pure). */
@@ -138,15 +202,16 @@ export function pushSample(
 }
 
 /**
- * Live signal metrics: the latest `StreamLevels` plus a rolling history and
- * pitch jitter over the last ~1.5 s. Re-renders per stats tick — keep usage to
- * small text leaves (MetricsPanel), never the stage.
+ * Live signal metrics: the latest `StreamLevels`, a rolling history (sparkline
+ * source), and a tempo estimate autocorrelated from the energy envelope and
+ * EMA-smoothed across ticks. Re-renders per stats tick — keep usage to small
+ * text leaves (MetricsPanel), never the stage.
  */
 export function useSignalMetrics(
   controller: MusicSessionController,
   options: SignalMetricsOptions = {},
 ): SignalMetrics {
-  const { jitterWindowMs = 1500, historyMs = 5000 } = options;
+  const { historyMs = 5000 } = options;
   const nowRef = useRef(options.now);
   nowRef.current = options.now;
   const cache = useRef<SignalMetrics>(EMPTY);
@@ -161,12 +226,24 @@ export function useSignalMetrics(
           { t, pitchHz: levels.pitchHz, energy: levels.energy },
           historyMs,
         );
-        const recent = history.filter((s) => s.t >= t - jitterWindowMs).map((s) => s.pitchHz);
-        cache.current = { levels, history, jitter: pitchJitter(recent) };
+
+        // Effective sample rate from the actual timestamps — the feed is
+        // ~10 Hz but not contractually exact, so measure rather than assume.
+        const first = history[0];
+        const last = history[history.length - 1];
+        const spanMs = first && last ? last.t - first.t : 0;
+        const sampleRateHz = spanMs > 0 ? ((history.length - 1) / spanMs) * 1000 : 0;
+
+        const raw = estimateTempoBpm(history.map((s) => s.energy), sampleRateHz);
+        const prev = cache.current.tempo;
+        const tempo =
+          raw === null ? null : prev === null ? raw : prev + TEMPO_EMA_ALPHA * (raw - prev);
+
+        cache.current = { levels, history, tempo };
         onChange();
       });
     },
-    [controller, historyMs, jitterWindowMs],
+    [controller, historyMs],
   );
   const getSnapshot = useCallback(() => cache.current, []);
 

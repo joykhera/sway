@@ -247,12 +247,12 @@
   overflow-wrap: anywhere;
 }
 
-/* ---- metrics (top-right): measured numbers, right-aligned, tabular ---- */
+/* ---- metrics (top-right): measured numbers, right-aligned, tabular.
+   No panel chrome — bare mono micro-type floating over the organism ---- */
 
 .metrics {
   width: clamp(184px, 19vw, 236px);
-  padding-left: 14px;
-  border-left: 1px solid color-mix(in srgb, var(--fg) 10%, transparent);
+  text-shadow: 0 1px 8px rgba(0, 0, 0, 0.55);
 }
 
 .metrics__list {
@@ -387,8 +387,6 @@
   .metrics {
     width: 100%;
     padding: 10px 0 0;
-    border-left: 0;
-    border-top: 1px solid color-mix(in srgb, var(--fg) 10%, transparent);
   }
 
   .metrics__list {

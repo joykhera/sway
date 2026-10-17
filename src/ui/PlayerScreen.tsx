@@ -147,9 +147,7 @@ export function PlayerScreen({ controller }: PlayerScreenProps) {
   if (!active) {
     return (
       <main className="app app--prestart">
-        <div className="app__stage">
-          <StageVisualizer controller={controller} active={false} lastVote={null} />
-        </div>
+        {/* no stage on prestart — the organism only exists while a session is active */}
         <section className="prestart">
           <h1 className="wordmark">sway</h1>
           {state.status === 'stopped' ? (
