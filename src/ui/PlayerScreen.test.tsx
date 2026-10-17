@@ -5,7 +5,12 @@ import type { Mock } from 'vitest';
 import type { MusicSessionController, SessionUiState, Vote } from './contracts.ts';
 import { PlayerScreen } from './PlayerScreen.tsx';
 
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+  vi.restoreAllMocks();
+  vi.unstubAllGlobals();
+  vi.useRealTimers();
+});
 
 const UP = "like what you're hearing";
 const DOWN = 'hear something different';
@@ -119,7 +124,7 @@ describe('PlayerScreen — pre-start view', () => {
     f.controller.setPurpose = setPurpose;
     render(<PlayerScreen controller={f.controller} />);
     expect(screen.getByRole('group', { name: 'start with' })).toBeTruthy();
-    for (const label of ['Focus', 'Relax', 'Energy', 'Explore']) {
+    for (const label of ['Focus', 'Relax', 'Energy', 'Explore', 'Crazy']) {
       expect(screen.getByRole('button', { name: label }).getAttribute('aria-pressed'))
         .toBe(label === 'Explore' ? 'true' : 'false');
     }
@@ -181,6 +186,129 @@ describe('PlayerScreen — pre-start view', () => {
     expect(f.vote).not.toHaveBeenCalled();
     fireEvent.click(screen.getByRole('button', { name: 'start listening' }));
     expect(f.start).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('PlayerScreen — browser preferences', () => {
+  it('allows Crazy and Start during restoration, then reflects the controller purpose', () => {
+    const f = makeFake({ status: 'idle', memory: 'loading' });
+    const setPurpose = vi.fn();
+    f.controller.setPurpose = setPurpose;
+    render(<PlayerScreen controller={f.controller} />);
+    expect(screen.getByText('Loading this browser’s preferences…')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Crazy' }));
+    expect(setPurpose).toHaveBeenCalledExactlyOnceWith('crazy');
+    expect(screen.getByRole('button', { name: 'Crazy' }).getAttribute('aria-pressed')).toBe('true');
+    fireEvent.click(screen.getByRole('button', { name: 'start listening' }));
+    expect(f.start).toHaveBeenCalledTimes(1);
+
+    act(() => { f.emit({ status: 'idle', purpose: 'energy', memory: 'ready', savedVotes: 3 }); });
+    expect(screen.getByRole('button', { name: 'Energy' }).getAttribute('aria-pressed')).toBe('true');
+    expect(screen.getByRole('button', { name: 'Crazy' }).getAttribute('aria-pressed')).toBe('false');
+    fireEvent.click(screen.getByRole('button', { name: 'Energy' }));
+    expect(setPurpose).toHaveBeenCalledTimes(1); // restored selection is authoritative
+    expect(screen.getByText('Energy · 3 saved votes on this browser.')).toBeTruthy();
+  });
+
+  it('shows per-profile persistence instead of claiming a switch resets learning', () => {
+    const f = makeFake({ status: 'stopped', purpose: 'crazy', memory: 'ready', savedVotes: 1 });
+    f.controller.setPurpose = vi.fn();
+    render(<PlayerScreen controller={f.controller} />);
+    expect(screen.getByText('Crazy · 1 saved vote on this browser.')).toBeTruthy();
+    expect(screen.getByText('Each profile keeps its own preferences on this browser.')).toBeTruthy();
+    expect(screen.queryByText(/starts a fresh preference session/)).toBeNull();
+  });
+
+  it('reflects saving and unavailable states without claiming unsuccessful writes were saved', () => {
+    const f = makeFake({ status: 'idle', purpose: 'crazy', memory: 'saving', savedVotes: 0 });
+    render(<PlayerScreen controller={f.controller} />);
+    expect(screen.getByText('Saving Crazy feedback on this browser…')).toBeTruthy();
+    act(() => { f.emit({ status: 'idle', purpose: 'crazy', memory: 'unavailable', savedVotes: 0 }); });
+    expect(screen.getByText('Local saving unavailable. Preferences are not being saved.')).toBeTruthy();
+    expect(screen.queryByText(/saved vote/)).toBeNull();
+    expect((screen.getByRole('button', { name: 'start listening' }) as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it('shows no browser-memory claims or actions for unsupported mock controllers', () => {
+    const f = makeFake();
+    render(<PlayerScreen controller={f.controller} />);
+    expect(screen.queryByText(/saved|saving|browser/i)).toBeNull();
+    expect(screen.queryByRole('button', { name: /export|reset/i })).toBeNull();
+  });
+
+  it('downloads the controller JSON locally and releases the object URL', async () => {
+    vi.useFakeTimers();
+    const json = '{"profiles":{"crazy":{"votes":2}},"feedback":[]}';
+    const f = makeFake({ status: 'idle', memory: 'ready', savedVotes: 2 });
+    f.controller.exportFeedback = vi.fn().mockResolvedValue(json);
+    const createObjectURL = vi.fn<(blob: Blob) => string>(() => 'blob:sway-feedback');
+    const revokeObjectURL = vi.fn();
+    vi.stubGlobal('URL', { createObjectURL, revokeObjectURL });
+    let download: { href: string; name: string } | undefined;
+    vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(function (this: HTMLAnchorElement) {
+      download = { href: this.href, name: this.download };
+    });
+    render(<PlayerScreen controller={f.controller} />);
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'export feedback as JSON' })); });
+    expect(f.controller.exportFeedback).toHaveBeenCalledTimes(1);
+    const blob = createObjectURL.mock.calls[0]?.[0] as Blob | undefined;
+    expect(blob?.type).toBe('application/json');
+    expect(blob?.size).toBe(new Blob([json]).size);
+    expect(download).toEqual({ href: 'blob:sway-feedback', name: expect.stringMatching(/^sway-feedback-\d{4}-\d{2}-\d{2}\.json$/) });
+    expect(document.querySelector('a[download]')).toBeNull();
+    expect(screen.getByText('Feedback export prepared.')).toBeTruthy();
+    act(() => { vi.advanceTimersByTime(1000); });
+    expect(revokeObjectURL).toHaveBeenCalledExactlyOnceWith('blob:sway-feedback');
+  });
+
+  it('reports failed export and reset without claiming a download or cleared preferences', async () => {
+    const f = makeFake({ status: 'idle', memory: 'unavailable' });
+    f.controller.exportFeedback = vi.fn().mockRejectedValue(new Error('read failed'));
+    f.controller.resetPreferences = vi.fn().mockRejectedValue(new Error('transaction failed'));
+    render(<PlayerScreen controller={f.controller} />);
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'export feedback as JSON' })); });
+    expect(screen.getByRole('alert').textContent).toBe('Could not export feedback. Try again.');
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'reset all saved profiles and feedback on this browser' })); });
+    expect(screen.getByRole('alert').textContent).toBe('Could not confirm the reset. Saved data may remain.');
+    expect(screen.queryByText(/cleared from this browser/)).toBeNull();
+  });
+
+  it('clears all profiles only on explicit reset, blocks overlapping actions, and keeps the current profile', async () => {
+    let finishReset!: () => void;
+    const f = makeFake({ status: 'stopped', purpose: 'crazy', memory: 'ready', savedVotes: 4 });
+    f.controller.setPurpose = vi.fn();
+    f.controller.resetPreferences = vi.fn(() => new Promise<void>(resolve => { finishReset = resolve; }));
+    render(<PlayerScreen controller={f.controller} />);
+    expect(f.controller.resetPreferences).not.toHaveBeenCalled();
+    const reset = screen.getByRole('button', { name: 'reset all saved profiles and feedback on this browser' }) as HTMLButtonElement;
+    fireEvent.click(reset);
+    expect(reset.disabled).toBe(true);
+    fireEvent.click(screen.getByRole('button', { name: 'start listening' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Focus' }));
+    expect(f.start).not.toHaveBeenCalled();
+    expect(f.controller.setPurpose).not.toHaveBeenCalled();
+    await act(async () => {
+      f.emit({ status: 'stopped', purpose: 'crazy', memory: 'ready', savedVotes: 0 });
+      finishReset();
+    });
+    expect(f.controller.resetPreferences).toHaveBeenCalledTimes(1);
+    expect(screen.getByText('All saved profiles and feedback cleared from this browser.')).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Crazy' }).getAttribute('aria-pressed')).toBe('true');
+    expect(screen.getByText('No saved feedback for Crazy yet.')).toBeTruthy();
+    expect((screen.getByRole('button', { name: 'start listening' }) as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it('keeps only concise memory status on the live screen', () => {
+    const f = makeFake({ status: 'playing', purpose: 'crazy', memory: 'ready', savedVotes: 4 });
+    f.controller.setPurpose = vi.fn();
+    f.controller.exportFeedback = vi.fn();
+    f.controller.resetPreferences = vi.fn();
+    render(<PlayerScreen controller={f.controller} />);
+    expect(screen.getByText('Saved on this browser.')).toBeTruthy();
+    expect(screen.getByLabelText(UP)).toBeTruthy();
+    expect(screen.getByLabelText(DOWN)).toBeTruthy();
+    expect(screen.queryByRole('group', { name: 'start with' })).toBeNull();
+    expect(screen.queryByRole('button', { name: /export|reset/i })).toBeNull();
   });
 });
 
