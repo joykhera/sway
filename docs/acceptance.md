@@ -23,6 +23,8 @@
 
 Note: Lyria hard-caps sessions at 10:00 (confirmed, see `docs/lyria-smoke-report.md`; expect about 5 s of silence at each cap). The relay reconnects upstream itself (`reconnecting`, then a fresh `ready`); the controller keeps its ramp state and the player must reconfigure without double-playing.
 
+> **Build caveat (D):** the manual results above were taken on a build from before PR #10 (directional preferences and saved browser profiles). That PR adds about 200 lines to the controller and stores preferences in IndexedDB, so a refresh no longer necessarily resets preferences (test 7 as written) and the controller has new behaviour. Re-run tests 2, 4, 6 and 7 on the latest `main` before the final demo. The handoff's "session only, refresh resets preferences" rule needs a team decision.
+
 ## Measuring the downvote response (test 2)
 
 Enable the controller `log` and note the `vote` timestamp, then listen and note when the music clearly changes. The ramp takes 8 s by design, so the first audible change is expected roughly 2–4 s (buffer plus generation) after the first step, and the full change near the end of the ramp.
