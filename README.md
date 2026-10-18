@@ -65,9 +65,9 @@ Preparation uses extra generation and up to three provider sessions; `createBrow
 
 ## Optional music requests
 
-Describe a mood, an activity or a song before pressing Start, or open the quiet request control while listening. Apply shows a compact interpretation; Edit and Clear keep it easy to change. Details expose constraints and song sources without covering the player. The current visualizer, style ring, moments and prepared feedback audio remain available.
+Describe the music before Start or while listening. One input keeps your text editable, with an inline loading indicator during interpretation and the estimated arrival of the music update. Apply never starts audio. Clear removes the request; concise errors or clarification appear only when needed. The visualizer, style ring, moments and prepared feedback remain available.
 
-Set `CRUSOE_API_KEY` on the server to enable interpretation. A submission makes a bounded Nemotron call, with a Wikipedia lookup when needed for named references. The validated brief guides the existing learner; it creates no preference evidence and never silently switches the selected profile. Applying a new brief rebuilds cached choices; failed requests keep current music playing. [Contract, privacy and limits](docs/text-music-intent.md).
+Set `CRUSOE_API_KEY` on the server to enable interpretation. Ordinary moods and activities translate directly; a named reference or missing fact can trigger one bounded Wikipedia lookup and reinterpretation. A new or restored request first selects the best feasible match for its musical hints, then uses saved taste within that direction. Later feedback and freshness continue learning and exploring. Explicit constraints remain until edited or cleared. Text creates no preference evidence and never silently switches the selected profile. Applying a new brief rebuilds cached choices; failed requests keep current music playing. [Contract, privacy and limits](docs/text-music-intent.md).
 
 ## Run
 
