@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { createTasteField, layoutRim, MAX_FIELD_WORDS, packField, pickRimWord, poemWords, steeredPoem } from './verse.ts';
+import { advanceArrivedPoem, createTasteField, layoutRim, MAX_FIELD_WORDS, packField, pickRimWord, poemWords, steeredPoem } from './verse.ts';
 
 const GAP = Math.PI / 2;
 const opts = { gap: GAP, wordSpace: 10, groupSpace: 30 };
@@ -118,5 +118,35 @@ describe('steeredPoem', () => {
   it('eases staying words toward their new share', () => {
     const half = steeredPoem({ jazz: 0.5, piano: 0.5 }, { progress: 0.5, to: { jazz: 0.2, piano: 0.8 } });
     expect(half.lines.find((l) => l.id === 'piano')!.share).toBeCloseTo(0.65);
+  });
+});
+
+describe('arrival after a steer', () => {
+  const audible = { jazz: .45, piano: .4 };
+  const to = { electronic: .45, piano: .4 };
+
+  it('returns to the audible poem when a request or reconnect cancels an incomplete steer', () => {
+    const previous = { progress: .7, to };
+    const hold = advanceArrivedPoem(audible, null, previous, null, 10);
+    expect(hold).toBeNull();
+    expect(steeredPoem(audible, hold ? { progress: 1, to: hold.to } : null))
+      .toEqual({ lines: poemWords(audible), ink: new Map() });
+  });
+
+  it('holds a completed destination, then expires or clears when the audible poem catches up', () => {
+    const complete = { progress: 1, to };
+    const hold = advanceArrivedPoem(audible, complete, null, null, 10);
+    expect(hold).toEqual({ to, until: 16 });
+    const departed = advanceArrivedPoem(audible, null, complete, hold, 10.3);
+    expect(departed).toEqual({ to, until: 16.3 });
+    expect(advanceArrivedPoem(audible, null, null, departed, 15)).toBe(departed);
+    expect(advanceArrivedPoem(audible, null, null, departed, 17)).toBeNull();
+    expect(advanceArrivedPoem(to, null, null, departed, 11)).toBeNull();
+  });
+
+  it('drops an old arrival hold when a new direction is still being generated', () => {
+    const hold = { to, until: 16 };
+    const next = { progress: 0, to: { classical: .5, strings: .4 } };
+    expect(advanceArrivedPoem(audible, next, { progress: 1, to }, hold, 12)).toBeNull();
   });
 });

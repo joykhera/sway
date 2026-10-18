@@ -6,6 +6,7 @@ import { FlowVisualizer, Visualizer } from './Visualizer.tsx';
 import { supportsFlowRenderer } from './viz/flow-renderer.ts';
 import { TasteVerse } from './TasteVerse.tsx';
 import { MomentsTray } from './MomentsTray.tsx';
+import { MusicRequest } from './MusicRequest.tsx';
 import { describeBlend, FEATURE_IDS } from './viz/describe.ts';
 import { lookForBlend } from './viz/looks.ts';
 import { SessionRecorder, type SessionMoment } from './viz/session-log.ts';
@@ -63,9 +64,8 @@ function memoryStatus(state: SessionUiState, purposeLabel: string): string | nul
 /**
  * The whole visible app: a centered pre-start view, or the live session view —
  * the audio organism filling the viewport with the chrome floating over it:
- * hud corner panels (what's playing · measured signal) above, thumb lenses and
- * end session below. Purpose is optional pre-session setup; start, like, and
- * dislike are the only controls.
+ * a quiet optional request above, thumb lenses and end session below.
+ * Purpose is optional pre-session setup; text never starts playback by itself.
  */
 export function PlayerScreen({ controller }: PlayerScreenProps) {
   const state = useSessionState(controller);
@@ -78,6 +78,7 @@ export function PlayerScreen({ controller }: PlayerScreenProps) {
   const [moments, setMoments] = useState<SessionMoment[]>([]);
   const [recalling, setRecalling] = useState<SessionMoment | null>(null);
   const [localPurpose, setLocalPurpose] = useState<ListeningPurpose>('explore');
+  const [intentPending, setIntentPending] = useState(false);
   const purpose = state.purpose ?? localPurpose;
   const purposeLabel = PURPOSES.find(option => option.value === purpose)!.label;
   const savedVotes = state.savedVotes;
@@ -115,7 +116,7 @@ export function PlayerScreen({ controller }: PlayerScreenProps) {
 
   const handleRecall = useCallback(
     (moment: SessionMoment) => {
-      controller.recallMoment?.(moment.target);
+      if (controller.recallMoment?.(moment.target) === false) return;
       setRecalling(moment);
     },
     [controller],
@@ -143,6 +144,9 @@ export function PlayerScreen({ controller }: PlayerScreenProps) {
   useEffect(() => {
     if (!active) return;
     const onKeyDown = (e: KeyboardEvent) => {
+      const target = e.target;
+      if (e.defaultPrevented || target instanceof HTMLElement
+        && (target.matches('input, textarea, select') || target.isContentEditable)) return;
       if (e.key === 'ArrowUp') {
         e.preventDefault();
         handleVote('up');
@@ -189,10 +193,12 @@ export function PlayerScreen({ controller }: PlayerScreenProps) {
               </div>
             </fieldset>
           ) : null}
+          <MusicRequest key={purpose} controller={controller} state={state} onPendingChange={setIntentPending} />
           <button
             type="button"
             className="start-button"
             aria-label="start listening"
+            disabled={intentPending || state.intentStatus === 'loading'}
             onClick={() => {
               // Called synchronously inside the gesture (autoplay policy). Never awaited —
               // errors surface through session state, not this promise.
@@ -212,6 +218,7 @@ export function PlayerScreen({ controller }: PlayerScreenProps) {
         <span>{SR_LABELS[state.status] ?? state.status}</span>
         {state.lastError ? <span>{state.lastError}</span> : null}
       </p>
+      <MusicRequest key={purpose} controller={controller} state={state} compact onPendingChange={setIntentPending} />
       <div className="app__stage" ref={stageRef}>
         {flow ? (
           <FlowVisualizer active={active} lastVote={lastVote} source={controller} field={field} onUnavailable={() => setFlow(false)} />

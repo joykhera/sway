@@ -1,16 +1,19 @@
-import { FEATURE_IDS } from '../vocabulary';
+import { FEATURE_IDS, FEATURE_OF_TEXT, GROUP_IDS } from '../vocabulary';
 import type { WeightedPrompt } from '../../shared/protocol';
+import type { MusicIntent } from '../../shared/intent';
 import { createRng, hashText, normalizeSeed } from '../rng';
 import type { Rng } from '../rng';
 import { activeIds, fingerprint, nudgeFeatures, signature } from '../targets';
 import { PARAMETERS as P } from './constants';
 import { dot, factor, solve, uncertainty, vector } from './model';
-import { renderTarget } from './phrasing';
+import { CRAZY_VARIANTS, featureOfPrompt, renderTarget } from './phrasing';
 import { RECIPES, changedGroups, distance, purposePrior } from './recipes';
+import { intentPrior, matchesIntent, requestAlignment, validatedIntent, withIntentPrompts } from './intent';
 import type { Decision, FeatureBlend, FeatureId, LearnerState, Purpose, Target } from './types';
 
 export type { Decision, FeatureBlend, FeatureId, LearnerState, Purpose, Target } from './types';
 export { PARAMETERS } from './constants';
+export { matchesIntent } from './intent';
 
 const coefficients = (theta: number[]) => Object.fromEntries(FEATURE_IDS.map((id, i) => [id, theta[i]!])) as Record<FeatureId, number>;
 const clamp01 = (value: number) => Math.max(0, Math.min(1, value));
@@ -45,10 +48,20 @@ function phrasingSalt(target: Target, state: LearnerState): number {
   return Number.isFinite(target.phrasingSalt) ? normalizeSeed(target.phrasingSalt!) : state.seed;
 }
 
-function withDecision(target: Target, kind: Decision['kind'], reason: string, state: LearnerState, step: number, salt: number, keep: readonly WeightedPrompt[] = target.prompts, styleEscape = false): Target {
+function retainedPhrasing(target: Target, state: LearnerState, intent?: MusicIntent): readonly WeightedPrompt[] {
+  // Clearing a request must restore the profile's special wording for retained
+  // controls too. Outside that renderer-context change, keep existing phrases.
+  return !intent && target.intentRendering && state.purpose === 'crazy'
+    ? target.prompts.filter(({ text }) => !CRAZY_VARIANTS[FEATURE_OF_TEXT.get(text)!]) : target.prompts;
+}
+
+function withDecision(target: Target, kind: Decision['kind'], reason: string, state: LearnerState, step: number, salt: number, keep: readonly WeightedPrompt[] = target.prompts, styleEscape = false, intent?: MusicIntent): Target {
   const current = context(state, target.features);
   return {
-    ...renderTarget(target.features, {}, { keep, salt }, state.purpose),
+    // Intent is session context, not a saved-profile switch. Neutral vocabulary
+    // cannot retain Crazy's fast/frenetic embellishments over a new slow request.
+    ...withIntentPrompts(renderTarget(target.features, {}, { keep, salt }, intent ? 'explore' : state.purpose), intent),
+    ...(intent ? { intentRendering: true as const } : {}),
     phrasingSalt: salt,
     lastDecision: {
       kind,
@@ -60,16 +73,45 @@ function withDecision(target: Target, kind: Decision['kind'], reason: string, st
   };
 }
 
-function choose(state: LearnerState, base: Target, pending: Target, mode: 'initial' | 'down' | 'variation', step: number, rng: Rng, escapeFrom?: FeatureBlend): Target {
+function choose(state: LearnerState, base: Target, pending: Target, mode: 'initial' | 'down' | 'variation' | 'apply', step: number, rng: Rng, escapeFrom?: FeatureBlend, intent?: MusicIntent): Target {
   const current = context(state, base.features);
   const scheduled = mode === 'variation';
   const styleEscape = escapeFrom !== undefined;
-  const broad = styleEscape || mode === 'initial' || current.reopening || (scheduled
+  const broad = styleEscape || mode === 'initial' || mode === 'apply' || current.reopening || (scheduled
     ? rng.next() < (current.supported ? P.probeProbability : P.earlyVariationProbeProbability)
     : !current.supported || rng.next() < P.probeProbability);
-  let candidates = RECIPES.filter(({ target }) => mode === 'initial'
+  // Hard request constraints are applied before nearest-neighbour, escape or
+  // credible-probe filtering. None of those policies may relax the request.
+  const catalog = intent ? RECIPES.filter(({ target }) => matchesIntent(target.features, intent)) : RECIPES;
+  if (!catalog.length) throw new TypeError('Music intent leaves no feasible recipes.');
+  let candidates = catalog.filter(({ target }) => mode === 'initial' || mode === 'apply'
     || (signature(target.features) !== signature(base.features) && signature(target.features) !== signature(pending.features)));
-  if (styleEscape) {
+  // One or two feasible recipes can be exhausted by heard/pending exclusions.
+  // Prefer leaving the heard identity, then hold rather than break a constraint.
+  if (!candidates.length) {
+    candidates = catalog.filter(({ target }) => signature(target.features) !== signature(base.features));
+    if (!candidates.length) candidates = catalog;
+  }
+  if (intent && (mode === 'initial' || mode === 'apply')) {
+    // A new/restored request is an immediate direction, not another passive
+    // hint competing with all past Likes. Keep the strongest feasible requested
+    // group coverage, then let saved taste rank its compatible ingredients.
+    // Later thumbs/freshness still use the ordinary, overridable soft prior.
+    const alignment = candidates.map(({ target }) => requestAlignment(target, intent));
+    const strongest = Math.max(...alignment);
+    candidates = candidates.filter((_, i) => Math.abs(alignment[i]! - strongest) < 1e-9);
+  }
+  if (styleEscape && intent) {
+    // If a style group is fixed (e.g. jazz-only), escape through the next mutable
+    // groups. Maximise feasible change rather than ever producing an empty set.
+    const axes = GROUP_IDS.filter(group => new Set(catalog.map(({ target }) => activeIds(target.features, group).join('|'))).size > 1).slice(0, 2);
+    const changes = (target: Target, from: FeatureBlend) => axes.reduce((n, group) => n
+      + Number(activeIds(target.features, group).every(id => !activeIds(from, group).includes(id))), 0);
+    const mostChanged = Math.max(...candidates.map(({ target }) => changes(target, pending.features)));
+    candidates = candidates.filter(({ target }) => changes(target, pending.features) === mostChanged);
+    const mostNovel = Math.max(...candidates.map(({ target }) => changes(target, escapeFrom)));
+    candidates = candidates.filter(({ target }) => changes(target, escapeFrom) === mostNovel);
+  } else if (styleEscape) {
     // Always leave the pending genre/instrument. Also avoid every audible one
     // when feasible; a long transition may already contain the entire palette.
     const pendingGenres = activeIds(pending.features, 'genre');
@@ -99,24 +141,39 @@ function choose(state: LearnerState, base: Target, pending: Target, mode: 'initi
     const score = dot(current.theta, candidate.x)
       + uncertaintyBonus * uncertainty(current.L, candidate.x)
       + P.purposePrior * purposePrior(state.purpose, candidate.target)
+      + intentPrior(state, candidate.target, intent)
       - cost * distance(current.x, candidate.x)
       + (rng.next() * 2 - 1) * P.tieNoise;
     if (score > bestScore) { best = candidate; bestScore = score; }
   }
   const changeCount = changedGroups(base.features, best.target.features);
-  const kind = mode === 'initial' ? 'initial' : mode === 'down' ? 'redirect' : broad ? 'probe' : 'variation';
-  const reason = styleEscape ? 'Opening a wider style search after three distinct rejected heard blends; changing genre and instrument where the active mixture permits.'
-    : mode === 'initial' ? 'Starting with a broad recipe; purpose is a soft starting hint, not learned taste.'
+  const kind = mode === 'initial' ? 'initial' : mode === 'apply' ? 'intent' : mode === 'down' ? 'redirect' : broad ? 'probe' : 'variation';
+  const reason = catalog.length === 1 && mode !== 'initial' && mode !== 'apply'
+    ? 'The active request permits only one recipe; keeping its constraints rather than inventing an unavailable variation.'
+    : mode === 'apply' ? intent
+      ? 'Starting in the requested direction, with saved preferences choosing compatible ingredients; text adds no preference evidence.'
+      : 'Clearing the request and returning to saved preferences; no evidence was changed.'
+    : styleEscape && intent ? 'Opening a wider search after three distinct rejections; changing the mutable groups inside the active request.'
+    : styleEscape ? 'Opening a wider style search after three distinct rejected heard blends; changing genre and instrument where the active mixture permits.'
+    : mode === 'initial' ? intent
+      ? 'Starting in the saved request direction, with compatible learned preferences; no preference evidence was added.'
+      : 'Starting with a broad recipe; purpose is a soft starting hint, not learned taste.'
     : mode === 'down' ? current.supported
       ? `Trying a different ${changeCount === 1 ? 'ingredient' : 'combination'} near the supported family after a dislike.`
       : 'Trying another direction after a dislike; preference evidence is still uncertain.'
       : broad ? 'Testing a plausible alternative while keeping room for discovery; silence adds no preference evidence.'
         : 'Adding a nearby variation after exposure; likes guide the family without freezing the music.';
-  return withDecision(best.target, kind, reason, state, step, phrasingSalt(pending, state), mode === 'initial' ? [] : pending.prompts, styleEscape);
+  return withDecision(best.target, kind, reason, state, step, phrasingSalt(pending, state), mode === 'initial' ? [] : retainedPhrasing(pending, state, intent), styleEscape, intent);
 }
 
-export function initialTarget(state: LearnerState): Target {
-  return choose(state, RECIPES[0]!.target, RECIPES[0]!.target, 'initial', 0, createRng(state.seed));
+export function initialTarget(state: LearnerState, intent?: MusicIntent): Target {
+  return choose(state, RECIPES[0]!.target, RECIPES[0]!.target, 'initial', 0, createRng(state.seed), undefined, validatedIntent(intent));
+}
+
+/** Apply/clear session context using current saved evidence, without mutating it. */
+export function applyIntent(args: { state: LearnerState; currentTarget: Target; intent?: MusicIntent }): Target {
+  return choose(args.state, args.currentTarget, args.currentTarget, 'apply', args.currentTarget.lastDecision?.step ?? 0,
+    createRng(args.state.seed), undefined, validatedIntent(args.intent));
 }
 
 export function processVote(args: {
@@ -126,8 +183,10 @@ export function processVote(args: {
   vote: 'up' | 'down';
   evidenceWeight?: number;
   comparison?: { previous: FeatureBlend };
+  intent?: MusicIntent;
 }): { state: LearnerState; target: Target } {
   if (args.vote !== 'up' && args.vote !== 'down') throw new Error('Vote must be up or down');
+  const intent = validatedIntent(args.intent);
   const x = vector(args.audible);
   const suppliedWeight = args.evidenceWeight ?? 1;
   const w = Number.isFinite(suppliedWeight) && dot(x, x) > 0 ? clamp01(suppliedWeight) : 0;
@@ -201,29 +260,47 @@ export function processVote(args: {
   const salt = phrasingSalt(args.currentTarget, state);
   // A stable salt restores an outgoing feature's wording even when a mid-ramp
   // like brings it back after it disappeared from the pending destination.
-  const base = renderTarget(args.audible, args.currentTarget.features, { keep: args.currentTarget.prompts, salt }, state.purpose);
+  const base = renderTarget(args.audible, args.currentTarget.features, { keep: retainedPhrasing(args.currentTarget, state, intent), salt }, intent ? 'explore' : state.purpose);
   const step = args.currentTarget.lastDecision?.step ?? 0;
-  const target = args.vote === 'up'
+  // Learn from what was actually heard, but a Like during a request transition
+  // must not restore outgoing forbidden ingredients to the new destination.
+  const compatibleHold = matchesIntent(args.audible, intent) && matchesIntent(base.features, intent);
+  const target = args.vote === 'up' && !compatibleHold
+    ? matchesIntent(args.currentTarget.features, intent)
+      ? withDecision(args.currentTarget, 'hold', 'Keeping the active request target; the liked outgoing blend is outside its constraints.', state, step, salt, args.currentTarget.prompts, false, intent)
+      : choose(state, base, args.currentTarget, 'apply', step, rng, undefined, intent)
+    : args.vote === 'up'
     ? withDecision(base, 'hold', pairWeight > 0
       ? 'Keeping the liked heard blend and learning its change from the recent rejected blend; this compares prompt mixtures, not measured tempo.'
-      : 'Keeping the liked heard blend now; scheduled variations will continue without inventing more votes.', state, step, salt)
-    : choose(state, base, args.currentTarget, 'down', step, rng, w > 0 && rejectedBlends.length >= P.styleEscapeRejections ? args.audible : undefined);
+      : 'Keeping the liked heard blend now; scheduled variations will continue without inventing more votes.', state, step, salt, base.prompts, false, intent)
+    : choose(state, base, args.currentTarget, 'down', step, rng, w > 0 && rejectedBlends.length >= P.styleEscapeRejections ? args.audible : undefined, intent);
   return { state: { ...state, seed: rng.seed }, target };
 }
 
 /** Controller schedules exposure and owns step. This function changes no evidence. */
-export function evolveNoVote(args: { state: LearnerState; target: Target; step?: number }): Target {
+export function evolveNoVote(args: { state: LearnerState; target: Target; step?: number; intent?: MusicIntent }): Target {
   const fallbackStep = (args.target.lastDecision?.step ?? 0) + 1;
   const step = Number.isFinite(args.step) ? Math.max(0, Math.trunc(args.step!)) : fallbackStep;
   const rng = createRng(hashText(`${fingerprint(args.target.features)}:${step}`, args.state.seed));
-  return choose(args.state, args.target, args.target, 'variation', step, rng);
+  return choose(args.state, args.target, args.target, 'variation', step, rng, undefined, validatedIntent(args.intent));
 }
 
 /**
  * Steer one step toward a feature the listener picked. Not a vote: no evidence
  * changes, and the target keeps its decision and wording for retained features.
  */
-export function nudge(args: { state: LearnerState; target: Target; feature: FeatureId }): Target {
+export function nudge(args: { state: LearnerState; target: Target; feature: FeatureId; intent?: MusicIntent }): Target {
+  const intent = validatedIntent(args.intent);
+  if (intent) {
+    const current = compliantTarget(args.state, args.target, intent);
+    const features = nudgeFeatures(current.features, args.feature);
+    const allowed = matchesIntent(features, intent);
+    return withDecision(allowed ? { ...current, features } : current, allowed ? 'variation' : 'hold',
+      allowed ? `Leaning toward ${args.feature} within the active request; this adds no preference evidence.`
+        : `Keeping the active request; ${args.feature} conflicts with its explicit constraints. Edit or clear the request to use it.`,
+      args.state, current.lastDecision?.step ?? 0, phrasingSalt(current, args.state), current.prompts, false, intent);
+  }
+  // Preserve main's no-intent nudge exactly, including decision metadata.
   const salt = phrasingSalt(args.target, args.state);
   const features = nudgeFeatures(args.target.features, args.feature);
   return {
@@ -231,6 +308,44 @@ export function nudge(args: { state: LearnerState; target: Target; feature: Feat
     ...renderTarget(features, {}, { keep: args.target.prompts, salt }, args.state.purpose),
     phrasingSalt: salt,
   };
+}
+
+/** Repair stale/incomplete destinations before any request-constrained manual action. */
+function compliantTarget(state: LearnerState, target: Target, intent: MusicIntent): Target {
+  const rendered = renderTarget(target.features, {}, { keep: target.prompts, salt: phrasingSalt(target, state) }, 'explore');
+  return matchesIntent(target.features, intent) && matchesIntent(rendered.features, intent)
+    ? { ...target, ...rendered } : applyIntent({ state, currentTarget: target, intent });
+}
+
+/** Recall a blend, not its old request text. Like/nudge/recall never clear constraints implicitly. */
+export function restoreTarget(args: { state: LearnerState; currentTarget: Target; moment: Target; intent?: MusicIntent }): Target {
+  const intent = validatedIntent(args.intent);
+  if (!intent) {
+    // Main permits exact mid-ramp snapshots, with more than one mood/texture.
+    // Do not project these or recompute their weights when there is no request.
+    // Only remove old request overlays; known feature wording remains intact.
+    const prompts = args.moment.prompts.filter(({ text }) => {
+      const id = featureOfPrompt(text);
+      return id !== undefined && (args.moment.features[id] ?? 0) > 0;
+    }).map(prompt => ({ ...prompt }));
+    const { intentRendering: _oldRequest, ...current } = args.currentTarget;
+    return {
+      ...current,
+      ...(prompts.length ? { features: { ...args.moment.features }, prompts }
+        : renderTarget(args.moment.features, current.features,
+          { salt: phrasingSalt(current, args.state) }, args.state.purpose)),
+    };
+  }
+  const current = compliantTarget(args.state, args.currentTarget, intent);
+  const salt = phrasingSalt(current, args.state);
+  const restored = renderTarget(args.moment.features, current.features,
+    { keep: args.moment.prompts, salt }, 'explore');
+  if (!matchesIntent(args.moment.features, intent) || !matchesIntent(restored.features, intent)) {
+    return withDecision(current, 'hold', 'Keeping the active request; that saved moment conflicts with its explicit constraints. Edit or clear the request to recall it.',
+      args.state, current.lastDecision?.step ?? 0, salt, current.prompts, false, intent);
+  }
+  return withDecision(restored, 'variation', 'Returning to the saved blend with current request wording; this adds no preference evidence.',
+    args.state, current.lastDecision?.step ?? 0, salt, restored.prompts, false, intent);
 }
 
 export function inspect(state: LearnerState, target: Target) {

@@ -35,6 +35,11 @@ const CRAZY_FEATURE_OF_TEXT = new Map<string, FeatureId>(
     .flatMap(([id, variants]) => variants.map((text) => [text, id] as const)),
 );
 
+/** Identify only the feature vocabulary, including profile-specific variants. */
+export function featureOfPrompt(text: string): FeatureId | undefined {
+  return CRAZY_FEATURE_OF_TEXT.get(text) ?? FEATURE_OF_TEXT.get(text);
+}
+
 export function renderTarget(features: FeatureBlend, fallback: FeatureBlend, phrasing: Phrasing, purpose: Purpose): Target {
   const target = toTarget(features, fallback, phrasing);
   if (purpose !== 'crazy') return target; // Preserve every teammate phrasing elsewhere.

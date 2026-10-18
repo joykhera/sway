@@ -1,0 +1,132 @@
+/* One quiet direction control; the live artwork and thumbs keep the foreground. */
+.music-request {
+  width: min(360px, calc(100vw - 72px));
+  margin-top: 24px;
+  color: var(--fg);
+  font-size: 11px;
+  line-height: 1.6;
+  text-align: left;
+}
+
+.music-request--live {
+  position: absolute;
+  z-index: 3;
+  top: calc(env(safe-area-inset-top, 0px) + 20px);
+  left: 50%;
+  transform: translateX(-50%);
+  margin: 0;
+  max-height: calc(100dvh - 230px);
+  overflow-y: auto;
+  scrollbar-width: thin;
+}
+
+.music-request__pill {
+  display: flex;
+  align-items: center;
+  min-height: 46px;
+  border: 1px solid var(--hairline);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--ink) 80%, transparent);
+  -webkit-backdrop-filter: blur(14px);
+  backdrop-filter: blur(14px);
+  transition: border-color 180ms ease;
+}
+
+.music-request__pill:focus-within {
+  border-color: color-mix(in srgb, var(--accent) 65%, var(--hairline));
+}
+
+.music-request__pill input {
+  width: 100%;
+  min-width: 0;
+  padding: 13px 0 13px 18px;
+  border: 0;
+  outline: none;
+  background: transparent;
+  color: var(--fg);
+  font: inherit;
+  line-height: 1.4;
+}
+
+.music-request__pill input::placeholder {
+  color: var(--muted);
+  opacity: 1;
+}
+
+.music-request button {
+  appearance: none;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.music-request .music-request__submit {
+  flex: 0 0 44px;
+  width: 44px;
+  height: 44px;
+  margin: 0 2px;
+  border-radius: 50%;
+  color: var(--fg);
+  font-size: 22px;
+  line-height: 1;
+}
+
+.music-request .music-request__clear {
+  flex: 0 0 36px;
+  width: 36px;
+  height: 44px;
+  padding: 0;
+  border-radius: 50%;
+  font-size: 20px;
+}
+
+.music-request__loading {
+  display: grid;
+  flex: 0 0 24px;
+  place-items: center;
+}
+
+.music-request__spinner {
+  width: 14px;
+  height: 14px;
+  border: 1.5px solid var(--hairline);
+  border-top-color: var(--fg);
+  border-radius: 50%;
+  animation: request-spin 900ms linear infinite;
+}
+
+@keyframes request-spin {
+  to { transform: rotate(360deg); }
+}
+
+.music-request__message {
+  margin: 5px 12px 0;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+  font-size: 10px;
+}
+
+.music-request__message--error {
+  color: var(--accent-warm);
+}
+
+@media (hover: hover) {
+  .music-request button:hover:not(:disabled) {
+    color: var(--fg);
+  }
+}
+
+@media (max-width: 600px) {
+  .music-request {
+    width: min(360px, calc(100vw - 48px));
+  }
+
+  .music-request__pill input {
+    font-size: 16px; /* Avoid focus zoom on iOS. */
+  }
+
+  .music-request--live {
+    top: calc(env(safe-area-inset-top, 0px) + 12px);
+  }
+}

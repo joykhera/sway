@@ -4,6 +4,9 @@ import http from 'node:http';
 import type { AddressInfo } from 'node:net';
 import path from 'node:path';
 import { WebSocketServer } from 'ws';
+import { INTENT_PATH } from '../src/shared/intent.ts';
+import { createIntentHttpHandler } from './intent/http.ts';
+import type { IntentInterpreter } from './intent/service.ts';
 import { MUSIC_WS_PATH } from '../src/shared/protocol.ts';
 import { parseClientMessage } from './guard.ts';
 import type { StreamSlots } from './limits.ts';
@@ -15,6 +18,7 @@ export type RelayOptions = {
   createUpstream: UpstreamFactory;
   slots: StreamSlots;
   staticDir?: string;
+  interpretIntent?: IntentInterpreter;
 };
 
 export type Relay = {
@@ -30,8 +34,10 @@ export function createRelay(opts: RelayOptions): Relay {
   const sessions = new Set<Session>();
   const wss = new WebSocketServer({ noServer: true, maxPayload: MAX_MESSAGE_BYTES });
   let nextId = 1;
+  const intent = createIntentHttpHandler(opts.interpretIntent);
 
   const server = http.createServer((req, res) => {
+    if (req.url?.split('?')[0] === INTENT_PATH) return void intent.handle(req, res);
     if (req.url === '/healthz') return void res.writeHead(200, { 'content-type': 'text/plain' }).end('ok');
     if (opts.staticDir && (req.method === 'GET' || req.method === 'HEAD')) {
       return void serveStatic(opts.staticDir, req, res);
@@ -79,6 +85,7 @@ export function createRelay(opts: RelayOptions): Relay {
       });
     },
     async close() {
+      intent.close();
       for (const s of sessions) s.dispose();
       sessions.clear();
       for (const ws of wss.clients) ws.terminate();

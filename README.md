@@ -12,7 +12,7 @@ Sway generates music live with **Google Lyria RealTime**. A small in-memory lear
 
 - 👎 uses prepared audio when ready, with a 100 ms crossfade; otherwise it steers over ~2.5 s plus generation and playback-buffer delay
 - Learns only from explicit feedback; silence never becomes evidence
-- Preferences persist per-purpose in your browser (IndexedDB) — nothing leaves the device except the stream
+- Preferences persist per-purpose in your browser (IndexedDB); optional text requests send a small preference summary to the interpreter
 - The whole session is visualized live: a WebGL2 particle field that breathes with the actual audio
 
 ## Resources
@@ -20,7 +20,7 @@ Sway generates music live with **Google Lyria RealTime**. A small in-memory lear
 | What | How we used it |
 |---|---|
 | **Google Lyria RealTime** | Live instrumental generation; steered by weighted prompts |
-| **NVIDIA Nemotron** | A team of agents at a larger scope: they interpret listener intent — free-text vibes, word taps and vote context — map it onto the musical feature vocabulary that steers Lyria, and review each session's outcome (below) |
+| **NVIDIA Nemotron** | Interprets submitted moods, activities and song references into a validated music brief; the team's broader agent/review work is described below. Runtime thumbs and word taps stay in the local learner |
 | **Crusoe Cloud** | GPU inference serving the Nemotron agents — the LLMs stay hosted models, not a per-user download |
 | **TypeScript + Vite + React** | Browser app, session controller, learner, visualizer |
 | **WebSocket relay (Node)** | Keeps the API key server-side; guards the wire protocol |
@@ -63,6 +63,12 @@ While listening, two bounded streams prepare the next Like and Dislike choices. 
 
 Preparation uses extra generation and up to three provider sessions; `createBrowserController({ lookahead: false })` disables it. See [cache integration and measured latency](docs/adaptive-integration.md#main-integration-and-live-cache-verification--2026-10-17) for readiness conditions and test limits.
 
+## Optional music requests
+
+Describe the music before Start or while listening. One input keeps your text editable, with an inline loading indicator during interpretation and the estimated arrival of the music update. Apply never starts audio. Clear removes the request; concise errors or clarification appear only when needed. The visualizer, style ring, moments and prepared feedback remain available.
+
+Set `CRUSOE_API_KEY` on the server to enable interpretation. Ordinary moods and activities translate directly; a named reference or missing fact can trigger one bounded Wikipedia lookup and reinterpretation. A new or restored request first selects the best feasible match for its musical hints, then uses saved taste within that direction. Later feedback and freshness continue learning and exploring. Explicit constraints remain until edited or cleared. Text creates no preference evidence and never silently switches the selected profile. Applying a new brief rebuilds cached choices; failed requests keep current music playing. [Contract, privacy and limits](docs/text-music-intent.md).
+
 ## Run
 
 ```sh
@@ -77,6 +83,6 @@ Live: [sway-relay.onrender.com](https://sway-relay.onrender.com) · Deploy notes
 
 ## Design rules we kept
 
-- Feedback is **explicit only** — 👍/👎 and word taps. Skips, dwell, and behavior are never inferred.
+- Learning uses **explicit thumbs feedback only**. Word taps and text requests steer without adding evidence; skips, dwell, and silence are never inferred as votes.
 - **The music never stops.** Every steer is a cross-fade; votes while connecting or reconnecting steer with zero learning weight.
-- **Nothing leaves the browser** except the stream itself — memory is local, resettable, exportable.
+- **Taste memory stays in the browser.** Optional text interpretation sends the submitted text, current brief/features and a small likes/dislikes summary to Crusoe. Reference queries go to Wikipedia; rendered prompts go to Lyria. The full feedback history is not sent.

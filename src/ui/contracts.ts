@@ -2,7 +2,7 @@
 // Owned by B (src/ui/**). D's real controller in src/controller/** must be structurally compatible;
 // D may import this type or mirror it. The in-repo mock lives in ./mock-controller.ts.
 
-import type { ListeningPurpose, Vote } from '../shared/protocol.ts';
+import type { ListeningPurpose, Vote, SessionState, MusicSessionController as SharedController } from '../shared/protocol.ts';
 
 export type { ListeningPurpose, Vote };
 
@@ -10,27 +10,14 @@ export type { ListeningPurpose, Vote };
 export type MomentTarget = { features: Record<string, number>; prompts: { text: string; weight: number }[] };
 
 /** `status` is intentionally an open string; the UI labels known values and shows unknown ones verbatim. */
-export type SessionUiState = {
+export type SessionUiState = Omit<SessionState, 'status'> & {
   status: string;
-  lastError?: string;
-  /** What the stream is currently steering toward — the "musical identity" the UI whispers. */
-  signature?: MusicSignature;
-  /**
-   * What is estimated audible right now (controller's audible-blend estimate,
-   * not the pending target) — so the label matches the sound. Issue #9.
-   */
-  nowPlaying?: MusicSignature;
-  /** What the learner decided on the latest vote (from `Target.lastDecision`). Issue #9. */
-  decision?: VoteDecision;
-  purpose?: ListeningPurpose;
-  memory?: 'loading' | 'ready' | 'saving' | 'unavailable';
-  savedVotes?: number;
 };
 
 /** One-line, humble explanation of how the learner responded to a vote. */
 export type VoteDecision = {
   vote: Vote;
-  kind: 'initial' | 'hold' | 'redirect' | 'variation' | 'probe';
+  kind: 'initial' | 'hold' | 'redirect' | 'variation' | 'probe' | 'intent';
   /** Learner's own reason text (may be rewritten shorter for display by the UI). */
   reason: string;
   phase: string;
@@ -70,6 +57,8 @@ export type StreamLevels = {
   steerProgress?: number | null;
   /** Which vote the pending steer belongs to; null/absent when none. */
   steerVote?: Vote | null;
+  /** A non-vote action superseded the pending vote; reset rather than mark it complete. */
+  steerCanceled?: boolean;
 
 };
 
@@ -82,7 +71,7 @@ export type KnownStatus =
   | 'stopped'
   | 'error';
 
-export interface MusicSessionController {
+export interface MusicSessionController extends Omit<SharedController, 'subscribe'> {
   /** Optional pre-session setup. Persistent controllers keep separate memory per purpose. */
   setPurpose?(purpose: ListeningPurpose): void;
   /** Clears all saved browser profiles and feedback while no session is active. */
@@ -98,7 +87,7 @@ export interface MusicSessionController {
   /** Optional: what is audible now, to revisit later. Null when nothing is playing. */
   captureMoment?(): MomentTarget | null;
   /** Optional: steer back toward a captured moment. Not a vote. */
-  recallMoment?(moment: MomentTarget): void;
+  recallMoment?(moment: MomentTarget): boolean | void;
   /** Optional: gradually steer toward one feature (e.g. a tapped style word). Not a vote. */
   nudge?(feature: string): void;
   /** Optional: the change on its way — 0..1 progress toward being heard, and the blends it goes from and to. Null when none. */

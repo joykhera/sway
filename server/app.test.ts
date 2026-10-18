@@ -37,6 +37,23 @@ describe('relay (mock mode)', () => {
     expect(await res.text()).toBe('ok');
   });
 
+  it('routes same-origin intent requests without allocating a music stream', async () => {
+    await relay.close();
+    const interpretIntent = vi.fn().mockResolvedValue({ status: 'clarify', message: 'Which musical qualities?' });
+    relay = createRelay({ createUpstream: createMockFactory(), slots, interpretIntent });
+    port = await relay.listen(0);
+    const origin = `http://127.0.0.1:${port}`;
+    const response = await fetch(`${origin}/api/intent`, { method: 'POST',
+      headers: { origin, 'content-type': 'application/json' },
+      body: JSON.stringify({ text: 'Warm sound', purpose: 'focus', currentFeatures: {} }),
+    });
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ status: 'clarify', message: 'Which musical qualities?' });
+    expect(interpretIntent).toHaveBeenCalledOnce();
+    expect(slots.inUse).toBe(0);
+    expect(relay.sessions.size).toBe(0);
+  });
+
   it('refuses upgrades on other paths', async () => {
     const ws = new WebSocket(`ws://127.0.0.1:${port}/other`);
     await expect(new Promise((resolve, reject) => ws.on('open', resolve).on('error', reject))).rejects.toThrow();

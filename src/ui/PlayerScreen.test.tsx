@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { Mock } from 'vitest';
 import type { MusicSessionController, SessionUiState, Vote } from './contracts.ts';
 import { PlayerScreen } from './PlayerScreen.tsx';
+import type { MusicIntent } from '../shared/intent.ts';
 
 afterEach(() => {
   cleanup();
@@ -53,6 +54,87 @@ function makeFake(initial: SessionUiState = { status: 'idle' }): Fake {
     listenerCount: () => listeners.size,
   };
 }
+
+const requestIntent: MusicIntent = {
+  schemaVersion: 1, summary: 'Quiet jazz for reading.', purposeHint: null, requiredFeatures: ['jazz'],
+  excludedFeatures: [], featureHints: [], contextPrompt: '', avoid: [], references: [],
+};
+
+describe('PlayerScreen — quiet text requests', () => {
+  it('applies before Start, then starts only from the separate gesture', async () => {
+    let finish!: () => void;
+    const f = makeFake();
+    f.controller.interpretText = vi.fn(() => new Promise<void>(resolve => { finish = resolve; }));
+    render(<PlayerScreen controller={f.controller} />);
+    fireEvent.change(screen.getByRole('textbox'), { target: { value: 'jazz' } });
+    fireEvent.submit(screen.getByRole('form', { name: 'describe your music' }));
+    expect(f.controller.interpretText).toHaveBeenCalledExactlyOnceWith('jazz');
+    expect((screen.getByRole('button', { name: 'start listening' }) as HTMLButtonElement).disabled).toBe(true);
+    expect(f.start).not.toHaveBeenCalled();
+    await act(async () => {
+      f.emit({ status: 'idle', intent: requestIntent, intentText: 'jazz', intentStatus: 'ready' });
+      finish();
+    });
+    expect((screen.getByRole('textbox') as HTMLInputElement).value).toBe('jazz');
+    expect(f.start).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('button', { name: 'start listening' }));
+    expect(f.start).toHaveBeenCalledOnce();
+  });
+
+  it('keeps current artwork, thumbs and moment capture while a live request is pending', async () => {
+    const f = makeFake({ status: 'playing' });
+    f.controller.interpretText = vi.fn(() => new Promise<void>(() => {}));
+    f.controller.captureMoment = vi.fn(() => ({ features: { jazz: .5, piano: .4 }, prompts: [{ text: 'Jazz', weight: 1 }] }));
+    const { container } = render(<PlayerScreen controller={f.controller} />);
+    const stage = container.querySelector('.app__stage');
+    const editor = screen.getByRole('textbox');
+    fireEvent.change(editor, { target: { value: 'workout' } });
+    fireEvent.keyDown(editor, { key: 'ArrowUp' });
+    fireEvent.keyDown(editor, { key: 'ArrowDown' });
+    expect(f.vote).not.toHaveBeenCalled();
+    fireEvent.submit(screen.getByRole('form', { name: 'describe your music' }));
+    fireEvent.click(screen.getByLabelText(UP));
+    fireEvent.click(screen.getByLabelText(DOWN));
+    expect(f.vote.mock.calls.map(call => call[0])).toEqual(['up', 'down']);
+    expect(f.controller.captureMoment).toHaveBeenCalledOnce();
+    expect(container.querySelector('.moments')).not.toBeNull();
+    expect(container.querySelector('.app__stage')).toBe(stage);
+    expect(container.querySelector('.now, .metrics, .hud, .portrait, .app__scrim')).toBeNull();
+    expect(screen.queryByRole('button', { name: /export|reset/i })).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'end session' }));
+    expect(f.stop).toHaveBeenCalledOnce();
+  });
+
+  it('does not show a returning caption when the request prevents a moment recall', () => {
+    const f = makeFake({ status: 'playing', intent: requestIntent, intentStatus: 'ready' });
+    f.controller.captureMoment = vi.fn(() => ({ features: { jazz: .5, piano: .4 }, prompts: [{ text: 'Jazz', weight: 1 }] }));
+    f.controller.recallMoment = vi.fn(() => false);
+    render(<PlayerScreen controller={f.controller} />);
+    fireEvent.click(screen.getByLabelText(UP));
+    fireEvent.click(screen.getByRole('button', { name: /return to .* from/ }));
+    expect(f.controller.recallMoment).toHaveBeenCalledOnce();
+    expect(screen.queryByText(/returning to/)).toBeNull();
+    expect(screen.getByText('moments you liked')).toBeTruthy();
+  });
+
+  it('restores each profile request and clears it without restoring old panels', () => {
+    const f = makeFake({ status: 'idle', purpose: 'focus', intent: requestIntent, intentText: 'jazz', intentStatus: 'ready' });
+    f.controller.interpretText = vi.fn();
+    f.controller.setPurpose = vi.fn();
+    f.controller.clearIntent = vi.fn(() => f.emit({ status: 'idle', purpose: 'relax', intentStatus: 'idle' }));
+    render(<PlayerScreen controller={f.controller} />);
+    expect((screen.getByRole('textbox') as HTMLInputElement).value).toBe('jazz');
+    expect(screen.queryByText('Quiet jazz for reading.')).toBeNull();
+    fireEvent.change(screen.getByRole('textbox'), { target: { value: 'unsent focus draft' } });
+    act(() => { f.emit({ status: 'idle', purpose: 'relax', intent: { ...requestIntent, summary: 'Soft piano.' }, intentText: 'piano', intentStatus: 'ready' }); });
+    expect((screen.getByRole('textbox') as HTMLInputElement).value).toBe('piano');
+    fireEvent.click(screen.getByRole('button', { name: 'Clear music request' }));
+    expect(f.controller.clearIntent).toHaveBeenCalledOnce();
+    expect(screen.queryByText('Soft piano.')).toBeNull();
+    expect((screen.getByRole('textbox') as HTMLInputElement).value).toBe('');
+    expect(f.start).not.toHaveBeenCalled();
+  });
+});
 
 describe('PlayerScreen — pre-start view', () => {
   it('idle shows the wordmark and a start button that calls start() once', () => {

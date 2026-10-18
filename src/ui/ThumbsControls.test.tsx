@@ -39,6 +39,7 @@ function makeFake() {
   };
   return {
     controller,
+    cancel: () => act(() => { for (const fn of [...statsListeners]) fn({ ...BASE, steerCanceled: true, steerProgress: null, steerVote: null }); }),
     steer: (steerProgress: number | null, steerVote: Vote | null) =>
       act(() => {
         for (const fn of [...statsListeners]) fn({ ...BASE, steerProgress, steerVote });
@@ -249,4 +250,23 @@ describe('ThumbsControls', () => {
     expect(fillOf(up)).toBe(1);
     expect(up.getAttribute('aria-busy')).toBeNull();
   });
+});
+
+
+it('resets a superseded vote without announcing completion, and accepts the next vote', () => {
+  vi.useFakeTimers();
+  const f = makeFake();
+  renderThumbs({ controller: f.controller });
+  fireEvent.click(screen.getByLabelText(DOWN));
+  f.steer(0.3, 'down');
+  f.cancel();
+  const down = screen.getByLabelText(DOWN);
+  expect(down.className).not.toContain('thumb--done');
+  expect(down.className).not.toContain('thumb--filling');
+  expect(fillOf(down)).toBe(0);
+  act(() => { vi.advanceTimersByTime(5000); });
+  expect(down.className).not.toContain('thumb--done');
+  fireEvent.click(screen.getByLabelText(UP));
+  f.steer(0, 'up'); f.steer(1, 'up');
+  expect(screen.getByLabelText(UP).className).toContain('thumb--done');
 });

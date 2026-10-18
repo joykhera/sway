@@ -188,6 +188,11 @@ export function ThumbsControls({ onVote, lastVote, controller }: ThumbsControlsP
 
   const onStats = (l: StreamLevels) => {
     const e = eng.current;
+    if (l.steerCanceled) {
+      reset();
+      e.latched = false;
+      return;
+    }
     const p = l.steerProgress;
     const sv = l.steerVote ?? null;
 

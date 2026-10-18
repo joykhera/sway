@@ -1,3 +1,7 @@
+import { INTENT_LIMITS, parseMusicIntent, parseInterpretResponse, type MusicIntent } from '../shared/intent.ts';
+import { FEATURE_IDS } from '../learner/vocabulary.ts';
+import { matchesIntent } from '../learner/adaptive/intent.ts';
+import type { IntentInterpreter } from './intent-client.ts';
 import type {
   FeatureBlend,
   Learner,
@@ -16,6 +20,7 @@ import type {
   WeightedPrompt,
 } from '../shared/protocol.ts';
 import { FEATURE_GROUPS, GROUP_IDS, type FeatureGroup } from '../learner/vocabulary.ts';
+import { MAX_PROMPT_COUNT } from '../shared/protocol.ts';
 import type { MusicTransport, TransportFactory, TransportHandlers } from '../transport/types.ts';
 import { lerpBlend, lerpPrompts } from './blend.ts';
 import { LookaheadPool } from './lookahead.ts';
@@ -93,11 +98,12 @@ export type ControllerDeps = {
   log?: (event: string, data?: Record<string, unknown>) => void;
   preferences?: PreferencesStore;
   lookahead?: boolean;
+  interpretIntent?: IntentInterpreter;
   restoreState?: (value: unknown, purpose: ListeningPurpose) => LearnerState | undefined;
 };
 
-type Ramp = { fromFeatures: FeatureBlend; fromPrompts: WeightedPrompt[]; target: Target; step: number; durationMs: number };
-type Sent = { at: number; features: FeatureBlend; prompts?: WeightedPrompt[] };
+type Ramp = { fromIntentRevision: number; fromFeatures: FeatureBlend; fromPrompts: WeightedPrompt[]; target: Target; step: number; durationMs: number };
+type Sent = { at: number; features: FeatureBlend; prompts?: WeightedPrompt[]; intentRevision?: number };
 const PURPOSES: ListeningPurpose[] = ['focus', 'relax', 'energy', 'explore', 'crazy'];
 const sessionId = () => `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
 
@@ -128,11 +134,19 @@ export class SessionController implements MusicSessionController {
   private readonly log: (event: string, data?: Record<string, unknown>) => void;
   private readonly listeners = new Set<(s: SessionState) => void>();
   private readonly statsListeners = new Set<(l: StreamLevels) => void>();
-  private state: SessionState = { status: 'idle' };
+  private state: SessionState = { status: 'idle', intentAvailable: false };
   private readonly seed: number;
   private purpose: ListeningPurpose;
   // Derived from `this.target` whenever it changes; surfaced on states emitted while active.
   private signature: MusicSignature | undefined;
+  private intent: MusicIntent | undefined;
+  private intentText = '';
+  private intentRevision = 0;
+  private pendingIntent: { revision: number; audioSeen: boolean; at: number } | undefined;
+  private sentIntentRevision = 0;
+  private intentRequest = 0;
+  private intentAbort: AbortController | undefined;
+  private profileIntents: Partial<Record<ListeningPurpose, { intent: MusicIntent; text: string }>> = {};
 
   private learnerState: LearnerState;
   private target: Target;
@@ -188,7 +202,7 @@ export class SessionController implements MusicSessionController {
   private attempts = 0;
   private runId = 0; // bumped by start() and stop() so a superseded start() cannot connect or fail the new session
   // What the relay will restart from; votes while awaiting `ready` may move past it.
-  private started: { features: FeatureBlend; prompts: WeightedPrompt[] } | undefined;
+  private started: { features: FeatureBlend; prompts: WeightedPrompt[]; intentRevision: number } | undefined;
 
   constructor(private readonly deps: ControllerDeps) {
     this.cfg = { ...DEFAULT_CONTROLLER_CONFIG, ...deps.config };
@@ -207,9 +221,12 @@ export class SessionController implements MusicSessionController {
     this.target = deps.learner.initialTarget(this.learnerState);
     this.sentFeatures = this.target.features;
     this.sentPrompts = this.target.prompts;
+    this.sentIntentRevision = this.intentRevision;
     this.resetHearing(this.sentFeatures, this.sentPrompts);
     this.signature = deriveSignature(this.target);
     this.purposeChosen = deps.purpose !== undefined;
+    if (deps.interpretIntent && deps.learner.applyIntent) this.state = { ...this.state, purpose: this.purpose,
+      intentStatus: 'idle', intentText: '', intentAvailable: true };
     if (deps.preferences) {
       this.memoryLoading = true;
       this.state = { ...this.state, purpose: this.purpose, memory: 'loading', savedVotes: 0 };
@@ -226,6 +243,7 @@ export class SessionController implements MusicSessionController {
       });
     }
     if (purpose === this.purpose) return;
+    this.cancelIntentRequest();
     if (this.deps.preferences) this.profiles[this.purpose] = this.learnerState;
     this.purpose = purpose;
     this.activateProfile(this.profiles[purpose]);
@@ -235,13 +253,102 @@ export class SessionController implements MusicSessionController {
   }
 
   private activateProfile(saved?: LearnerState): void {
+    const brief = this.profileIntents[this.purpose];
+    this.intent = brief?.intent;
+    this.intentText = brief?.text ?? '';
+    this.intentRevision++;
+    this.sentIntentRevision = this.intentRevision;
     this.learnerState = saved ?? this.deps.learner.createLearner(this.seed, this.purpose);
-    this.target = this.deps.learner.initialTarget(this.learnerState);
+    this.target = this.deps.learner.initialTarget(this.learnerState, this.intent);
     this.sentFeatures = this.target.features;
     this.sentPrompts = this.target.prompts;
     this.noveltyStep = 0;
     this.resetHearing(this.sentFeatures, this.sentPrompts);
     this.signature = deriveSignature(this.target);
+    this.publishIntent();
+  }
+
+  private publishIntent(): void {
+    if (!this.state.intentAvailable) return;
+    this.setState({ ...this.state, purpose: this.purpose, intent: this.intent, intentText: this.intentText,
+      intentStatus: this.intent ? 'ready' : 'idle', intentMessage: undefined });
+  }
+
+  private cancelIntentRequest(): void {
+    this.intentRequest++;
+    this.intentAbort?.abort();
+    this.intentAbort = undefined;
+    if (this.state.intentStatus === 'loading') this.publishIntent();
+  }
+
+  async interpretText(text: string): Promise<void> {
+    if (!this.deps.interpretIntent || !this.deps.learner.applyIntent || this.resetting) return;
+    this.cancelIntentRequest();
+    const request = this.intentRequest;
+    const trimmed = text.trim();
+    if (!trimmed || trimmed.length > INTENT_LIMITS.text) {
+      this.setState({ ...this.state, intentStatus: 'error', intentMessage: 'Enter a song, style, or activity (up to 1,200 characters).' });
+      return;
+    }
+    const abort = new AbortController();
+    this.intentAbort = abort;
+    this.setState({ ...this.state, intentStatus: 'loading', intentMessage: undefined });
+    await this.memoryReady;
+    if (request !== this.intentRequest || abort.signal.aborted) return;
+    // Loading saved memory may publish its brief, but this request remains pending.
+    this.setState({ ...this.state, intentStatus: 'loading' });
+    const ranked = FEATURE_IDS.map(id => ({ id, score: this.learnerState.scores[id] ?? 0 }));
+    const liked = ranked.filter(x => x.score > 0.05).sort((a,b) => b.score-a.score).slice(0, 4).map(x => x.id);
+    const disliked = ranked.filter(x => x.score < -0.05).sort((a,b) => a.score-b.score).slice(0, 4).map(x => x.id);
+    try {
+      const result = parseInterpretResponse(await this.deps.interpretIntent({ text: trimmed,
+        purpose: this.purpose, currentFeatures: { ...this.target.features },
+        ...(this.intent ? { currentIntent: this.intent } : {}), preferences: { liked, disliked } }, abort.signal));
+      if (request !== this.intentRequest || abort.signal.aborted) return;
+      if (!result) throw new Error('Invalid interpretation');
+      if (result.status !== 'ready') {
+        this.setState({ ...this.state, intentStatus: result.status, intentMessage: result.message });
+        return;
+      }
+      // Use the latest learner state: thumbs may have arrived while interpreting.
+      this.applyIntent(result.intent, trimmed);
+    } catch {
+      if (request === this.intentRequest && !abort.signal.aborted) this.setState({ ...this.state,
+        intentStatus: 'error', intentMessage: 'Could not interpret that request right now. Your current music is unchanged.' });
+    } finally { if (request === this.intentRequest) this.intentAbort = undefined; }
+  }
+
+  clearIntent(): void {
+    this.cancelIntentRequest();
+    if (this.resetting || !this.deps.learner.applyIntent) return;
+    if (this.memoryLoading) {
+      const request = this.intentRequest;
+      void this.memoryReady.then(() => {
+        if (request === this.intentRequest && !this.resetting) this.applyIntent(undefined, '');
+      });
+      return;
+    }
+    this.applyIntent(undefined, '');
+  }
+
+  private applyIntent(intent: MusicIntent | undefined, text: string): void {
+    const target = this.deps.learner.applyIntent!({ state: this.learnerState, currentTarget: this.target, intent });
+    this.intent = intent;
+    this.intentText = text;
+    this.intentRevision++;
+    if (intent) this.profileIntents[this.purpose] = { intent: structuredClone(intent), text };
+    else delete this.profileIntents[this.purpose];
+    this.rejected = undefined;
+    this.evidenceHistory = [];
+    this.pendingIntent = ACTIVE_STATUSES.has(this.state.status)
+      ? { revision: this.intentRevision, audioSeen: false, at: this.now() } : undefined;
+    this.log('intent_applied', { revision: this.intentRevision, features: target.features, context: Boolean(intent) });
+    this.clearLookahead();
+    this.cancelVoteProgress();
+    if (this.canHear()) this.markSteer(target, this.cfg.voteRampMs);
+    this.retarget(target, true, this.cfg.voteRampMs);
+    this.publishIntent();
+    this.savePreferences(); // A request is context, never a fabricated vote.
   }
 
   private async loadPreferences(): Promise<void> {
@@ -254,6 +361,10 @@ export class SessionController implements MusicSessionController {
         if (restored) {
           this.profiles[purpose] = restored;
           this.persistedVotes[purpose] = restored.votes;
+          const intent = parseMusicIntent(profile.intent);
+          if (intent && this.deps.learner.applyIntent) this.profileIntents[purpose] = {
+            intent, text: typeof profile.intentText === 'string' ? profile.intentText.slice(0, INTENT_LIMITS.text) : '',
+          };
         }
       }
       if (!this.purposeChosen && saved.purpose && PURPOSES.includes(saved.purpose)) this.purpose = saved.purpose;
@@ -272,9 +383,10 @@ export class SessionController implements MusicSessionController {
           // A canceled pre-playback action is still recorded with zero evidence,
           // but can never steer or contaminate a different active profile.
           const state = this.profiles[pending.purpose] ?? this.deps.learner.createLearner(this.seed, pending.purpose);
-          const target = this.deps.learner.initialTarget(state);
+          const intent = this.profileIntents[pending.purpose]?.intent;
+          const target = this.deps.learner.initialTarget(state, intent);
           const result = this.deps.learner.processVote({ state, audible: target.features, currentTarget: target,
-            vote: pending.vote, evidenceWeight: 0 });
+            vote: pending.vote, evidenceWeight: 0, intent });
           if (pending.purpose === this.purpose) this.learnerState = result.state;
           this.saveProfile(pending.purpose, result.state, {
             id: `${pending.session}:${++this.feedbackSequence}`, at: pending.at, sessionId: pending.session,
@@ -320,7 +432,9 @@ export class SessionController implements MusicSessionController {
 
   private saveProfile(purpose: ListeningPurpose, state: LearnerState, event?: FeedbackRecord): void {
     this.profiles[purpose] = state;
-    const profile: SavedProfile = { purpose, state: structuredClone(state), updatedAt: this.now() };
+    const brief = this.profileIntents[purpose];
+    const profile: SavedProfile = { purpose, state: structuredClone(state), updatedAt: this.now(),
+      ...(brief ? { intent: structuredClone(brief.intent), intentText: brief.text } : {}) };
     void this.queueWrite(() => this.deps.preferences!.save(profile, event), profile);
   }
 
@@ -334,6 +448,7 @@ export class SessionController implements MusicSessionController {
   async resetPreferences(): Promise<void> {
     if (!this.deps.preferences) throw new Error('Local storage is unavailable.');
     if (this.resetting || !['idle', 'stopped', 'error'].includes(this.state.status)) throw new Error('End the session before resetting preferences.');
+    this.cancelIntentRequest();
     this.resetting = true;
     try {
       await this.memoryReady;
@@ -342,6 +457,7 @@ export class SessionController implements MusicSessionController {
       this.memoryFailed = false;
       this.memoryRestored = true;
       this.profiles = {};
+      this.profileIntents = {};
       this.persistedVotes = {};
       this.activateProfile();
       this.updateMemory('ready');
@@ -385,6 +501,7 @@ export class SessionController implements MusicSessionController {
   private applyVote(v: Vote, at = this.now(), beforePlayback = false, session = this.feedbackSession): void {
     const audible = beforePlayback ? this.target.features : this.estimateAudible();
     const evidenceWeight = beforePlayback ? 0 : this.evidenceWeight(audible);
+    const intentAppliedToAudible = this.heard?.intentRevision === this.intentRevision;
     const previous = v === 'up' && evidenceWeight > 0 && this.rejected
       && this.now() - this.rejected.at <= this.cfg.comparisonWindowMs
       && blendDistance(this.rejected.features, audible) >= this.cfg.evidenceBlendDistance
@@ -396,6 +513,7 @@ export class SessionController implements MusicSessionController {
       currentTarget: this.target,
       vote: v,
       evidenceWeight,
+      intent: this.intent,
       ...(previous ? { comparison: { previous } } : {}),
     });
     this.learnerState = result.state;
@@ -426,10 +544,14 @@ export class SessionController implements MusicSessionController {
       id: `${session}:${++this.feedbackSequence}`, at, sessionId: session,
       purpose: this.purpose, vote: v, audible: { ...audible }, ...(previous ? { previous } : {}), evidenceWeight,
       targetBefore: structuredClone(targetBefore), targetAfter: structuredClone(result.target),
+      ...(this.intent ? { intent: structuredClone(this.intent), intentText: this.intentText } : {}),
+      intentAppliedToAudible,
     });
   }
 
   stop(): void {
+    this.cancelIntentRequest();
+    this.publishIntent();
     if (this.state.status === 'idle' || this.state.status === 'stopped') return;
     this.runId++;
     this.rejected = undefined;
@@ -459,7 +581,7 @@ export class SessionController implements MusicSessionController {
   // ---- live stats (~10 Hz while active) ----
 
   private updateStatsTimer(): void {
-    const want = this.statsListeners.size > 0 && ACTIVE_STATUSES.has(this.state.status);
+    const want = (this.statsListeners.size > 0 || this.pendingIntent !== undefined) && ACTIVE_STATUSES.has(this.state.status);
     if (want && this.statsTimer === undefined) {
       this.statsTimer = setInterval(() => this.emitStats(), STATS_INTERVAL_MS);
     } else if (!want && this.statsTimer !== undefined) {
@@ -468,11 +590,25 @@ export class SessionController implements MusicSessionController {
     }
   }
 
-  private emitStats(): void {
+  private cancelVoteProgress(): void {
+    const pending = this.pendingSteer !== undefined;
+    this.pendingSteer = undefined;
+    this.decision = undefined;
+    if (this.state.decision) this.setState({ ...this.state, decision: undefined });
+    if (pending) this.emitStats(true);
+  }
+
+  private emitStats(steerCanceled = false): void {
     // Keep `heard` — and the `nowPlaying` words derived from it — advancing on the
     // stats cadence: issue #9's "what you're actually hearing" line.
     if (this.canHear()) {
       this.estimateAudible();
+      if (this.pendingIntent?.audioSeen && this.hasAudiblePlayback()
+        && this.heard?.intentRevision === this.pendingIntent.revision) {
+        this.log('intent_audible', { revision: this.pendingIntent.revision, elapsedMs: this.now() - this.pendingIntent.at });
+        this.pendingIntent = undefined;
+        this.setState({ ...this.state });
+      }
       const np = signatureForSent(this.heard);
       if (!sameSignature(np, this.nowPlayingSig)) {
         this.nowPlayingSig = np;
@@ -480,6 +616,7 @@ export class SessionController implements MusicSessionController {
       }
     }
     const snapshot = this.statsSnapshot();
+    if (steerCanceled) snapshot.steerCanceled = true;
     for (const l of this.statsListeners) l(snapshot);
   }
 
@@ -546,7 +683,7 @@ export class SessionController implements MusicSessionController {
     return { progress, vote: s.vote, from: { ...(s.from ?? {}) }, to: { ...s.to } };
   }
 
-  /** Taps and recalls get the same "on its way" progress as votes. */
+  /** Taps, recalls and applied requests show progress without filling a thumb. */
   private markSteer(target: Target, rampMs: number): void {
     this.pendingSteer = {
       vote: null,
@@ -564,10 +701,12 @@ export class SessionController implements MusicSessionController {
     // Start from the latest target: after a (re)connect there is no audio continuity to protect.
     this.sentFeatures = this.target.features;
     this.sentPrompts = this.target.prompts;
+    this.sentIntentRevision = this.intentRevision;
     this.resetHearing(this.sentFeatures, this.sentPrompts);
     this.ready = false;
     this.awaitingReady = false;
     this.blocksLanded = 0; // a new socket restarts the generation count
+    if (this.pendingIntent) this.pendingIntent.audioSeen = false;
     const transport = this.deps.createTransport();
     this.transport = transport;
     transport.connect(this.activeHandlers(transport));
@@ -577,7 +716,7 @@ export class SessionController implements MusicSessionController {
     return {
       onOpen: () => {
         if (this.transport !== transport) return;
-        this.started = { features: this.sentFeatures, prompts: this.sentPrompts };
+        this.started = { features: this.sentFeatures, prompts: this.sentPrompts, intentRevision: this.sentIntentRevision };
         transport.send({ type: 'start', prompts: this.sentPrompts });
       },
       onMessage: (msg) => this.transport === transport && this.onServerMessage(msg),
@@ -585,6 +724,7 @@ export class SessionController implements MusicSessionController {
         if (this.transport !== transport || !this.ready || this.awaitingReady) return;
         this.deps.player.enqueuePcm(bytes);
         this.blocksLanded++;
+        if (this.pendingIntent) this.pendingIntent.audioSeen = true;
       },
       onClose: () => {
         if (this.transport === transport) this.connectionLost('connection closed');
@@ -603,12 +743,13 @@ export class SessionController implements MusicSessionController {
         this.attempts = 0;
         this.setState({ status: 'playing' });
         const started = this.started;
-        if (resetHearing) this.resetHearing(started?.features ?? this.sentFeatures, started?.prompts ?? this.sentPrompts);
+        if (resetHearing) this.resetHearing(started?.features ?? this.sentFeatures, started?.prompts ?? this.sentPrompts, started?.intentRevision ?? this.sentIntentRevision);
         this.started = undefined; // `ready` can repeat after an upstream reconnect; only the first one matters
         if (started && started.prompts !== this.sentPrompts) {
           // Voted while connecting: the relay started on an older target, so ramp to the latest.
           this.sentFeatures = started.features;
           this.sentPrompts = started.prompts;
+          this.sentIntentRevision = started.intentRevision;
           this.retarget(this.target);
         } else {
           this.scheduleEvolve();
@@ -617,8 +758,10 @@ export class SessionController implements MusicSessionController {
         return;
       case 'status':
         if (msg.state === 'reconnecting') {
+          if (this.pendingIntent) this.pendingIntent.audioSeen = false;
+          this.cancelVoteProgress();
           this.clearLookahead();
-          if (!this.awaitingReady) this.started ??= { features: this.sentFeatures, prompts: this.sentPrompts };
+          if (!this.awaitingReady) this.started ??= { features: this.sentFeatures, prompts: this.sentPrompts, intentRevision: this.sentIntentRevision };
           this.awaitingReady = true;
           this.sentFeatures = this.target.features;
           this.sentPrompts = this.target.prompts;
@@ -674,7 +817,7 @@ export class SessionController implements MusicSessionController {
     this.ready = false;
     this.awaitingReady = false;
     this.started = undefined;
-    this.pendingSteer = undefined;
+    this.cancelVoteProgress();
     this.blocksLanded = 0;
     this.ramp = undefined;
     clearTimeout(this.rampTimer);
@@ -701,6 +844,7 @@ export class SessionController implements MusicSessionController {
       // Not streaming yet (or reconnecting): connect() will start from this target.
       this.sentFeatures = target.features;
       this.sentPrompts = target.prompts;
+      this.sentIntentRevision = this.intentRevision;
       this.ramp = undefined;
       return;
     }
@@ -714,11 +858,19 @@ export class SessionController implements MusicSessionController {
     this.rampTimer = undefined;
     if (sameTarget({ features: this.sentFeatures, prompts: this.sentPrompts }, target)) {
       this.ramp = undefined;
+      if (this.sentIntentRevision !== this.intentRevision) {
+        this.sentIntentRevision = this.intentRevision;
+        this.history.push({ at: this.now(), features: this.sentFeatures, prompts: this.sentPrompts, intentRevision: this.intentRevision });
+      }
       // Likes can keep arriving without postponing fresh variations forever.
       if (resetEvolve && (directionChanged || this.evolveTimer === undefined)) this.scheduleEvolve();
       return;
     }
-    this.ramp = { fromFeatures: this.sentFeatures, fromPrompts: this.sentPrompts, target, step: 0, durationMs: rampMs };
+    // Endpoints fit the relay, but two different briefs can exceed its prompt count
+    // when blended. Send the complete new target in that case; never drop constraints.
+    const tooMany = new Set([...this.sentPrompts, ...target.prompts].map(prompt => prompt.text)).size > MAX_PROMPT_COUNT;
+    this.ramp = { fromIntentRevision: this.sentIntentRevision, fromFeatures: this.sentFeatures, fromPrompts: this.sentPrompts,
+      target, step: tooMany ? Math.ceil(rampMs / this.cfg.stepMs) : 0, durationMs: rampMs };
     this.tick();
     if (resetEvolve) this.scheduleEvolve();
   }
@@ -731,7 +883,8 @@ export class SessionController implements MusicSessionController {
     this.sentFeatures = t >= 1 ? ramp.target.features : lerpBlend(ramp.fromFeatures, ramp.target.features, t);
     this.sentPrompts = lerpPrompts(ramp.fromPrompts, ramp.target.prompts, t);
     const at = this.now();
-    this.history.push({ at, features: this.sentFeatures, prompts: this.sentPrompts });
+    this.sentIntentRevision = t >= 1 ? this.intentRevision : ramp.fromIntentRevision;
+    this.history.push({ at, features: this.sentFeatures, prompts: this.sentPrompts, intentRevision: this.sentIntentRevision });
     this.history = this.history.filter((h, i) => i === 0 || at - h.at <= this.cfg.historyRetentionMs);
     this.transport?.send({ type: 'steer', revision: ++this.revision, prompts: this.sentPrompts });
     if (t < 1) this.rampTimer = setTimeout(() => this.tick(), this.cfg.stepMs);
@@ -784,13 +937,23 @@ export class SessionController implements MusicSessionController {
    * Steer back to a captured moment. The same prompts give a similar sound, not
    * the same audio. Not a vote: the learner's state is untouched.
    */
-  recallMoment(moment: Target): void {
-    if (!this.canHear() || moment.prompts.length === 0) return;
+  recallMoment(moment: Target): boolean {
+    if (!this.canHear() || moment.prompts.length === 0) return false;
+    if (!matchesIntent(moment.features, this.intent)) {
+      this.setState({ ...this.state, intentMessage: 'That moment conflicts with your request. Edit or clear it to return to that sound.' });
+      return false;
+    }
     this.log('recall', { target: moment.features });
-    // Keep learner metadata (e.g. the phrasing salt) so later votes continue from here.
-    const target = { ...this.target, features: { ...moment.features }, prompts: moment.prompts.map((p) => ({ ...p })) };
-    this.markSteer(target, this.cfg.voteRampMs);
+    // Rebuild the current request overlay rather than replaying stale request text.
+    const target = this.deps.learner.restoreTarget?.({ state: this.learnerState, currentTarget: this.target, moment, intent: this.intent })
+      ?? { ...this.target, features: { ...moment.features }, prompts: moment.prompts.map(p => ({ ...p })) };
+    if (!sameTarget(this.target, target)) {
+      this.cancelVoteProgress();
+      this.markSteer(target, this.cfg.voteRampMs);
+    }
     this.retarget(target, true, this.cfg.voteRampMs);
+    if (this.state.intentStatus === 'ready') this.setState({ ...this.state, intentMessage: undefined });
+    return true;
   }
 
   /**
@@ -799,15 +962,29 @@ export class SessionController implements MusicSessionController {
    */
   nudge(feature: string): void {
     if (!this.canHear() || !this.deps.learner.nudge) return;
-    const target = this.deps.learner.nudge({ state: this.learnerState, target: this.target, feature });
+    const group = GROUP_OF_ID.get(feature);
+    const conflicts = this.intent && (this.intent.excludedFeatures.some(id => id === feature)
+      || this.intent.requiredFeatures.some(id => GROUP_OF_ID.get(id) === group && id !== feature));
+    if (conflicts) {
+      this.setState({ ...this.state, intentMessage: 'That style conflicts with your request. Edit or clear it to explore that direction.' });
+      return;
+    }
+    const target = this.deps.learner.nudge({ state: this.learnerState, target: this.target, feature, intent: this.intent });
+    if (!sameTarget(this.target, target)) {
+      this.cancelVoteProgress();
+      this.markSteer(target, this.cfg.rampMs);
+    }
     this.log('nudge', { feature, target: target.features });
-    this.markSteer(target, this.cfg.rampMs);
     this.retarget(target);
+    if (this.state.intentStatus === 'ready') this.setState({ ...this.state, intentMessage: undefined });
   }
 
-  private resetHearing(features: FeatureBlend, prompts?: WeightedPrompt[]): void {
-    this.history = [{ at: this.now(), features, prompts }];
-    this.heard = this.history[0];
+  private resetHearing(features: FeatureBlend, prompts?: WeightedPrompt[], intentRevision = this.sentIntentRevision): void {
+    // configure/reconnect does not flush queued PCM. Keep its last heard context
+    // until the new timeline has cleared the measured buffer and generation delay.
+    const buffered = this.deps.player.getBufferedDurationMs() > 0 ? this.heard : undefined;
+    this.history = [{ at: this.now(), features, prompts, intentRevision }];
+    this.heard = buffered ?? this.history[0];
     this.audibleCursor = -Infinity;
     this.evidenceHistory = [];
     this.rejected = undefined;
@@ -818,7 +995,7 @@ export class SessionController implements MusicSessionController {
   }
 
   private evidenceWeight(audible: FeatureBlend): number {
-    if (!this.hasAudiblePlayback()) return 0;
+    if (!this.hasAudiblePlayback() || this.heard?.intentRevision !== this.intentRevision) return 0;
     const at = this.now();
     this.evidenceHistory = this.evidenceHistory.filter((observation) => at - observation.at < this.cfg.evidenceWindowMs);
     if (this.evidenceHistory.some((observation) => blendDistance(observation.features, audible) < this.cfg.evidenceBlendDistance)) return 0;
@@ -851,7 +1028,7 @@ export class SessionController implements MusicSessionController {
     const audible = this.estimateAudible();
     // Predictions while the audible blend is still in a ramp are usually stale.
     if (blendDistance(audible, this.target.features) > 1e-9) return;
-    const key = JSON.stringify([this.runId, this.learnerState.votes, this.target.features, this.target.prompts, this.rejected?.at]);
+    const key = JSON.stringify([this.runId, this.intentRevision, this.learnerState.votes, this.target.features, this.target.prompts, this.rejected?.at]);
     if (key === this.preparedKey) return;
     this.preparedKey = key; // at most one attempt per real state; failures do not spin up retries
     const previous = this.rejected && this.now() - this.rejected.at <= this.cfg.comparisonWindowMs
@@ -859,7 +1036,7 @@ export class SessionController implements MusicSessionController {
       ? this.rejected.features : undefined;
     const predict = (vote: Vote) => this.deps.learner.processVote({
       state: structuredClone(this.learnerState), audible: { ...audible }, currentTarget: structuredClone(this.target),
-      vote, evidenceWeight: 1, ...(vote === 'up' && previous ? { comparison: { previous: { ...previous } } } : {}),
+      vote, evidenceWeight: 1, intent: this.intent, ...(vote === 'up' && previous ? { comparison: { previous: { ...previous } } } : {}),
     }).target;
     const targets = { up: predict('up'), down: predict('down') };
     this.log('lookahead_prepare', { up: targets.up.features, down: targets.down.features });
@@ -886,6 +1063,7 @@ export class SessionController implements MusicSessionController {
     this.target = target;
     this.sentFeatures = target.features;
     this.sentPrompts = target.prompts;
+    this.sentIntentRevision = this.intentRevision;
     this.started = undefined;
     this.ready = true;
     this.awaitingReady = false;
@@ -894,7 +1072,7 @@ export class SessionController implements MusicSessionController {
     this.rampTimer = undefined;
     // Cached audio starts now, rather than after the old queue/control delay.
     // Preserve the rejection reference and correlated-click ledger across the switch.
-    this.history = [{ at: this.now(), features: { ...target.features }, prompts: target.prompts.map(p => ({ ...p })) }];
+    this.history = [{ at: this.now(), features: { ...target.features }, intentRevision: this.intentRevision, prompts: target.prompts.map(p => ({ ...p })) }];
     this.heard = this.history[0];
     this.audibleCursor = -Infinity;
     this.signature = deriveSignature(target);
@@ -917,7 +1095,7 @@ export class SessionController implements MusicSessionController {
   }
 
   private nextVariation(): Target {
-    const target = this.deps.learner.evolveNoVote({ state: this.learnerState, target: this.target, step: ++this.noveltyStep });
+    const target = this.deps.learner.evolveNoVote({ state: this.learnerState, target: this.target, step: ++this.noveltyStep, intent: this.intent });
     this.log('evolve', { step: this.noveltyStep, target: target.features });
     return target;
   }
@@ -944,6 +1122,8 @@ export class SessionController implements MusicSessionController {
   }
 
   private setState(next: SessionState): void {
+    if (!ACTIVE_STATUSES.has(next.status)) this.pendingIntent = undefined;
+    next = { ...next, intentApplying: this.pendingIntent !== undefined };
     if (ACTIVE_STATUSES.has(next.status)) {
       next = {
         ...next,
