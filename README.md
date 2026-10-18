@@ -20,8 +20,8 @@ Sway generates music live with **Google Lyria RealTime**. A small in-memory lear
 | What | How we used it |
 |---|---|
 | **Google Lyria RealTime** | Live instrumental generation; steered by weighted prompts |
-| **NVIDIA Nemotron** | Interprets submitted moods, activities and song references into a validated music brief; thumbs and word taps stay in the local learner |
-| **Crusoe Cloud** | GPU inference serving Nemotron — the LLM stays a hosted model, not a per-user download |
+| **NVIDIA Nemotron** | Interprets submitted moods, activities and song references into a validated music brief; the team's broader agent/review work is described below. Runtime thumbs and word taps stay in the local learner |
+| **Crusoe Cloud** | GPU inference serving the Nemotron agents — the LLMs stay hosted models, not a per-user download |
 | **TypeScript + Vite + React** | Browser app, session controller, learner, visualizer |
 | **WebSocket relay (Node)** | Keeps the API key server-side; guards the wire protocol |
 | **Render** | Hosts the relay + built app (`render.yaml`, auto-deploys `main`) |
@@ -30,12 +30,15 @@ Sway generates music live with **Google Lyria RealTime**. A small in-memory lear
 
 The agent doesn't just react to votes — each vote recursively updates a persistent taste model, and every later decision is made *through* that model. A like strengthens the audible blend's features; a dislike redirects using accumulated preference + uncertainty; directional likes learn from the *difference* between the rejected and approved blend; three rejections widen the search space entirely.
 
+The loop continues after the music stops. A team of Nemotron agents reviews every session: what held listeners' votes, which steers landed and which missed. They fold those findings back into their memory, then validate candidate changes against listeners the system has never seen — so improvements generalize to the next stranger, not just the last session.
+
 Why it produces better outcomes:
 
 - **Faster convergence** — each session needs fewer votes to reach "yours," because the model starts where the last one ended (per-purpose profiles in IndexedDB).
 - **Audible responsiveness** — a 👎 is hearable in ~2.5 s, and the honest fill indicator waits for the real generated block, so listeners learn to trust the control.
 - **Graceful recovery** — probes and wide-search escapes keep the stream out of local minima instead of circling the same sound.
 - **Better for every listener, not the average** — taste lives per-user, per-purpose, on-device: Focus-you and Crazy-you are separate models.
+- **Improvements that generalize** — post-session reviews are tested on unseen listeners before they ship, so a change has to work for strangers, not just the person who trained it.
 
 ## Architecture
 
