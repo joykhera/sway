@@ -12,8 +12,14 @@ class ProviderUnavailable extends Error {
 class MissingTitleReference extends InvalidPlan {}
 const error = (message: string): InterpretResponse => ({ status: 'error', message });
 const referenceQuestion = (): InterpretResponse => ({ status: 'clarify', message: 'Which song and artist do you mean? You can also describe the musical qualities you want.' });
-const obviousReference = (text: string) => /\b(?:song|track|album|artist)\b|《[^》]+》|(?:歌曲|歌手|专辑)|["“][^"”]{2,80}["”]/i.test(text)
-  || /\b(?:like|inspired by|similar to|style of)\s+[A-Z][a-z]+\s+[A-Z][a-z]+/.test(text);
+// A generic "song for workout" or "make this track energetic" names no reference.
+// Let the model answer those directly; only recognizable reference forms need grounding.
+const obviousReference = (text: string) => explicitSongTitle(text) !== null
+  || /《[^》]+》|\b(?:song|track|album|artist)\s+(?:called|named|titled)\b/i.test(text)
+  || /\b(?:song|track|album|artist)\s+["“][^"”]{1,80}["”]/i.test(text)
+  || /\b(?:like|inspired by|similar to|style of)\s+["“][^"”]{1,80}["”]/i.test(text)
+  || /\b(?:like|similar to)\s+(?:that|this)\s+(?:song|track|album|artist)\b/i.test(text)
+  || /\b(?:[Ll]ike|[Ii]nspired by|[Ss]imilar to|[Ss]tyle of)\s+[A-Z][a-z]+\s+[A-Z][a-z]+/.test(text);
 const titleTokens = (text: string): string[] => text.normalize('NFKC').toLowerCase().match(/[\p{L}\p{N}]+/gu) ?? [];
 function queryTitleMatches(query: string, sources: LookupSource[]): string[] {
   const tokens = new Set(titleTokens(query));

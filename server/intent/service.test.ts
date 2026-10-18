@@ -293,3 +293,20 @@ describe('bounded intent interpreter', () => {
     }
   });
 });
+
+
+describe('optional lookup action', () => {
+  it.each(['a song for workout', 'make this track more energetic', 'calm music for reading', 'a track with piano by the river', 'a jazz artist feel for studying'])('translates a generic request directly without search: %s', async text => {
+    const fetcher = fetchSequence(completion(ready()));
+    const lookup = vi.fn();
+    const result = await createIntentInterpreter({ apiKey: 'key', fetcher, lookup })({ ...input, text }, signal());
+    expect(result.status).toBe('ready');
+    expect(fetcher).toHaveBeenCalledTimes(1); expect(lookup).not.toHaveBeenCalled();
+  });
+  it.each(['the song "So What" by Miles Davis', 'music in the style of Miles Davis', 'Inspired by “So What”', 'a song called So What'])('keeps obvious named references from bypassing evidence: %s', async text => {
+    const fetcher = fetchSequence(completion(ready()));
+    const lookup = vi.fn();
+    expect((await createIntentInterpreter({ apiKey: 'key', fetcher, lookup })({ ...input, text }, signal())).status).toBe('clarify');
+    expect(fetcher).toHaveBeenCalledTimes(1); expect(lookup).not.toHaveBeenCalled();
+  });
+});

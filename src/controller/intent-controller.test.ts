@@ -261,3 +261,47 @@ describe('manual controls with an applied request', () => {
     expect(r.controller.recallMoment(moment)).toBe(false);
   });
 });
+
+
+describe('text loading follows the audible timeline', () => {
+  it('does not spin before Start, and keeps loading beyond the LLM response until buffered music clears', async () => {
+    const r = rig();
+    await r.controller.interpretText('jazz');
+    expect(r.state.intentApplying).toBe(false);
+    await r.start(); r.player.bufferedMs = 5000;
+    r.controller.clearIntent();
+    expect(r.state.intentApplying).toBe(true);
+    r.relay.last.audio(); await vi.advanceTimersByTimeAsync(2600);
+    expect(r.state.intentStatus).toBe('idle'); expect(r.state.intentApplying).toBe(true);
+    r.player.bufferedMs = 0; await vi.advanceTimersByTimeAsync(100);
+    expect(r.state.intentApplying).toBe(false);
+    r.controller.stop();
+  });
+
+  it('waits for an audio block, permits a new request, and clears loading on Stop', async () => {
+    let intent = jazz; const r = rig(async () => ready(intent)); await r.start();
+    await r.controller.interpretText('jazz');
+    await vi.advanceTimersByTimeAsync(3000);
+    expect(r.state.intentApplying).toBe(true);
+    intent = electronic; await r.controller.interpretText('electronic');
+    r.relay.last.audio(); await vi.advanceTimersByTimeAsync(100);
+    expect(r.state.intent).toEqual(electronic); expect(r.state.intentApplying).toBe(true);
+    await vi.advanceTimersByTimeAsync(2600);
+    expect(r.state.intentApplying).toBe(false);
+    r.controller.clearIntent(); expect(r.state.intentApplying).toBe(true);
+    r.controller.stop(); expect(r.state.intentApplying).toBe(false);
+  });
+
+  it('does not finish loading on a reconnect ready signal without fresh audio', async () => {
+    const r = rig(); await r.start(); r.player.bufferedMs = 10000;
+    await r.controller.interpretText('jazz'); r.relay.last.audio();
+    await vi.advanceTimersByTimeAsync(2600);
+    r.relay.last.serverMessage({ type: 'status', state: 'reconnecting' });
+    r.relay.last.ready(); r.player.bufferedMs = 0;
+    await vi.advanceTimersByTimeAsync(500);
+    expect(r.state.intentApplying).toBe(true);
+    r.relay.last.audio(); await vi.advanceTimersByTimeAsync(100);
+    expect(r.state.intentApplying).toBe(false);
+    r.controller.stop();
+  });
+});

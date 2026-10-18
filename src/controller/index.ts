@@ -142,6 +142,7 @@ export class SessionController implements MusicSessionController {
   private intent: MusicIntent | undefined;
   private intentText = '';
   private intentRevision = 0;
+  private pendingIntent: { revision: number; audioSeen: boolean; at: number } | undefined;
   private sentIntentRevision = 0;
   private intentRequest = 0;
   private intentAbort: AbortController | undefined;
@@ -339,6 +340,9 @@ export class SessionController implements MusicSessionController {
     else delete this.profileIntents[this.purpose];
     this.rejected = undefined;
     this.evidenceHistory = [];
+    this.pendingIntent = ACTIVE_STATUSES.has(this.state.status)
+      ? { revision: this.intentRevision, audioSeen: false, at: this.now() } : undefined;
+    this.log('intent_applied', { revision: this.intentRevision, features: target.features, context: Boolean(intent) });
     this.clearLookahead();
     this.cancelVoteProgress();
     if (this.canHear()) this.markSteer(target, this.cfg.voteRampMs);
@@ -577,7 +581,7 @@ export class SessionController implements MusicSessionController {
   // ---- live stats (~10 Hz while active) ----
 
   private updateStatsTimer(): void {
-    const want = this.statsListeners.size > 0 && ACTIVE_STATUSES.has(this.state.status);
+    const want = (this.statsListeners.size > 0 || this.pendingIntent !== undefined) && ACTIVE_STATUSES.has(this.state.status);
     if (want && this.statsTimer === undefined) {
       this.statsTimer = setInterval(() => this.emitStats(), STATS_INTERVAL_MS);
     } else if (!want && this.statsTimer !== undefined) {
@@ -599,6 +603,12 @@ export class SessionController implements MusicSessionController {
     // stats cadence: issue #9's "what you're actually hearing" line.
     if (this.canHear()) {
       this.estimateAudible();
+      if (this.pendingIntent?.audioSeen && this.hasAudiblePlayback()
+        && this.heard?.intentRevision === this.pendingIntent.revision) {
+        this.log('intent_audible', { revision: this.pendingIntent.revision, elapsedMs: this.now() - this.pendingIntent.at });
+        this.pendingIntent = undefined;
+        this.setState({ ...this.state });
+      }
       const np = signatureForSent(this.heard);
       if (!sameSignature(np, this.nowPlayingSig)) {
         this.nowPlayingSig = np;
@@ -696,6 +706,7 @@ export class SessionController implements MusicSessionController {
     this.ready = false;
     this.awaitingReady = false;
     this.blocksLanded = 0; // a new socket restarts the generation count
+    if (this.pendingIntent) this.pendingIntent.audioSeen = false;
     const transport = this.deps.createTransport();
     this.transport = transport;
     transport.connect(this.activeHandlers(transport));
@@ -713,6 +724,7 @@ export class SessionController implements MusicSessionController {
         if (this.transport !== transport || !this.ready || this.awaitingReady) return;
         this.deps.player.enqueuePcm(bytes);
         this.blocksLanded++;
+        if (this.pendingIntent) this.pendingIntent.audioSeen = true;
       },
       onClose: () => {
         if (this.transport === transport) this.connectionLost('connection closed');
@@ -746,6 +758,7 @@ export class SessionController implements MusicSessionController {
         return;
       case 'status':
         if (msg.state === 'reconnecting') {
+          if (this.pendingIntent) this.pendingIntent.audioSeen = false;
           this.cancelVoteProgress();
           this.clearLookahead();
           if (!this.awaitingReady) this.started ??= { features: this.sentFeatures, prompts: this.sentPrompts, intentRevision: this.sentIntentRevision };
@@ -1109,6 +1122,8 @@ export class SessionController implements MusicSessionController {
   }
 
   private setState(next: SessionState): void {
+    if (!ACTIVE_STATUSES.has(next.status)) this.pendingIntent = undefined;
+    next = { ...next, intentApplying: this.pendingIntent !== undefined };
     if (ACTIVE_STATUSES.has(next.status)) {
       next = {
         ...next,

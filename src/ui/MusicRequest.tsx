@@ -5,7 +5,7 @@ import './music-request.css';
 
 type Props = {
   controller: MusicSessionController;
-  state: SessionUiState & { intentApplying?: boolean };
+  state: SessionUiState;
   compact?: boolean;
   onPendingChange(pending: boolean): void;
 };

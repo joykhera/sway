@@ -193,6 +193,8 @@ export type SessionState = {
   savedVotes?: number;
   intent?: MusicIntent;
   intentStatus?: 'idle' | 'loading' | 'ready' | 'clarify' | 'unsupported' | 'error';
+  /** Applied text is still reaching the estimated audible timeline. */
+  intentApplying?: boolean;
   intentMessage?: string;
   intentAvailable?: boolean;
   intentText?: string;
