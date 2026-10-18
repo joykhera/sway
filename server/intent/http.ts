@@ -1,9 +1,10 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { parseInterpretRequest, type InterpretResponse } from '../../src/shared/intent.ts';
 import type { IntentInterpreter } from './service.ts';
+import { durationMs, observe, requestId, type IntentHttpReason, type IntentObserver } from './telemetry.ts';
 
 export type IntentHttpHandler = { handle(req: IncomingMessage, res: ServerResponse): Promise<void>; close(): void };
-export type HttpOptions = { maxConcurrent?: number; requestsPerMinute?: number; now?: () => number; bodyTimeoutMs?: number };
+export type HttpOptions = { maxConcurrent?: number; requestsPerMinute?: number; now?: () => number; bodyTimeoutMs?: number; observer?: IntentObserver };
 const MAX_BODY = 16 * 1024;
 const unavailable: InterpretResponse = { status: 'error', message: 'Text interpretation is unavailable on this server.' };
 
@@ -44,30 +45,42 @@ function readBody(req: IncomingMessage, signal: AbortSignal): Promise<unknown> {
 
 /** A small, server-wide limit avoids trusting spoofable forwarded addresses. */
 export function createIntentHttpHandler(interpret?: IntentInterpreter, options: HttpOptions = {}): IntentHttpHandler {
-  const active = new Map<AbortController, ServerResponse>();
+  const active = new Map<AbortController, { res: ServerResponse; report: (status: number | null, reason: IntentHttpReason) => void }>();
   const arrivals: number[] = [];
   const now = options.now ?? Date.now;
   let closed = false;
   return {
     async handle(req, res) {
+      const id = requestId();
+      const started = performance.now();
+      let reported = false;
+      const report = (httpStatus: number | null, reason: IntentHttpReason) => {
+        if (reported) return;
+        reported = true;
+        observe(options.observer, { event: 'http', requestId: id, durationMs: durationMs(started), httpStatus, reason });
+      };
+      const respond = (status: number, value: InterpretResponse, reason: IntentHttpReason) => {
+        report(status, reason);
+        send(res, status, value);
+      };
       if (req.method !== 'POST') {
         res.setHeader('allow', 'POST');
-        return send(res, 405, { status: 'error', message: 'Use POST for a music description.' });
+        return respond(405, { status: 'error', message: 'Use POST for a music description.' }, 'method');
       }
-      if (!sameOrigin(req)) return send(res, 403, { status: 'error', message: 'Open this page from the music server to submit a description.' });
-      if (!/^application\/json(?:\s*;\s*charset=utf-8)?$/i.test(req.headers['content-type'] ?? '')) return send(res, 415, { status: 'error', message: 'Send the description as JSON.' });
-      if (closed || !interpret) return send(res, 503, unavailable);
-      if (Number(req.headers['content-length']) > MAX_BODY) return send(res, 413, { status: 'error', message: 'The description is too large.' });
+      if (!sameOrigin(req)) return respond(403, { status: 'error', message: 'Open this page from the music server to submit a description.' }, 'origin');
+      if (!/^application\/json(?:\s*;\s*charset=utf-8)?$/i.test(req.headers['content-type'] ?? '')) return respond(415, { status: 'error', message: 'Send the description as JSON.' }, 'content_type');
+      if (closed || !interpret) return respond(503, unavailable, 'unavailable');
+      if (Number(req.headers['content-length']) > MAX_BODY) return respond(413, { status: 'error', message: 'The description is too large.' }, 'body_too_large');
       const time = now();
       while (arrivals.length && arrivals[0]! <= time - 60_000) arrivals.shift();
       if (arrivals.length >= (options.requestsPerMinute ?? 12) || active.size >= (options.maxConcurrent ?? 2)) {
         res.setHeader('retry-after', '5');
-        return send(res, 429, { status: 'error', message: 'Text interpretation is busy. Please wait a moment before trying again.' });
+        return respond(429, { status: 'error', message: 'Text interpretation is busy. Please wait a moment before trying again.' }, arrivals.length >= (options.requestsPerMinute ?? 12) ? 'rate_limit' : 'concurrency_limit');
       }
       arrivals.push(time);
       const controller = new AbortController();
-      active.set(controller, res);
-      const disconnected = () => { if (!res.writableEnded) controller.abort(); };
+      active.set(controller, { res, report });
+      const disconnected = () => { if (!res.writableEnded) { controller.abort(); report(null, 'aborted'); } };
       req.once('aborted', disconnected);
       res.once('close', disconnected);
       const bodyTimer = setTimeout(() => controller.abort(), options.bodyTimeoutMs ?? 5000);
@@ -76,12 +89,12 @@ export function createIntentHttpHandler(interpret?: IntentInterpreter, options: 
         const value = await readBody(req, controller.signal);
         clearTimeout(bodyTimer);
         const input = parseInterpretRequest(value);
-        if (!input) return send(res, 400, { status: 'error', message: 'Check the description and music settings, then try again.' });
-        const result = await interpret(input, controller.signal);
-        if (!controller.signal.aborted) send(res, 200, result);
+        if (!input) return respond(400, { status: 'error', message: 'Check the description and music settings, then try again.' }, 'invalid_request');
+        const result = await interpret(input, controller.signal, { requestId: id });
+        if (!controller.signal.aborted) respond(200, result, 'interpreted');
       } catch (cause) {
-        if (cause instanceof BodyError) send(res, cause.status, { status: 'error', message: cause.message });
-        else if (!controller.signal.aborted) send(res, 500, unavailable);
+        if (cause instanceof BodyError) respond(cause.status, { status: 'error', message: cause.message }, cause.status === 408 ? 'body_timeout' : cause.status === 413 ? 'body_too_large' : 'invalid_json');
+        else if (!controller.signal.aborted) respond(500, unavailable, 'internal_error');
       } finally {
         clearTimeout(bodyTimer);
         req.off('aborted', disconnected); res.off('close', disconnected);
@@ -90,7 +103,7 @@ export function createIntentHttpHandler(interpret?: IntentInterpreter, options: 
     },
     close() {
       closed = true;
-      for (const [controller, res] of active) { controller.abort(); send(res, 503, unavailable); }
+      for (const [controller, { res, report }] of active) { report(503, 'shutdown'); controller.abort(); send(res, 503, unavailable); }
     },
   };
 }

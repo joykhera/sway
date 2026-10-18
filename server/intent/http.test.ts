@@ -2,7 +2,8 @@ import http from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createIntentHttpHandler, type HttpOptions } from './http.ts';
-import type { IntentInterpreter } from './service.ts';
+import { createIntentInterpreter, type IntentInterpreter } from './service.ts';
+import type { IntentEvent } from './telemetry.ts';
 const input = { text: 'Warm background', purpose: 'focus', currentFeatures: {} };
 const reply = { status: 'clarify', message: 'Which qualities?' } as const;
 const cleanups: Array<() => Promise<void>> = [];
@@ -50,18 +51,20 @@ describe('intent HTTP boundary', () => {
     expect(interpret).toHaveBeenCalledTimes(1);
   });
   it('aborts outstanding provider work when the browser disconnects', async () => {
+    const events: IntentEvent[] = [];
     let observed: AbortSignal | undefined;
     const interpret = vi.fn<IntentInterpreter>().mockImplementation(async (_input, signal) => {
       observed = signal;
       await new Promise<void>((resolve) => signal.addEventListener('abort', () => resolve(), { once: true }));
       return reply;
     });
-    const { post } = await serve(interpret);
+    const { post } = await serve(interpret, { observer: (event) => { events.push(event); } });
     const controller = new AbortController();
     const request = post({}, undefined, controller.signal).catch(() => null);
     await vi.waitFor(() => expect(observed).toBeDefined());
     controller.abort(); await request;
     await vi.waitFor(() => expect(observed!.aborted).toBe(true));
+    expect(events).toEqual([expect.objectContaining({ event: 'http', httpStatus: null, reason: 'aborted' })]);
   });
   it('aborts and ends pending responses on server shutdown', async () => {
     let observed: AbortSignal | undefined;
@@ -80,5 +83,26 @@ describe('intent HTTP boundary', () => {
   it('fails unavailable without an interpreter', async () => {
     const { post } = await serve();
     expect((await post()).status).toBe(503);
+  });
+  it('correlates HTTP and interpreter events and emits only bounded rejection metadata', async () => {
+    const events: IntentEvent[] = [];
+    const observer = (event: IntentEvent) => { events.push(event); };
+    const interpret = createIntentInterpreter({ apiKey: 'private-secret', observer,
+      fetcher: async () => Response.json({ choices: [{ finish_reason: 'stop', message: { content: JSON.stringify({ status: 'clarify', message: 'private-reply', lookupQuery: '', intent: null }) } }] }) });
+    const { post } = await serve(interpret, { observer, requestsPerMinute: 1 });
+    expect((await post({}, JSON.stringify({ ...input, text: 'private-input' }))).status).toBe(200);
+    expect(new Set(events.map(event => event.requestId)).size).toBe(1);
+    expect(events.at(-1)).toMatchObject({ event: 'http', httpStatus: 200, reason: 'interpreted' });
+    expect((await post()).status).toBe(429);
+    expect(events.at(-1)).toMatchObject({ event: 'http', httpStatus: 429, reason: 'rate_limit' });
+    expect((await post({ origin: 'https://private-origin.test' })).status).toBe(403);
+    expect(events.at(-1)).toMatchObject({ event: 'http', httpStatus: 403, reason: 'origin' });
+    expect(new Set(events.map(event => event.requestId)).size).toBe(3);
+    expect(JSON.stringify(events)).not.toMatch(/private-|Warm background|127\.0\.0\.1|https?:\/\//);
+  });
+  it('keeps HTTP responses unchanged if its observer throws', async () => {
+    const { post } = await serve(async () => reply, { observer: () => { throw new Error('sink failed'); } });
+    expect((await post()).status).toBe(200);
+    expect((await post({ origin: '' })).status).toBe(403);
   });
 });
