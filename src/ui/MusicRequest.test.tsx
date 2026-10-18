@@ -26,7 +26,7 @@ describe('MusicRequest', () => {
     expect(input().value).toBe('');
     expect(input().maxLength).toBe(1200);
     expect((screen.getByRole('button', { name: 'Apply music request' }) as HTMLButtonElement).disabled).toBe(true);
-    expect(screen.queryByRole('button', { name: 'clear request' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Clear music request' })).toBeNull();
     expect(screen.queryByText('request details')).toBeNull();
     view.rerender(<MusicRequest controller={{ ...c, interpretText: undefined }} state={{ status: 'idle' }} onPendingChange={onPendingChange} />);
     expect(screen.queryByRole('region', { name: 'music request' })).toBeNull();
@@ -41,37 +41,39 @@ describe('MusicRequest', () => {
     fireEvent.change(input(), { target: { value: '  warm jazz  ' } });
     submit(); submit();
     expect(c.interpretText).toHaveBeenCalledExactlyOnceWith('warm jazz');
-    expect((screen.getByRole('button', { name: 'Applying music request' }) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole('button', { name: 'Apply music request' }) as HTMLButtonElement).disabled).toBe(true);
     expect(input().disabled).toBe(false);
-    expect(screen.getByRole('status').textContent).toBe('Finding your sound…');
+    expect(screen.getByRole('status', { name: 'Applying music request' })).toBeTruthy();
     expect(onPendingChange).toHaveBeenLastCalledWith(true);
     await act(async () => { finish(); });
     expect(c.start).not.toHaveBeenCalled();
     expect(onPendingChange).toHaveBeenLastCalledWith(false);
   });
 
-  it('collapses an applied request and opens its saved text with keyboard focus', async () => {
+  it('keeps submitted text and focus after success without showing generated content', async () => {
     let finish!: () => void;
     const c = controller();
     c.interpretText = vi.fn(() => new Promise<void>(resolve => { finish = resolve; }));
     const onPendingChange = vi.fn();
     const view = render(<MusicRequest controller={c} state={{ status: 'idle' }} onPendingChange={onPendingChange} />);
+    input().focus();
     fireEvent.change(input(), { target: { value: 'jazz' } });
     submit();
     await act(async () => {
-      view.rerender(<MusicRequest controller={c} state={{ status: 'idle', intentStatus: 'ready', intentText: 'jazz', intent: intent() }} onPendingChange={onPendingChange} />);
+      view.rerender(<MusicRequest controller={c} state={{ status: 'idle', intentStatus: 'ready', intentText: 'jazz', intent: intent({
+        requiredFeatures: ['jazz'], excludedFeatures: ['percussion'], avoid: ['vocals'], contextPrompt: 'internal prompt',
+        references: [{ id: 'one', title: 'Reference source', url: 'https://example.com/music' }],
+      }) }} onPendingChange={onPendingChange} />);
       finish();
     });
-    expect(screen.queryByRole('textbox')).toBeNull();
-    expect(screen.getByText('Warm jazz for reading.')).toBeTruthy();
-    fireEvent.click(screen.getByRole('button', { name: 'Edit music request' }));
     expect(input().value).toBe('jazz');
     expect(document.activeElement).toBe(input());
-    fireEvent.keyDown(input(), { key: 'Escape' });
-    expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Edit music request' }));
+    expect(screen.queryByRole('status')).toBeNull();
+    expect(view.container.querySelector('details, a, .music-request__summary, .music-request__applied')).toBeNull();
+    expect(screen.queryByText(/Warm jazz|Keep:|Avoid:|Reference source|internal prompt/)).toBeNull();
   });
 
-  it('does not collapse or revert a newer draft when a slow response arrives', async () => {
+  it('does not revert a newer draft when a slow response arrives', async () => {
     let finish!: () => void;
     const c = controller();
     c.interpretText = vi.fn(() => new Promise<void>(resolve => { finish = resolve; }));
@@ -84,7 +86,7 @@ describe('MusicRequest', () => {
       finish();
     });
     expect(input().value).toBe('jazz with brushed drums');
-    expect(screen.getByText('Warm jazz for reading.')).toBeTruthy();
+    expect(screen.queryByText('Warm jazz for reading.')).toBeNull();
   });
 
   it('reflects restored intent without autoplay or overwriting an in-progress draft', () => {
@@ -99,8 +101,6 @@ describe('MusicRequest', () => {
     expect(c.start).not.toHaveBeenCalled();
     view.unmount();
     render(<MusicRequest controller={c} state={restored} onPendingChange={onPendingChange} />);
-    expect(screen.queryByRole('textbox')).toBeNull();
-    fireEvent.click(screen.getByRole('button', { name: 'Edit music request' }));
     expect(input().value).toBe('jazz');
   });
 
@@ -109,8 +109,7 @@ describe('MusicRequest', () => {
     render(<MusicRequest controller={c} compact state={{ status: 'playing', intent: intent(), intentText: 'jazz',
       intentStatus: status, intentMessage: 'Please add a little more detail.' }} onPendingChange={vi.fn()} />);
     expect(screen.getByRole(status === 'clarify' ? 'status' : 'alert').textContent).toBe('Please add a little more detail.');
-    expect(screen.getByText('Warm jazz for reading.')).toBeTruthy();
-    fireEvent.click(screen.getByRole('button', { name: 'Edit music request' }));
+    expect(screen.queryByText('Warm jazz for reading.')).toBeNull();
     expect(input().value).toBe('jazz');
     expect(c.stop).not.toHaveBeenCalled();
   });
@@ -120,7 +119,6 @@ describe('MusicRequest', () => {
     const onPendingChange = vi.fn();
     const state: SessionUiState = { status: 'playing', intent: intent(), intentText: 'jazz', intentStatus: 'ready' };
     const view = render(<MusicRequest controller={c} compact state={state} onPendingChange={onPendingChange} />);
-    fireEvent.click(screen.getByRole('button', { name: 'Edit music request' }));
     fireEvent.change(input(), { target: { value: 'a different direction' } });
     view.rerender(<MusicRequest controller={c} compact state={{ ...state, intentMessage: 'That style conflicts with your request.' }} onPendingChange={onPendingChange} />);
     expect(screen.getByRole('status').textContent).toBe('That style conflicts with your request.');
@@ -139,7 +137,7 @@ describe('MusicRequest', () => {
     let reject!: (reason: Error) => void;
     c.interpretText = vi.fn(() => new Promise<void>((_, fail) => { reject = fail; }));
     submit();
-    fireEvent.click(screen.getByRole('button', { name: 'clear request' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Clear music request' }));
     expect(c.clearIntent).toHaveBeenCalledOnce();
     expect(input().value).toBe('');
     await act(async () => { reject(new Error('late failure')); });
@@ -155,37 +153,44 @@ describe('MusicRequest', () => {
     expect(c.interpretText).not.toHaveBeenCalled();
   });
 
-  it('puts readable constraints and safe sources in an initially closed disclosure', () => {
-    const c = controller();
-    const { container } = render(<MusicRequest controller={c} compact state={{ status: 'playing', intent: intent({
-      requiredFeatures: ['lofi', 'synth'], excludedFeatures: ['percussion'], featureHints: ['calm'],
-      contextPrompt: 'internal instructions', references: [
-        { id: 'one', title: 'Reference recording', url: 'https://example.com/recording' },
-        { id: 'bad', title: 'unsafe source', url: 'javascript:alert(1)' },
-      ],
-    }) }} onPendingChange={vi.fn()} />);
-    const details = container.querySelector('details')!;
-    expect(details.open).toBe(false);
-    expect(details.textContent).toContain('Keep: lo-fi, synthesizer · Avoid: percussion');
-    const link = details.querySelector('a')!;
-    expect(link.href).toBe('https://example.com/recording');
-    expect(link.rel).toBe('noopener noreferrer');
-    expect(container.querySelectorAll('a')).toHaveLength(1);
-    expect(screen.queryByText('internal instructions')).toBeNull();
-  });
-
-  it('offers details for supplemental avoidance alone and combines it with vocabulary exclusions', () => {
+  it('keeps the inline loader through the audio transition and permits a new request', async () => {
     const c = controller();
     const onPendingChange = vi.fn();
-    const state: SessionUiState = { status: 'playing', intent: intent({ avoid: ['vocals', 'busy drums'] }) };
+    const state = { status: 'playing', intentText: 'jazz', intentStatus: 'ready' as const, intentApplying: true };
     const view = render(<MusicRequest controller={c} compact state={state} onPendingChange={onPendingChange} />);
-    const details = view.container.querySelector('details')!;
-    expect(details.open).toBe(false);
-    expect(details.textContent).toContain('Avoid: vocals, busy drums');
-    view.rerender(<MusicRequest controller={c} compact state={{ ...state,
-      intent: intent({ excludedFeatures: ['synth'], avoid: ['vocals', 'synthesizer'] }),
-    }} onPendingChange={onPendingChange} />);
-    expect(details.textContent).toContain('Avoid: synthesizer, vocals');
-    expect(details.textContent).not.toContain('vocals, synthesizer');
+    expect(input().value).toBe('jazz');
+    expect(screen.getByRole('status', { name: 'Applying music request' })).toBeTruthy();
+    expect(input().disabled).toBe(false);
+    fireEvent.change(input(), { target: { value: 'piano' } });
+    await act(async () => { submit(); });
+    expect(c.interpretText).toHaveBeenCalledExactlyOnceWith('piano');
+    expect(screen.getByRole('status', { name: 'Applying music request' })).toBeTruthy();
+    view.rerender(<MusicRequest controller={c} compact state={{ ...state, intentText: 'piano', intentApplying: false }} onPendingChange={onPendingChange} />);
+    expect(screen.queryByRole('status')).toBeNull();
+    expect(input().value).toBe('piano');
+    expect(c.start).not.toHaveBeenCalled();
+  });
+
+  it('ignores a cleared request completion while a newer request is still pending', async () => {
+    let rejectOld!: (error: Error) => void;
+    let finishNew!: () => void;
+    const c = controller();
+    c.interpretText = vi.fn()
+      .mockImplementationOnce(() => new Promise<void>((_, reject) => { rejectOld = reject; }))
+      .mockImplementationOnce(() => new Promise<void>(resolve => { finishNew = resolve; }));
+    const onPendingChange = vi.fn();
+    render(<MusicRequest controller={c} state={{ status: 'playing' }} onPendingChange={onPendingChange} />);
+    fireEvent.change(input(), { target: { value: 'jazz' } }); submit();
+    fireEvent.click(screen.getByRole('button', { name: 'Clear music request' }));
+    expect(document.activeElement).toBe(input());
+    fireEvent.change(input(), { target: { value: 'piano' } }); submit();
+    await act(async () => { rejectOld(new Error('old failure')); });
+    expect(input().value).toBe('piano');
+    expect(screen.queryByRole('alert')).toBeNull();
+    expect(screen.getByRole('status', { name: 'Applying music request' })).toBeTruthy();
+    expect(onPendingChange).toHaveBeenLastCalledWith(true);
+    await act(async () => { finishNew(); });
+    expect(screen.queryByRole('status')).toBeNull();
+    expect(onPendingChange).toHaveBeenLastCalledWith(false);
   });
 });

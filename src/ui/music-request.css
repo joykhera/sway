@@ -72,49 +72,35 @@
   line-height: 1;
 }
 
-.music-request__actions {
-  display: flex;
-  justify-content: space-between;
-  padding: 0 10px;
+.music-request .music-request__clear {
+  flex: 0 0 36px;
+  width: 36px;
+  height: 44px;
+  padding: 0;
+  border-radius: 50%;
+  font-size: 20px;
 }
 
-.music-request__actions button {
-  min-height: 36px;
-  padding: 6px 4px;
-  font-size: 10px;
+.music-request__loading {
+  display: grid;
+  flex: 0 0 24px;
+  place-items: center;
 }
 
-.music-request__rest {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 12px;
-  min-height: 44px;
+.music-request__spinner {
+  width: 14px;
+  height: 14px;
+  border: 1.5px solid var(--hairline);
+  border-top-color: var(--fg);
+  border-radius: 50%;
+  animation: request-spin 900ms linear infinite;
 }
 
-.music-request__summary {
-  margin: 0;
-  overflow-wrap: anywhere;
-  text-wrap: pretty;
+@keyframes request-spin {
+  to { transform: rotate(360deg); }
 }
 
-.music-request__edit {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  flex: 0 0 auto;
-  gap: 10px;
-  min-height: 44px;
-  padding: 4px;
-  font-size: 10px;
-}
-
-.music-request__edit span {
-  font-size: 16px;
-}
-
-.music-request__message,
-.music-request__applied {
+.music-request__message {
   margin: 5px 12px 0;
   color: var(--muted);
   overflow-wrap: anywhere;
@@ -125,42 +111,8 @@
   color: var(--accent-warm);
 }
 
-.music-request__details {
-  margin: 2px 12px 0;
-  color: var(--muted);
-  font-size: 10px;
-  overflow-wrap: anywhere;
-}
-
-.music-request__details summary {
-  width: fit-content;
-  min-height: 32px;
-  padding: 7px 0;
-  cursor: pointer;
-}
-
-.music-request__details summary:focus-visible {
-  outline: 1px solid var(--accent);
-  outline-offset: 3px;
-}
-
-.music-request__details p,
-.music-request__details ul {
-  margin: 0 0 8px;
-}
-
-.music-request__details ul {
-  padding-left: 16px;
-}
-
-.music-request__details a {
-  color: inherit;
-  text-underline-offset: 3px;
-}
-
 @media (hover: hover) {
-  .music-request button:hover:not(:disabled),
-  .music-request__details summary:hover {
+  .music-request button:hover:not(:disabled) {
     color: var(--fg);
   }
 }

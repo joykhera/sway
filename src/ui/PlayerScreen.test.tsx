@@ -75,7 +75,7 @@ describe('PlayerScreen — quiet text requests', () => {
       f.emit({ status: 'idle', intent: requestIntent, intentText: 'jazz', intentStatus: 'ready' });
       finish();
     });
-    expect(screen.queryByRole('textbox')).toBeNull();
+    expect((screen.getByRole('textbox') as HTMLInputElement).value).toBe('jazz');
     expect(f.start).not.toHaveBeenCalled();
     fireEvent.click(screen.getByRole('button', { name: 'start listening' }));
     expect(f.start).toHaveBeenCalledOnce();
@@ -87,7 +87,6 @@ describe('PlayerScreen — quiet text requests', () => {
     f.controller.captureMoment = vi.fn(() => ({ features: { jazz: .5, piano: .4 }, prompts: [{ text: 'Jazz', weight: 1 }] }));
     const { container } = render(<PlayerScreen controller={f.controller} />);
     const stage = container.querySelector('.app__stage');
-    fireEvent.click(screen.getByRole('button', { name: 'Add a music request' }));
     const editor = screen.getByRole('textbox');
     fireEvent.change(editor, { target: { value: 'workout' } });
     fireEvent.keyDown(editor, { key: 'ArrowUp' });
@@ -124,14 +123,12 @@ describe('PlayerScreen — quiet text requests', () => {
     f.controller.setPurpose = vi.fn();
     f.controller.clearIntent = vi.fn(() => f.emit({ status: 'idle', purpose: 'relax', intentStatus: 'idle' }));
     render(<PlayerScreen controller={f.controller} />);
-    expect(screen.getByText('Quiet jazz for reading.')).toBeTruthy();
-    fireEvent.click(screen.getByRole('button', { name: 'Edit music request' }));
+    expect((screen.getByRole('textbox') as HTMLInputElement).value).toBe('jazz');
+    expect(screen.queryByText('Quiet jazz for reading.')).toBeNull();
     fireEvent.change(screen.getByRole('textbox'), { target: { value: 'unsent focus draft' } });
     act(() => { f.emit({ status: 'idle', purpose: 'relax', intent: { ...requestIntent, summary: 'Soft piano.' }, intentText: 'piano', intentStatus: 'ready' }); });
-    expect(screen.queryByRole('textbox')).toBeNull();
-    fireEvent.click(screen.getByRole('button', { name: 'Edit music request' }));
     expect((screen.getByRole('textbox') as HTMLInputElement).value).toBe('piano');
-    fireEvent.click(screen.getByRole('button', { name: 'clear request' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Clear music request' }));
     expect(f.controller.clearIntent).toHaveBeenCalledOnce();
     expect(screen.queryByText('Soft piano.')).toBeNull();
     expect((screen.getByRole('textbox') as HTMLInputElement).value).toBe('');
