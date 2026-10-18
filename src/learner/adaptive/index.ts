@@ -8,7 +8,7 @@ import { PARAMETERS as P } from './constants';
 import { dot, factor, solve, uncertainty, vector } from './model';
 import { CRAZY_VARIANTS, featureOfPrompt, renderTarget } from './phrasing';
 import { RECIPES, changedGroups, distance, purposePrior } from './recipes';
-import { intentPrior, matchesIntent, validatedIntent, withIntentPrompts } from './intent';
+import { intentPrior, matchesIntent, requestAlignment, validatedIntent, withIntentPrompts } from './intent';
 import type { Decision, FeatureBlend, FeatureId, LearnerState, Purpose, Target } from './types';
 
 export type { Decision, FeatureBlend, FeatureId, LearnerState, Purpose, Target } from './types';
@@ -92,6 +92,15 @@ function choose(state: LearnerState, base: Target, pending: Target, mode: 'initi
     candidates = catalog.filter(({ target }) => signature(target.features) !== signature(base.features));
     if (!candidates.length) candidates = catalog;
   }
+  if (intent && (mode === 'initial' || mode === 'apply')) {
+    // A new/restored request is an immediate direction, not another passive
+    // hint competing with all past Likes. Keep the strongest feasible requested
+    // group coverage, then let saved taste rank its compatible ingredients.
+    // Later thumbs/freshness still use the ordinary, overridable soft prior.
+    const alignment = candidates.map(({ target }) => requestAlignment(target, intent));
+    const strongest = Math.max(...alignment);
+    candidates = candidates.filter((_, i) => Math.abs(alignment[i]! - strongest) < 1e-9);
+  }
   if (styleEscape && intent) {
     // If a style group is fixed (e.g. jazz-only), escape through the next mutable
     // groups. Maximise feasible change rather than ever producing an empty set.
@@ -142,11 +151,13 @@ function choose(state: LearnerState, base: Target, pending: Target, mode: 'initi
   const reason = catalog.length === 1 && mode !== 'initial' && mode !== 'apply'
     ? 'The active request permits only one recipe; keeping its constraints rather than inventing an unavailable variation.'
     : mode === 'apply' ? intent
-      ? 'Applying the current request within saved preferences; text adds no preference evidence.'
+      ? 'Starting in the requested direction, with saved preferences choosing compatible ingredients; text adds no preference evidence.'
       : 'Clearing the request and returning to saved preferences; no evidence was changed.'
     : styleEscape && intent ? 'Opening a wider search after three distinct rejections; changing the mutable groups inside the active request.'
     : styleEscape ? 'Opening a wider style search after three distinct rejected heard blends; changing genre and instrument where the active mixture permits.'
-    : mode === 'initial' ? 'Starting with a broad recipe; purpose is a soft starting hint, not learned taste.'
+    : mode === 'initial' ? intent
+      ? 'Starting in the saved request direction, with compatible learned preferences; no preference evidence was added.'
+      : 'Starting with a broad recipe; purpose is a soft starting hint, not learned taste.'
     : mode === 'down' ? current.supported
       ? `Trying a different ${changeCount === 1 ? 'ingredient' : 'combination'} near the supported family after a dislike.`
       : 'Trying another direction after a dislike; preference evidence is still uncertain.'

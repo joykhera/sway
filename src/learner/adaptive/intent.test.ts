@@ -131,7 +131,7 @@ describe('session intent, separate from preference evidence', () => {
     expect(isAdaptiveState(state)).toBe(true);
   });
 
-  it('gives hints bounded initial influence and lets learned rejection overcome them', () => {
+  it('seeds a fresh hint, but lets learned rejection overcome it during later exploration', () => {
     const request = intent({ requiredFeatures: [], excludedFeatures: [], featureHints: ['piano'], contextPrompt: '', avoid: [] });
     let state = createLearner(42);
     expect(initialTarget(state, request).features.piano).toBeGreaterThan(0);
@@ -144,7 +144,11 @@ describe('session intent, separate from preference evidence', () => {
         ({ state, target: current } = processVote({ state, audible: heard.features, currentTarget: current, vote, intent: request }));
       }
     }
-    const selected = applyIntent({ state, currentTarget: current, intent: request });
+    // Applying the request again deliberately retries its direction; subsequent
+    // exploration must remain able to leave that hint using actual feedback.
+    const reapplied = applyIntent({ state, currentTarget: current, intent: request });
+    expect(reapplied.features.piano).toBeGreaterThan(0);
+    const selected = evolveNoVote({ state, target: reapplied, step: 1, intent: request });
     expect(selected.features.piano).toBeUndefined();
     expect(selected.features.guitar).toBeGreaterThan(0);
     for (const { target } of RECIPES) {

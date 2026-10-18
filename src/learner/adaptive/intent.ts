@@ -23,6 +23,17 @@ export function matchesIntent(features: FeatureBlend, intent?: MusicIntent): boo
   });
 }
 
+/** Fresh requests seed a direction once; this score never constrains later votes. */
+export function requestAlignment(target: Target, intent: MusicIntent): number {
+  if (intent.featureHints.length) {
+    // Alternative hints in one group count once. Hard constraints may make a
+    // group unreachable; selection maximises only the coverage still feasible.
+    return GROUP_IDS.reduce((covered, group) => covered + Number(FEATURE_GROUPS[group]
+      .some(id => intent.featureHints.includes(id) && (target.features[id] ?? 0) > 0)), 0);
+  }
+  return intent.purposeHint ? purposePrior(intent.purposeHint, target) : 0;
+}
+
 /** At most 0.22 utility, fading with actual evidence; never modifies the model. */
 export function intentPrior(state: LearnerState, target: Target, intent?: MusicIntent): number {
   if (!intent) return 0;
