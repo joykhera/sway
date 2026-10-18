@@ -1,6 +1,6 @@
 # tools/selfimprove: session context (for starting a new thread)
 
-Written 2026-10-17 ~17:00. Read this first. It is a snapshot of what exists, what was decided, and what is left. Nothing here contains secrets.
+Written 2026-10-17 ~17:00, extended later the same day with sections 11 to 13 (next phase and starter prompts). Read this first. It is a snapshot of what exists, what was decided, and what is left. Nothing here contains secrets.
 
 ## 1. What this lane is
 An **offline** agent team for the Crusoe hackathon prompt: "an agent team on Crusoe Managed Inference that improves itself, keeps a change only if it measurably helps, and proves it with a before-and-after score on tasks it has not seen." It uses NVIDIA Nemotron models through Crusoe's OpenAI-compatible API. It never touches the live music path (relay, player, controller, learner).
@@ -90,3 +90,84 @@ Baseline numbers (train/val): random 25.3/21.9, learner 32.7/30.3, oracle 67.9/6
 - Write-up: `docs/SELFIMPROVE_RESULTS.md`. Submission draft: `docs/SUBMISSION_DRAFT.md`. Diagram: `docs/self-improving-loop.excalidraw`.
 - Published pages (private artifacts): results story https://claude.ai/artifact/N6uaYr4r885VuJJ5j4ue1N; Crusoe and Nemotron story https://claude.ai/artifact/TyTHJRz2Zc1LRqp8SF9SBR.
 - Team handoff: `docs/HANDOFF.md`. Lyria facts: `docs/lyria-smoke-report.md`.
+
+## 11. Next phase: make it real (simulated listeners to real listeners)
+Framing sentence used on our pages: "For now those listeners are simulated, and real listeners come next. The team runs on Crusoe Managed Inference using NVIDIA Nemotron models."
+
+What changes when listeners are real:
+- **A person cannot be replayed.** A simulator can run two team versions on the same listener. A real listener hears a session once and is changed by it. So an offline replay of a logged session can only say how a different policy *would have scored the same votes*, not how that person would have voted. A live comparison needs two versions assigned to different people (between-subjects) or to the same person in random order (crossover).
+- **What the app already gives us:** each listener's browser stores their feedback locally (IndexedDB database `sway-preferences`, stores `profiles`, `feedback`, `metadata`), the player screen has Export and Reset controls, and the controller exposes `exportFeedback()` and `resetPreferences()`. Each feedback record holds the vote, the blend that was audible, the evidence weight and the targets before and after. Nothing goes to a server.
+- **Metric candidates:** share of thumbs-up early versus late in a session (does it fit better over time?), and a blind forced-choice question after each session ("which fit your taste better?"), asked outside the app UI. Report the two separately.
+- **Honest limits:** small samples; a few people cannot show significance; the team cannot learn live during a short demo, so we compare pre-built versions; a negative or unclear result is a valid outcome.
+- **Rules carried over:** pre-register design, metric and success rule in a committed file BEFORE any real session; the three old sealed sets stay consumed; consent and no personal data; exports never committed; never print keys; no improvement claims we did not measure.
+
+Two realistic setups (a tailored starter prompt for each is in section 12):
+- **A. Live demo:** many people, 3 to 10 minutes each, one version per person assigned at random, about 10 to 30 listeners. Weak on proof; mostly "what real people did".
+- **B. Small private test:** about 5 to 10 people, a few days, 2 to 3 sessions of 10 to 15 minutes each, blind crossover (everyone hears both versions in random order) plus a forced-choice question. Stronger design, slower.
+
+Known prerequisite gap: the shipped app uses the **adaptive learner**, but all runs here used the original deterministic learner. Decide which policy the real-listener study compares, and say so in the pre-registration.
+
+## 12. Starter prompts for a new thread (copy as written)
+Generic ("make it real"):
+```
+Read tools/selfimprove/SESSION_CONTEXT.md first, then docs/SELFIMPROVE_RESULTS.md. Do not start work until you have summarized, in a few lines, what exists and what the three runs showed.
+
+Goal: make it real. So far our self-improving team ran on Crusoe Managed Inference with NVIDIA Nemotron models, scored only on simulated listeners. Real listeners come next. Help me design and, once I approve, build the step from simulated to real listeners, keeping the same rule: a change stays only if it measurably beats the old version on listeners the team has never met.
+
+Constraints:
+- All three existing sealed test sets are used up. Any new experiment needs a new pre-registration committed before it runs, plus fresh listeners.
+- Real people cannot be replayed. Think hard about what we can fairly measure: the app already stores each listener's feedback in the browser and has an export function. Say what an offline replay of that log can and cannot prove, versus a live comparison of two team versions on different listeners.
+- Handle real listener data carefully: get consent, keep it local or anonymized, never commit it, never print API keys.
+- Do not claim an improvement we did not measure. Report negative results as they are.
+- Do not re-score old sealed sets. Do not edit the frozen files listed in the context file.
+
+Start by asking me the questions you need (how many listeners, how long, where they listen, what we are allowed to store), then propose a study design and a short plan with the smallest first experiment. Wait for my approval before writing code. Use pnpm-free commands (npx tsx / vitest) as the context file explains.
+```
+
+Version A, live demo:
+```
+Read tools/selfimprove/SESSION_CONTEXT.md first, then docs/SELFIMPROVE_RESULTS.md. Summarize in a few lines what exists and what the three runs showed before doing anything else.
+
+Goal: make it real for a LIVE DEMO. People at the event listen to Sway for a few minutes each. Our self-improving team runs on Crusoe Managed Inference with NVIDIA Nemotron models, but so far it was only scored on simulated listeners. Design a small, honest way to learn something from real listeners at the demo.
+
+Setting and limits:
+- Many different people, each for only 3 to 10 minutes. No time for the team to learn live; we compare two pre-built team versions (for example the starting team versus the best alternative) and assign each listener one version at random.
+- Measure what the product claims: does the share of thumbs-up rise over a session? Compare early votes with later votes, per version. The app already stores each listener's feedback locally in the browser and can export it.
+- Expect a small sample (perhaps 10 to 30 people). Say plainly what that sample can and cannot show. No claims of significance unless the numbers earn it.
+
+Rules:
+- Pre-register the design, the metric and the success rule in a file and commit it BEFORE the demo. The old sealed test sets are used up; do not re-score them.
+- Consent and privacy: a one-line notice, no personal data, data stays local or anonymized, never committed. Never print API keys.
+- Do not claim an improvement we did not measure. Report negative or unclear results as they are.
+- Do not edit the frozen files listed in the context file. Use pnpm-free commands (npx tsx / vitest).
+
+Start by asking me what you need (how many people we expect, how long the demo runs, which device they use), then propose the smallest design and the steps to get it demo-ready, including a quick way to assign versions and collect the exports. Wait for my approval before writing code.
+```
+
+Version B, small private test (friends and family):
+```
+Read tools/selfimprove/SESSION_CONTEXT.md first, then docs/SELFIMPROVE_RESULTS.md. Summarize in a few lines what exists and what the three runs showed before doing anything else.
+
+Goal: make it real with a SMALL PRIVATE TEST of about 5 to 10 people I know, over a few days. Our self-improving team runs on Crusoe Managed Inference with NVIDIA Nemotron models, but it was only scored on simulated listeners so far. Design a study that can tell us whether the team's version of Sway fits real tastes better than the starting version.
+
+Setting and limits:
+- Each person does two or three sessions of 10 to 15 minutes. Use a blind crossover: every person hears both team versions, in random order, without being told which is which. That gives more power than one version per person.
+- After each session ask one short forced-choice question outside the app UI ("which session fit your taste better?"), plus the app's own feedback log, which each listener's browser stores locally and can export.
+- Fix the primary metric and the success rule first. Report the forced-choice result and the thumbs-based result separately and say honestly how small the sample is.
+
+Rules:
+- Pre-register the design, the metric and the success rule in a file and commit it BEFORE the first session. The old sealed test sets are used up; do not re-score them.
+- Get informed consent, collect no personal data beyond what we need, keep exports out of git, and never print API keys.
+- Do not claim an improvement we did not measure. Report negative or unclear results as they are.
+- Do not edit the frozen files listed in the context file. Use pnpm-free commands (npx tsx / vitest).
+
+Start by asking me what you need (who, how many, how long, where they listen, what we may store), then propose the study design, the analysis plan and the smallest first step. Wait for my approval before writing code.
+```
+
+## 13. Material produced after the first version of this file
+- **Pages (private artifacts, share from the page's Share menu):** results story https://claude.ai/artifact/N6uaYr4r885VuJJ5j4ue1N (version 2, with the loop drawn as a ring and a bar chart per run). Crusoe and Nemotron story https://claude.ai/artifact/TyTHJRz2Zc1LRqp8SF9SBR (version 4): headline "Music that learns you, and improves itself based on the listener", a hand-drawn sketch of the loop, "Why we built on Crusoe", "The right model for the right job", "What we plan to achieve". The section "Who does each job in the loop" was removed on request. Hand-drawn diagram source: `docs/self-improving-loop.excalidraw`.
+- **50-word brief (reusable):** "Sway is endless instrumental music, generated by Google's Lyria, that learns your taste from two buttons: thumbs up and thumbs down. The music never stops. Alongside it, an AI team on Crusoe and NVIDIA Nemotron proposes improvements and keeps one only if it beats the old version on unseen listeners."
+- **Crusoe usage statement (summary of what was drafted):** Crusoe powers the offline self-improving team only; Lyria powers the live music. OpenAI-style API with a console key kept in a gitignored `.env`; Nano or Lightning as the high-volume advisor (thinking off), Super as reviewer and rewriter (thinking on); roughly 20,000 model calls across the three runs and tests at 12 to 24 in parallel; retries with backoff; disk cache; no GPUs or servers to run.
+- **Crusoe feedback (summary):** easy OpenAI-compatible start, fast steady small models, `/models` is the source of truth; docs inconsistent on endpoints, IDs and key menu paths; Super (120B) failed over half of calls at 16 to 32 parallel with no published limits to explain it; reasoning on by default and the off switch is hard to find; no capability or speed hints in the model list; cost visibility unclear.
+- **Partner feedback (summary):** Nemotron followed vocabulary-restricted JSON very reliably; Lyria: strong live steerable stream, but docs omit that `sampleRateHz` is rejected, the hard 10 minute session cap closes with a misleading error, browser-safe tokens do not work (relay required), prompt weights are normalized (only ratios matter), quotas and pricing unpublished.
+- **Main repo around this time:** most app PRs merged (#1 to #4, #6 to #8, #10, #12, #14, #17, #19); #13 (docs) and #15 (this lane) open and fast-forwardable; #16 and #18 (text and song requests) stale against `main`; issue #9 open. README was rewritten by a teammate to tell the same Crusoe and Nemotron story. Re-check with `git fetch` and `gh pr list` before acting.
